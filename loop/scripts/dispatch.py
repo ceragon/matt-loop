@@ -9,7 +9,7 @@
 （只用机器上已有的解释器；uv 会在 ~/.cache/uv 建一个很小的 venv，属正常运行环境。）
 
 机械活：读放行提示词 → 核对目标 → hc send --if idle → hc wait 循环 →
-hc read → 完整性检查 → 原文逐字落盘 → pi 提炼 → 合并成一行 JSON。
+hc read → 完整性检查 → 原文逐字落盘 → pi 抽取 → 合并成一行 JSON。
 异常直接返回 error（退出码非零），不进 pi。只用 Python 标准库。
 
 机械保证（不靠提示词）：
@@ -21,7 +21,7 @@ hc read → 完整性检查 → 原文逐字落盘 → pi 提炼 → 合并成�
   - 发送前核对目标身份（--expect-title / --expect-proc，可选但强烈建议传）。
   - 台账记录实际发出内容的 sha256，成功输出也带 prompt_sha256。
   - 完整性判据（锚点 + 折叠标记）命中即 error，不进 pi；原文照常落盘。
-  - 提炼字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
+  - 抽取字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
     全部搜不到则 error(extraction_rewritten)。
 
 交付：stdout 一行 JSON，同一字符串同时写 .loop/runs/<放行id>.result.json
@@ -29,7 +29,7 @@ hc read → 完整性检查 → 原文逐字落盘 → pi 提炼 → 合并成�
 长任务须用 `hc run --bg` 跑、`hc wait` 等（见 SKILL.md），不要用 hc exec。
 
 已裁定默认值（issue #16，2026-11-19）：墙钟 3600s（发送成功起计、不重置）、
-check-in 180s、落定静置 10s × 2 次、pi 提炼护栏 1200s、hc read --lines 0。
+check-in 180s、落定静置 10s × 2 次、pi 抽取护栏 1200s、hc read --lines 0。
 """
 
 import argparse
@@ -175,7 +175,7 @@ def emit_result(obj, result_path):
 
 
 def verbatim_present(value, text):
-    """逐字子串校验（锚点与提炼字段共用）。先按字面搜；屏幕会折行、把 tab
+    """逐字子串校验（锚点与抽取字段共用）。先按字面搜；屏幕会折行、把 tab
     展开成空格，字面搜不到时再做一次去空白折叠搜索（仍是确定性检查）。"""
     if value in text:
         return True
@@ -216,7 +216,7 @@ def verify_extraction(ext, screen, record_path):
     if checked and len(rewritten) == checked:
         raise DispatchError(
             "extraction_rewritten",
-            "提炼字段全部未通过逐字校验：pi 在改写而不是抽取",
+            "抽取字段全部未通过逐字校验：pi 在改写而不是抽取",
             [f"原文已落盘：{record_path}",
              "最接近的原文片段：" + json.dumps(rewritten, ensure_ascii=False)[:300]],
         )
@@ -356,14 +356,14 @@ def parse_extraction(stdout):
     raise DispatchError(
         "extraction_invalid",
         "pi 输出中找不到符合固定形状的 JSON",
-        ["原文已落盘，可人工用 pi 按 prompts/extract.md 重做提炼", stdout.strip()[:300]],
+        ["原文已落盘，可人工用 pi 按 prompts/extract.md 重做抽取", stdout.strip()[:300]],
     )
 
 
 def extract(pi_bin, args, record_path):
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
-        raise DispatchError("missing_prompt", f"找不到提炼提示词：{extract_md}", [])
+        raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
     instruction = (
         "原文已随消息附上（@文件）。按系统提示词抽取，"
         "只输出一个 JSON 对象，含 needs_user、questions、summary、conclusion、blocked 五个字段。"
@@ -383,7 +383,7 @@ def extract(pi_bin, args, record_path):
         raise DispatchError(
             "extraction_failed",
             f"pi 退出码 {p.returncode}",
-            ["原文已落盘，可人工重做提炼", (p.stderr or p.stdout).strip()[:300]],
+            ["原文已落盘，可人工重做抽取", (p.stderr or p.stdout).strip()[:300]],
         )
     # 研究表明 pi 模型失败时退出码可能仍为 0，所以无论退出码都要校验输出。
     return parse_extraction(p.stdout)
@@ -405,7 +405,7 @@ def positive_int(s):
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
-        description="loop 分发脚本：发送已放行提示词、等待落定、取回原文落盘、pi 提炼。",
+        description="loop 分发脚本：发送已放行提示词、等待落定、取回原文落盘、pi 抽取。",
     )
     ap.add_argument("--target", required=True, help="目标终端地址（hc 的 t7、名字或 machine/t7）")
     ap.add_argument("--release-id", required=True, help="放行 id（唯一；一个放行只跑一轮）")
@@ -424,7 +424,7 @@ def parse_args(argv=None):
     ap.add_argument("--settle-checks", type=positive_int, default=2,
                     help="落定复核次数（默认 2）")
     ap.add_argument("--extract-timeout", type=positive_float, default=1200.0,
-                    help="pi 提炼子进程护栏秒数（默认 1200）")
+                    help="pi 抽取子进程护栏秒数（默认 1200）")
     return ap.parse_args(argv)
 
 
@@ -586,7 +586,7 @@ def main(argv=None):
                 [f"原文已落盘：{record_path}", "请用户回看原文；不按键、不自动补发"],
             )
 
-        # 6) pi 提炼 + 逐字校验（裁定 C），合并输出。
+        # 6) pi 抽取 + 逐字校验（裁定 C），合并输出。
         ledger.update(phase="extracting")
         write_json_atomic(ledger_path, ledger)
         ext = extract(pi_bin, args, record_path)
