@@ -7,18 +7,22 @@ hc read → 完整性检查 → 原文逐字落盘 → pi 提炼 → 合并成�
 
 机械保证（不靠提示词）：
   - 原文照发：文件内容一字不改地作为 hc send 的位置参数。
-  - 至多发一次：先写台账 .loop/runs/<放行id>.json 再发送；台账存在即拒绝。
-  - 只用 --if idle，永不 --force，不碰 hc keys。
+  - 至多发送成功一次：先写台账 .loop/runs/<放行id>.json 再发送；台账存在即拒绝。
+  - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
+    再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
+    永不 --force，不碰 hc keys。
   - 发送前核对目标身份（--expect-title / --expect-proc，可选但强烈建议传）。
   - 台账记录实际发出内容的 sha256，成功输出也带 prompt_sha256。
+  - 完整性判据（锚点 + 折叠标记）命中即 error，不进 pi；原文照常落盘。
+  - 提炼字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
+    全部搜不到则 error(extraction_rewritten)。
 
-待拍板参数（issue #16，裁定前必须显式传入，无默认值）：
-  --wall-clock --check-in --settle-seconds --settle-checks
-  --lines --on-incomplete --extract-timeout
-裁定后在此处补默认值即可，流程不变。
+已裁定默认值（issue #16，2026-11-19）：墙钟 3600s（发送成功起计、不重置）、
+check-in 180s、落定静置 10s × 2 次、pi 提炼护栏 1200s、hc read --lines 0。
 """
 
 import argparse
+import difflib
 import hashlib
 import json
 import re
@@ -36,6 +40,8 @@ SEND_GUARD_S = 120.0
 QUERY_GUARD_S = 30.0
 # hc wait 子进程护栏 = 本次 --timeout + 余量。
 WAIT_GUARD_MARGIN_S = 30.0
+# 裁定 A3：只取当前屏。对 grok，--lines > 0 时 hc 的 complete 恒 false，语义失真。
+READ_LINES = 0
 
 EXTRACT_FIELDS = ("needs_user", "questions", "summary", "conclusion", "blocked")
 
@@ -130,13 +136,53 @@ def write_json_atomic(path, obj):
     tmp.replace(path)
 
 
-def anchor_present(anchor, text):
-    """锚点 = 提示词最后一行非空文本。先按字面搜；屏幕会折行、把 tab 展开成
-    空格，字面搜不到时再做一次去空白折叠搜索（仍是确定性检查）。"""
-    if anchor in text:
+def verbatim_present(value, text):
+    """逐字子串校验（锚点与提炼字段共用）。先按字面搜；屏幕会折行、把 tab
+    展开成空格，字面搜不到时再做一次去空白折叠搜索（仍是确定性检查）。"""
+    if value in text:
         return True
     strip_ws = lambda s: re.sub(r"\s+", "", s)
-    return strip_ws(anchor) in strip_ws(text)
+    return strip_ws(value) in strip_ws(text)
+
+
+def closest_fragment(value, text):
+    """在原文非空行里找与 value 最接近的一行（去空白后按相似度），原样返回。"""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    strip_ws = lambda s: re.sub(r"\s+", "", s)
+    v = strip_ws(value)
+    best, best_ratio = "", -1.0
+    for ln in lines:
+        r = difflib.SequenceMatcher(None, v, strip_ws(ln)).ratio()
+        if r > best_ratio:
+            best, best_ratio = ln, r
+    return best
+
+
+def verify_extraction(ext, screen, record_path):
+    """裁定 C：questions/conclusion/summary/blocked 全部逐字摘原文。
+    对每个非空字段值做子串校验；搜不到的标 rewritten 并附最接近片段；
+    全部搜不到则 error。needs_user 是唯一的布尔判断字段，不参与校验。"""
+    checks = [("summary", ext["summary"]), ("conclusion", ext["conclusion"]),
+              ("blocked", ext["blocked"])]
+    checks += [(f"questions[{i}]", q) for i, q in enumerate(ext["questions"])]
+    rewritten = {}
+    checked = 0
+    for key, val in checks:
+        if not val.strip():
+            continue
+        checked += 1
+        if not verbatim_present(val, screen):
+            rewritten[key] = closest_fragment(val, screen)
+    if checked and len(rewritten) == checked:
+        raise DispatchError(
+            "extraction_rewritten",
+            "提炼字段全部未通过逐字校验：pi 在改写而不是抽取",
+            [f"原文已落盘：{record_path}",
+             "最接近的原文片段：" + json.dumps(rewritten, ensure_ascii=False)[:300]],
+        )
+    return rewritten
 
 
 def check_identity(terminal, args):
@@ -262,7 +308,7 @@ def parse_extraction(stdout):
             continue
         if (
             isinstance(obj.get("needs_user"), bool)
-            and isinstance(obj.get("blocked"), bool)
+            and isinstance(obj.get("blocked"), str)
             and isinstance(obj.get("questions"), list)
             and all(isinstance(q, str) for q in obj["questions"])
             and isinstance(obj.get("summary"), str)
@@ -276,19 +322,14 @@ def parse_extraction(stdout):
     )
 
 
-def extract(pi_bin, args, record_path, complete, complete_reason):
+def extract(pi_bin, args, record_path):
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_prompt", f"找不到提炼提示词：{extract_md}", [])
-    context = {
-        "run_record": str(record_path),
-        "complete": complete,
-        "complete_reason": complete_reason,
-    }
     instruction = (
-        "原文已随消息附上（@文件）。按系统提示词提炼，"
+        "原文已随消息附上（@文件）。按系统提示词抽取，"
         "只输出一个 JSON 对象，含 needs_user、questions、summary、conclusion、blocked 五个字段。"
-        "本轮机械信息：" + json.dumps(context, ensure_ascii=False)
+        f'原文落盘路径：{record_path}'
     )
     argv = [
         pi_bin, "-p",
@@ -324,13 +365,6 @@ def positive_int(s):
     return v
 
 
-def nonneg_int(s):
-    v = int(s)
-    if v < 0:
-        raise argparse.ArgumentTypeError("须为非负整数")
-    return v
-
-
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description="loop 分发脚本：发送已放行提示词、等待落定、取回原文落盘、pi 提炼。",
@@ -342,21 +376,17 @@ def parse_args(argv=None):
     ap.add_argument("--expect-proc", help="身份预检：前台进程名应含此子串（如 grok）")
     ap.add_argument("--loop-dir", default=".loop", help="本地记录根目录（默认 ./.loop）")
     ap.add_argument("--pi-model", help="pi --model 透传（默认用 pi 自身配置的模型）")
-    # ---- 待拍板（issue #16）：裁定前无默认值，必须显式传 ----
-    ap.add_argument("--wall-clock", type=positive_float, required=True,
-                    help="[待拍板] 墙钟上限秒数，从发送成功起计，不重置")
-    ap.add_argument("--check-in", type=positive_float, required=True,
-                    help="[待拍板] hc wait 每次 check-in 秒数")
-    ap.add_argument("--settle-seconds", type=positive_float, required=True,
-                    help="[待拍板] 落定复核每次静置秒数")
-    ap.add_argument("--settle-checks", type=positive_int, required=True,
-                    help="[待拍板] 落定复核次数")
-    ap.add_argument("--lines", type=nonneg_int, required=True,
-                    help="[待拍板] hc read --lines（0=只取当前屏）")
-    ap.add_argument("--on-incomplete", choices=("error", "extract"), required=True,
-                    help="[待拍板] 完整性判据命中时：error=落盘后直接返回 error；extract=带标记进 pi")
-    ap.add_argument("--extract-timeout", type=positive_float, required=True,
-                    help="[待拍板] pi 提炼子进程护栏秒数")
+    # ---- 已裁定默认值（issue #16，2026-11-19），可覆盖 ----
+    ap.add_argument("--wall-clock", type=positive_float, default=3600.0,
+                    help="墙钟上限秒数，从发送成功起计，不重置（默认 3600）")
+    ap.add_argument("--check-in", type=positive_float, default=180.0,
+                    help="hc wait 每次 check-in 秒数（默认 180）")
+    ap.add_argument("--settle-seconds", type=positive_float, default=10.0,
+                    help="落定复核每次静置秒数（默认 10）")
+    ap.add_argument("--settle-checks", type=positive_int, default=2,
+                    help="落定复核次数（默认 2）")
+    ap.add_argument("--extract-timeout", type=positive_float, default=1200.0,
+                    help="pi 提炼子进程护栏秒数（默认 1200）")
     return ap.parse_args(argv)
 
 
@@ -400,8 +430,8 @@ def main(argv=None):
             raise DispatchError("missing_tool", "PATH 里找不到 pi",
                                 ["Mini 上非交互环境的 PATH 里没有 node，需显式补 PATH"])
 
-        # 1) 预检：状态 idle/done + 身份（票面第 2 步；done 时 --if idle 仍可能拒发，
-        #    以 hc 实际裁定为准，拒发即 error）。
+        # 1) 预检：状态 idle/done + 身份（票面第 2 步；done 时 --if idle 会拒发，
+        #    走下面裁定 6 的复核补发路径）。
         g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
         if g.get("state") != "live":
             raise DispatchError("not_idle", "目标终端已结束，不发送", [])
@@ -427,8 +457,7 @@ def main(argv=None):
             "params": {
                 "wall_clock": args.wall_clock, "check_in": args.check_in,
                 "settle_seconds": args.settle_seconds, "settle_checks": args.settle_checks,
-                "lines": args.lines, "on_incomplete": args.on_incomplete,
-                "extract_timeout": args.extract_timeout,
+                "lines": READ_LINES, "extract_timeout": args.extract_timeout,
             },
             "phase": "sending",
             "created_at": now_iso(),
@@ -436,6 +465,7 @@ def main(argv=None):
         write_json_atomic(ledger_path, ledger)
 
         started = time.monotonic()
+        resent = False
         try:
             send = hc_json(
                 hc_bin,
@@ -443,11 +473,37 @@ def main(argv=None):
                 SEND_GUARD_S,
             )
         except HcFailure as e:
-            kind = "send_refused" if e.kind in ("status_mismatch", "blocked") else "hc_failed"
-            raise DispatchError(kind, f"hc send 失败：{e.message}",
-                                e.hints + ["未再发送；台账已记录本次尝试"])
+            if e.kind != "status_mismatch":
+                kind = "send_refused" if e.kind == "blocked" else "hc_failed"
+                raise DispatchError(kind, f"hc send 失败：{e.message}",
+                                    e.hints + ["未再发送；台账已记录本次尝试"])
+            # 裁定 6：--if idle 被拒（零字节进入，不算重发）→ hc get 复核，
+            # 确认 done 才补发；补发前再核一次非 working/blocked。
+            g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+            if status_state(g) != "done":
+                raise DispatchError(
+                    "send_refused",
+                    f"hc send --if idle 被拒，复核状态是 {status_state(g) or '未自报'} 而非 done，不补发",
+                    e.hints,
+                )
+            ledger.update(phase="resending",
+                          first_refusal={"kind": e.kind, "returncode": e.returncode})
+            write_json_atomic(ledger_path, ledger)
+            g2 = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+            if g2.get("state") != "live" or status_state(g2) not in ("idle", "done"):
+                raise DispatchError(
+                    "send_refused",
+                    f"补发前复核状态是 {status_state(g2) or '未自报'}，不补发",
+                    ["目标可能已重新开始工作或停在弹框；本轮未再发送"],
+                )
+            try:
+                send = hc_json(hc_bin, ["send", "--", args.target, text], SEND_GUARD_S)
+            except HcFailure as e2:
+                raise DispatchError("send_refused", f"done 补发仍失败：{e2.message}",
+                                    e2.hints + ["本轮不再发送；台账已记录两次尝试"])
+            resent = True
         baseline = send["turn"]
-        ledger.update(phase="waiting", sent_at=now_iso(), send=send)
+        ledger.update(phase="waiting", sent_at=now_iso(), send=send, resent=resent)
         write_json_atomic(ledger_path, ledger)
 
         # 3) 等待落定（墙钟从发送成功起计）。
@@ -455,10 +511,10 @@ def main(argv=None):
         final = wait_for_result(hc_bin, args, baseline, deadline)
 
         # 4) 取回当前屏 + 完整性检查。
-        read = hc_json(hc_bin, ["read", args.target, "--lines", str(args.lines)], QUERY_GUARD_S)
+        read = hc_json(hc_bin, ["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)
         screen = read["text"]
         reasons = []
-        if not anchor_present(anchor, screen):
+        if not verbatim_present(anchor, screen):
             reasons.append("anchor_missing")
         if "▲" in screen or "▼" in screen:
             reasons.append("fold_markers")
@@ -477,17 +533,20 @@ def main(argv=None):
         )
         write_json_atomic(ledger_path, ledger)
 
-        if not complete and args.on_incomplete == "error":
+        # 裁定 A1：判据命中即 error，不进 pi；原文已照常落盘。
+        if not complete:
             raise DispatchError(
                 "incomplete_result",
                 "完整性判据命中：" + "、".join(reasons),
                 [f"原文已落盘：{record_path}", "请用户回看原文；不按键、不自动补发"],
             )
 
-        # 6) pi 提炼，合并输出。
+        # 6) pi 提炼 + 逐字校验（裁定 C），合并输出。
         ledger.update(phase="extracting")
         write_json_atomic(ledger_path, ledger)
-        ext = extract(pi_bin, args, record_path, complete, reasons)
+        ext = extract(pi_bin, args, record_path)
+        rewritten = verify_extraction(ext, screen, record_path)
+        ledger.update(rewritten=rewritten)
         result = {
             "ok": True,
             "target": args.target,
@@ -499,6 +558,7 @@ def main(argv=None):
             "chars": len(screen),
             "run_record": str(record_path),
             "prompt_sha256": sha,
+            "rewritten": rewritten,
             **ext,
         }
         ledger.update(phase="done", done_at=now_iso())
