@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded by ADR-0002
 ---
 
 # 一个开 bash 的 pi（信使）全包发送、等待与取回
+
+> **Superseded by [ADR-0002](0002-script-does-mechanics-pi-does-extraction.md)**（2026-11-19 16:40 用户撤销 B、改回 C：脚本干机械活，pi 干提炼）。以下原文保留作历史，不再有效。
 
 一轮之内，把已放行的提示词发进目标会话、等它落定、取回最新回复，全部交给同一个开 bash 的无头 pi（信使）；六条发送安全写进信使提示词的硬约束，不拆成「脚本发送与等待、pi 只提取」。这是用户在制图拷问中的裁定（Q2），裁定时没有留下进一步的理由。
 
