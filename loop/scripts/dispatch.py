@@ -49,7 +49,7 @@ if sys.version_info < (3, 10):
             "kind": "python_too_old",
             "message": "需要 Python >= 3.10，当前 %d.%d.%d" % sys.version_info[:3],
             "hints": ["用 uv run --no-python-downloads scripts/dispatch.py 运行，"
-                      "只用机器上已有的解释器（如 uv 管理的 3.10+ 或 homebrew python3.12）"],
+                      "只用机器上已有的 3.10+ 解释器"],
         },
     }, ensure_ascii=False))
     sys.exit(1)
@@ -108,7 +108,8 @@ def run_cmd(argv, timeout_s):
         raise DispatchError(
             "missing_tool",
             f"找不到可执行文件：{argv[0]}",
-            ["确认 PATH；Mini 上非交互环境的 PATH 里没有 node，pi 起不来，需显式补 PATH"],
+            ["确认 PATH；某些机器非交互 shell 的 PATH 里没有 node，"
+             "pi 起不来时先确认 PATH 并显式补上"],
         )
     except subprocess.TimeoutExpired:
         raise DispatchError(
@@ -431,7 +432,9 @@ def main(argv=None):
         nonempty = [ln.strip() for ln in text.splitlines() if ln.strip()]
         if not nonempty:
             raise DispatchError("prompt_empty", "提示词文件没有非空行", [])
-        anchor = nonempty[-1]
+        # 锚点 = 提示词第一个非空行的前 24 个字符（不足 24 取整行）。
+        # 目标 TUI 会把提示词回声折叠成「首行 + …」，末行永远看不到，故取首行前缀。
+        anchor = nonempty[0][:24]
         sha = hashlib.sha256(raw).hexdigest()
 
         runs = Path(args.loop_dir) / "runs"
@@ -449,7 +452,8 @@ def main(argv=None):
             raise DispatchError("missing_tool", "PATH 里找不到 hc", [])
         if not pi_bin:
             raise DispatchError("missing_tool", "PATH 里找不到 pi",
-                                ["Mini 上非交互环境的 PATH 里没有 node，需显式补 PATH"])
+                                ["某些机器非交互 shell 的 PATH 里没有 node，"
+                                 "pi 起不来时先确认 PATH 并显式补上"])
 
         # 1) 预检：状态 idle/done + 身份（票面第 2 步；done 时 --if idle 会拒发，
         #    走下面裁定 6 的复核补发路径）。
