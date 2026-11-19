@@ -1,11 +1,11 @@
 ---
 name: loop
-description: 跑一轮分发：把用户已放行的提示词文件发进 herdr 目标会话，等落定、取回原文落盘、pi 提炼成固定 JSON。手里有放行 id、提示词文件和目标终端地址，要发送并取回新结果时用。
+description: 跑一轮分发：把用户已放行的提示词文件发进 herdr 目标会话，等落定、取回原文落盘、pi 抽取成固定 JSON。手里有放行 id、提示词文件和目标终端地址，要发送并取回新结果时用。
 ---
 
-# loop：分发脚本 + pi 提炼
+# loop：分发脚本 + pi 抽取
 
-调用方给出**放行**（用户对提示词全文说「发」，每次放行有唯一 id）、提示词文件、目标终端地址；`scripts/dispatch.py` 做发送、等待、取回、落盘这些机械活，pi 只读原文做**提炼**。异常由脚本直接返回 error，不进 pi。架构见 `docs/adr/0002`，用词见根目录 `GLOSSARY.md`。
+调用方给出**放行**（用户对提示词全文说「发」，每次放行有唯一 id）、提示词文件、目标终端地址；`scripts/dispatch.py` 做发送、等待、取回、落盘这些机械活，pi 只读原文做**抽取**。异常由脚本直接返回 error，不进 pi。架构见 `docs/adr/0002`，用词见根目录 `GLOSSARY.md`。
 
 ## 调用前
 
@@ -23,12 +23,12 @@ uv run --no-python-downloads scripts/dispatch.py \
 
 - 一律用 `uv run` 跑，脚本头部声明了 `requires-python = ">=3.10"`、无第三方依赖。`--no-python-downloads` 保证只用机器上已有的解释器、不下载新 Python；`uv run` 会在 `~/.cache/uv` 建一个很小的 venv，那是它正常的运行环境。解释器低于 3.10 时脚本直接返回 `error(kind=python_too_old)`。
 - `--expect-title` / `--expect-proc`：身份预检，强烈建议都传（如 grok 目标传 `--expect-proc grok`）；不符即拒发。
-- 等待与提炼参数已裁定默认值，一般不用动：墙钟 3600 秒（发送成功起计、不重置）、check-in 180 秒、落定静置 10 秒 × 2 次复核、pi 提炼护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 0`（只取当前屏）。
+- 等待与抽取参数已裁定默认值，一般不用动：墙钟 3600 秒（发送成功起计、不重置）、check-in 180 秒、落定静置 10 秒 × 2 次复核、pi 抽取护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 0`（只取当前屏）。
 - `--loop-dir` 默认 `./.loop`；`--pi-model` 可透传 `pi --model`。
 
 ### 长任务调用方式（必须这样调）
 
-一轮最长可跑「墙钟 3600 秒 + 提炼护栏 1200 秒」约 80 分钟（pi 抽取实测每轮 5–11 分钟），**任何有短超时的包装器都会在到点时把它连同子进程一起杀掉**，留下停在 `phase=waiting` 的台账。所以：
+一轮最长可跑「墙钟 3600 秒 + 抽取护栏 1200 秒」约 80 分钟（pi 抽取实测每轮 5–11 分钟），**任何有短超时的包装器都会在到点时把它连同子进程一起杀掉**，留下停在 `phase=waiting` 的台账。所以：
 
 > **警告：不要用 `hc exec` 跑本脚本**（`hc exec --timeout` 默认 60 秒、上限 600 秒，到点把命令和它启动的一切一起结束）；也不要用调用方自己那个超时不够的 bash 工具同步等。给不了足够超时，就走下面的后台路径。
 
@@ -56,10 +56,10 @@ stdout 恰好一行 JSON，同一字符串同时写入 `.loop/runs/<放行id>.re
 
 - **原文为屏幕逐字读回，制表符按终端制表位展开为空格**（终端渲染所致，非 hc 或脚本改写；读回后无法检测原文是否含 tab）。
 - `complete` / `complete_reason`：脚本的完整性判定。判据两条：`anchor_missing`（**锚点**——提示词第一个非空行的前 24 个字符，不足 24 取整行——在回读里搜不到）、`fold_markers`（回读含 ▲ 或 ▼，目标 TUI 折叠了内容）。锚点取首行前缀是因为目标 TUI 会把提示词回声折叠成「首行 + …」，末行永远看不到。搜索先按字面、再按去空白折叠（屏幕折行、tab 展开成空格）。任一判据命中即落盘后返回 `error(kind=incomplete_result)`，不进 pi；所以成功输出恒 `complete: true`。hc read 自己的 `complete` 字段只记台账，不作判据（对整屏 TUI 目标不可靠）。
-- `elapsed_s`：发送成功到取回落定的秒数，不含提炼。
+- `elapsed_s`：发送成功到取回落定的秒数，不含抽取。
 - `needs_user`（布尔）：pi 判断回复里是否有需要用户决定的事。其余四个文本字段是 pi 从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批请求一个元素，`summary` 关键段，`conclusion` 结论段（无则 `""`），`blocked` 弹框原句（无则 `""`）。
 - `rewritten`：脚本对四个文本字段逐一做原文子串校验（含去空白折叠），搜不到的字段在此标出，值为最接近的原文片段，如 `{"summary": "…"}`；`{}` 表示全部逐字命中。全部搜不到则返回 `error(kind=extraction_rewritten)`。**`rewritten` 非空时，对应字段是 pi 的改写，不可当作原话引用。**
-- **提炼有损**：这些字段只是原文的选段。涉及要不要批准、要不要改接口的判断，必须回看 `run_record` 原文，不能只凭 JSON。
+- **抽取只摘原文片段、不保证覆盖全文**：这些字段只是原文的选段。涉及要不要批准、要不要改接口的判断，必须回看 `run_record` 原文，不能只凭 JSON。
 
 失败（退出码 1；参数错误退出码 2）：
 
@@ -79,8 +79,8 @@ stdout 恰好一行 JSON，同一字符串同时写入 `.loop/runs/<放行id>.re
 | `timeout` | 墙钟到点，目标仍在工作 | 告知用户；原文未取回 |
 | `not_started` / `target_exited` / `target_error` | 发出后未开工 / 程序退出 / 自报 error | 告知用户 |
 | `incomplete_result` | 完整性判据命中 | 原文已落盘，请用户回看 `run_record` |
-| `extraction_rewritten` | 提炼字段全部未通过逐字校验 | 原文已落盘，请用户回看；可人工重做提炼 |
-| `extraction_failed` / `extraction_invalid` / `tool_timeout` | 提炼失败或子进程超护栏 | 原文已落盘，可人工重做提炼 |
+| `extraction_rewritten` | 抽取字段全部未通过逐字校验 | 原文已落盘，请用户回看；可人工重做抽取 |
+| `extraction_failed` / `extraction_invalid` / `tool_timeout` | 抽取失败或子进程超护栏 | 原文已落盘，可人工重做抽取 |
 
 拿到任一返回后，把内容整理成**选项卡**交给用户；原文不直接转给用户。
 
