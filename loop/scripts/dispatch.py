@@ -24,6 +24,10 @@ hc read → 完整性检查 → 原文逐字落盘 → pi 提炼 → 合并成�
   - 提炼字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
     全部搜不到则 error(extraction_rewritten)。
 
+交付：stdout 一行 JSON，同一字符串同时写 .loop/runs/<放行id>.result.json
+（成功与 error 都写）。台账记过程，结果文件记最终交付，重发拒绝仍以台账为准。
+长任务须用 `hc run --bg` 跑、`hc wait` 等（见 SKILL.md），不要用 hc exec。
+
 已裁定默认值（issue #16，2026-11-19）：墙钟 3600s（发送成功起计、不重置）、
 check-in 180s、落定静置 10s × 2 次、pi 提炼护栏 1200s、hc read --lines 0。
 """
@@ -156,6 +160,18 @@ def write_json_atomic(path, obj):
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def emit_result(obj, result_path):
+    """stdout 一行 JSON；同一字符串再写一份到结果文件（最终交付，逐字一致）。"""
+    line = json.dumps(obj, ensure_ascii=False)
+    if result_path is not None:
+        try:
+            result_path.parent.mkdir(parents=True, exist_ok=True)
+            result_path.write_text(line + "\n", encoding="utf-8", newline="")
+        except OSError as e:
+            sys.stderr.write("[dispatch] 结果文件写入失败：%s\n" % e)
+    print(line)
 
 
 def verbatim_present(value, text):
@@ -416,6 +432,7 @@ def main(argv=None):
     args = parse_args(argv)
     ledger = None
     ledger_path = None
+    result_path = None
     started = None
     try:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.release_id):
@@ -440,6 +457,9 @@ def main(argv=None):
         runs = Path(args.loop_dir) / "runs"
         record_path = runs / f"{args.release_id}.md"
         ledger_path = runs / f"{args.release_id}.json"
+        # 结果文件是最终交付（成功与 error 都写），台账记过程；
+        # 重发拒绝仍只看台账/原文落盘，结果文件存在不单独拦截。
+        result_path = runs / f"{args.release_id}.result.json"
         if ledger_path.exists() or record_path.exists():
             raise DispatchError(
                 "duplicate_release",
@@ -588,7 +608,7 @@ def main(argv=None):
         }
         ledger.update(phase="done", done_at=now_iso())
         write_json_atomic(ledger_path, ledger)
-        print(json.dumps(result, ensure_ascii=False))
+        emit_result(result, result_path)
         return 0
     except DispatchError as e:
         if ledger is not None and ledger_path is not None:
@@ -603,7 +623,7 @@ def main(argv=None):
             out["error"]["elapsed_s"] = round(time.monotonic() - started, 1)
         if ledger is not None and ledger.get("run_record"):
             out["error"]["run_record"] = ledger["run_record"]
-        print(json.dumps(out, ensure_ascii=False))
+        emit_result(out, result_path)
         return 1
 
 

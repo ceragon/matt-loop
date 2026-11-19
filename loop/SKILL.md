@@ -25,11 +25,26 @@ uv run --no-python-downloads scripts/dispatch.py \
 - `--expect-title` / `--expect-proc`：身份预检，强烈建议都传（如 grok 目标传 `--expect-proc grok`）；不符即拒发。
 - 等待与提炼参数已裁定默认值，一般不用动：墙钟 3600 秒（发送成功起计、不重置）、check-in 180 秒、落定静置 10 秒 × 2 次复核、pi 提炼护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 0`（只取当前屏）。
 - `--loop-dir` 默认 `./.loop`；`--pi-model` 可透传 `pi --model`。
-- 一轮最长跑「墙钟上限 + 提炼护栏」这么久；期间不要重复调用。
+
+### 长任务调用方式（必须这样调）
+
+一轮最长可跑「墙钟 3600 秒 + 提炼护栏 1200 秒」约 80 分钟（pi 抽取实测每轮 5–11 分钟），**任何有短超时的包装器都会在到点时把它连同子进程一起杀掉**，留下停在 `phase=waiting` 的台账。所以：
+
+> **警告：不要用 `hc exec` 跑本脚本**（`hc exec --timeout` 默认 60 秒、上限 600 秒，到点把命令和它启动的一切一起结束）；也不要用调用方自己那个超时不够的 bash 工具同步等。给不了足够超时，就走下面的后台路径。
+
+用 hc 手册推荐的「后台跑 + 等结束 + 读结果文件」两步：
+
+```bash
+hc run --bg --name loop-<放行id> uv run --no-python-downloads scripts/dispatch.py \
+  --target <终端地址> --release-id <放行id> --prompt-file <提示词文件> ...
+hc wait loop-<放行id>
+```
+
+`hc wait` 返回后读 `.loop/runs/<放行id>.result.json` 收集结果（与 stdout 那行 JSON 逐字一致）。等与读都认 `--name` 给的同一个名字，期间不要用同 id 重复调用。
 
 ## 返回契约
 
-stdout 恰好一行 JSON。成功（退出码 0）：
+stdout 恰好一行 JSON，同一字符串同时写入 `.loop/runs/<放行id>.result.json`（成功与 error 都写，逐字一致；该文件是**最终交付**）。成功（退出码 0）：
 
 ```json
 {"ok": true, "target": "t7", "turn": 3, "status": "idle",
@@ -72,7 +87,8 @@ stdout 恰好一行 JSON。成功（退出码 0）：
 ## 本地记录
 
 - `.loop/runs/<放行id>.md`：**原文落盘**，屏幕逐字读回，无任何添加。
-- `.loop/runs/<放行id>.json`：台账。先记账后发送；记录 sha256、发送/等待/读取元信息、逐字校验结果、阶段与错误。台账存在即拒绝同 id 重发——一个放行只跑一轮，至多发送成功一次。
+- `.loop/runs/<放行id>.json`：**台账**，记过程。先记账后发送；记录 sha256、发送/等待/读取元信息、逐字校验结果、阶段与错误。台账存在即拒绝同 id 重发——一个放行只跑一轮，至多发送成功一次。
+- `.loop/runs/<放行id>.result.json`：**最终交付**，成功与 error 都写，内容与 stdout 那行逐字一致。后台调用就靠读它收结果。它存在不单独拦截重发，重发拒绝仍以台账为准。例外：放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout——没有可安全落盘的文件名。
 
 ## 机械保证（脚本兜底，调用方无需自查）
 
