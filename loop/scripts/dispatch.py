@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """dispatch.py — loop skill 的分发脚本（ADR-0002，方案 C）。
+
+运行方式：uv run --no-python-downloads scripts/dispatch.py …
+（只用机器上已有的解释器；uv 会在 ~/.cache/uv 建一个很小的 venv，属正常运行环境。）
 
 机械活：读放行提示词 → 核对目标 → hc send --if idle → hc wait 循环 →
 hc read → 完整性检查 → 原文逐字落盘 → pi 提炼 → 合并成一行 JSON。
@@ -32,6 +39,20 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+# 版本门：写成 3.9 也能解析的形式。低于 3.10 直接返回 error，
+# 不进入流程（3.9 的 Path.write_text 没有 newline 参数，会在落盘时半路崩）。
+if sys.version_info < (3, 10):
+    print(json.dumps({
+        "ok": False,
+        "error": {
+            "kind": "python_too_old",
+            "message": "需要 Python >= 3.10，当前 %d.%d.%d" % sys.version_info[:3],
+            "hints": ["用 uv run --no-python-downloads scripts/dispatch.py 运行，"
+                      "只用机器上已有的解释器（如 uv 管理的 3.10+ 或 homebrew python3.12）"],
+        },
+    }, ensure_ascii=False))
+    sys.exit(1)
 
 # 机械护栏（非等待策略，不属待拍板项）：
 # hc send 会等人未写完的草稿（draft_wait 默认 60 秒），护栏须大于它。

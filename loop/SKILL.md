@@ -11,16 +11,17 @@ description: 跑一轮分发：把用户已放行的提示词文件发进 herdr 
 
 1. 提示词全文已经用户放行，拿到唯一放行 id。对内容方向说「行」不算放行。
 2. 提示词已写成 UTF-8 文件，放行后一字未改（脚本会核对 sha256，改动即拒发）。
-3. 本机 `hc`、`pi` 可用。Mini 上非交互环境的 PATH 里没有 node，起 pi 前需显式补 PATH。
+3. 本机 `hc`、`pi`、`uv` 可用，且机器上已装有 Python ≥ 3.10 的解释器（脚本要求 `>=3.10`）。Mini 上非交互环境的 PATH 里没有 node，起 pi 前需显式补 PATH。
 
 ## 调用
 
 ```bash
-python3 scripts/dispatch.py \
+uv run --no-python-downloads scripts/dispatch.py \
   --target <终端地址> --release-id <放行id> --prompt-file <提示词文件> \
   --expect-title <标题子串> --expect-proc <前台进程名子串>
 ```
 
+- 一律用 `uv run` 跑，脚本头部声明了 `requires-python = ">=3.10"`、无第三方依赖。`--no-python-downloads` 保证只用机器上已有的解释器、不下载新 Python；`uv run` 会在 `~/.cache/uv` 建一个很小的 venv，那是它正常的运行环境。解释器低于 3.10 时脚本直接返回 `error(kind=python_too_old)`。
 - `--expect-title` / `--expect-proc`：身份预检，强烈建议都传（如 grok 目标传 `--expect-proc grok`）；不符即拒发。
 - 等待与提炼参数已裁定默认值，一般不用动：墙钟 3600 秒（发送成功起计、不重置）、check-in 180 秒、落定静置 10 秒 × 2 次复核、pi 提炼护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 0`（只取当前屏）。
 - `--loop-dir` 默认 `./.loop`；`--pi-model` 可透传 `pi --model`。
@@ -55,6 +56,7 @@ stdout 恰好一行 JSON。成功（退出码 0）：
 
 | kind | 含义 | 调用方动作 |
 | --- | --- | --- |
+| `python_too_old` | 解释器低于 3.10，未进入流程 | 改用 `uv run --no-python-downloads` 调用 |
 | `duplicate_release` | 该放行 id 已有台账/落盘 | 查台账；重发须用户重新放行、新 id |
 | `not_idle` / `identity_mismatch` | 预检不过，未发送 | 整理成选项卡告知用户 |
 | `send_refused` | hc 拒发且 done 补发路径不适用或仍失败，未打入 | 同上 |
