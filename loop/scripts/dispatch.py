@@ -24,7 +24,11 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
     永不 --force，不碰 hc keys。
   - 发送前核对目标身份（--expect-title / --expect-proc，可选但强烈建议传）。
   - 台账记录实际发出内容的 sha256，成功输出也带 prompt_sha256。
-  - 完整性判据（锚点 + 折叠标记）命中即 error，不进 pi；原文照常落盘。
+  - 完整性判据：折叠标记（▲▼）命中即 error，不进 pi；原文照常落盘。锚点（提示词
+    回声首行前缀）只作信息 anchor_found、不阻断——检查在 turn>基线＋落定之后，
+    长任务回声滚出当前屏是常态，回复仍在屏底。
+  - 工具定位：hc/pi/uv 先 shutil.which，PATH 找不到时自动探常见目录（~/.local/bin、
+    homebrew、nvm node bin），后台 job 缺 PATH 也能起。
   - 抽取字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
     全部搜不到则 error(extraction_rewritten)。reply 干净全文先整体、再逐行校验，
     未过逐字校验的行标 rewritten["reply"]。
@@ -70,14 +74,40 @@ def validate_task_name(name: str) -> None:
     if not TASK_NAME_RE.match(name) or RESERVED_ID_RE.match(name):
         raise DispatchError("bad_task_name", f"任务名不合法：{name}", ["使用自动生成的短名称"])
 
+def default_tool_dirs():
+    """PATH 之外的常见工具目录：后台 job 常缺 PATH（pi 在 nvm node bin、hc 在 ~/.local/bin）。
+    只用通用位置，不含机器专属路径。"""
+    home = Path.home()
+    dirs = [home / ".local/bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")]
+    nvm = home / ".nvm/versions/node"
+    if nvm.is_dir():
+        dirs += sorted(nvm.glob("*/bin"))
+    return dirs
+
+
+def find_tool(name, probe_dirs=None):
+    """先 shutil.which（尊重显式 PATH）；找不到再探常见目录。probe_dirs 可覆盖供测试。
+    返回可执行文件路径或 None。"""
+    p = shutil.which(name)
+    if p:
+        return p
+    dirs = default_tool_dirs() if probe_dirs is None else probe_dirs
+    for d in dirs:
+        cand = Path(d) / name
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
 def check_structure_and_tools():
     script_dir = Path(__file__).resolve().parent
     extract_md = script_dir.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_structure", f"找不到 {extract_md}", [])
     for tool in ("hc", "pi", "uv"):
-        if not shutil.which(tool):
-            raise DispatchError("missing_tool", f"找不到 {tool}", ["确认 PATH"])
+        if not find_tool(tool):
+            raise DispatchError("missing_tool", f"找不到 {tool}",
+                                ["确认 PATH；脚本也会探 ~/.local/bin、homebrew、nvm node bin"])
 
 
 # 版本门：写成 3.9 也能解析的形式。低于 3.10 直接返回 error，
@@ -645,14 +675,14 @@ def main(argv=None):
                 f"放行 id {args.release_id} 已有台账或原文落盘，一个放行只跑一轮",
                 ["查看台账确认上次结果；要重发须经用户重新放行、用新 id"],
             )
-        hc_bin = shutil.which("hc")
-        pi_bin = shutil.which("pi")
+        hc_bin = find_tool("hc")
+        pi_bin = find_tool("pi")
         if not hc_bin:
-            raise DispatchError("missing_tool", "PATH 里找不到 hc", [])
+            raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 hc", [])
         if not pi_bin:
-            raise DispatchError("missing_tool", "PATH 里找不到 pi",
-                                ["某些机器非交互 shell 的 PATH 里没有 node，"
-                                 "pi 起不来时先确认 PATH 并显式补上"])
+            raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 pi",
+                                ["某些机器非交互 shell 的 PATH 里没有 node；"
+                                 "脚本已探 ~/.local/bin、homebrew、nvm node bin 仍未果"])
 
         # 1) 预检：状态 idle/done + 身份（票面第 2 步；done 时 --if idle 会拒发，
         #    走下面裁定 6 的复核补发路径）。
@@ -720,9 +750,12 @@ def main(argv=None):
         # 5) 取回当前屏 + 完整性检查。
         read = hc_json(hc_bin, ["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)
         screen = read["text"]
+        # 锚点（提示词回声首行前缀）只作信息、不阻断：本步已在 turn>基线＋落定之后，
+        # 本轮确已被处理；长任务跑完提示词回声滚出当前屏（--lines 0）是常态，
+        # 回复仍在屏底，锚点搜不到不代表回复不完整（PAW 实测多次误判后降级）。
+        anchor_found = verbatim_present(anchor, screen)
+        # 折叠标记仍是硬判据：▲▼ 说明目标 TUI 藏了内容，当前屏看不到完整回复。
         reasons = []
-        if not verbatim_present(anchor, screen):
-            reasons.append("anchor_missing")
         if "▲" in screen or "▼" in screen:
             reasons.append("fold_markers")
         complete = not reasons
@@ -735,12 +768,12 @@ def main(argv=None):
             turn=final.get("turn"), status=status_state(final),
             elapsed_s=elapsed, chars=len(screen),
             hc_read={"complete": read.get("complete"), "how": read.get("how"), "why": read.get("why")},
-            complete=complete, complete_reason=reasons,
+            complete=complete, complete_reason=reasons, anchor_found=anchor_found,
             run_record=str(raw_path), raw_record=str(raw_path),
         )
         write_json_atomic(ledger_path, ledger)
 
-        # 裁定 A1：判据命中即 error，不进 pi；原文已照常落盘。
+        # 折叠判据命中即 error，不进 pi；原文已照常落盘。锚点缺失只记信息、不阻断。
         if not complete:
             raise DispatchError(
                 "incomplete_result",
@@ -771,6 +804,7 @@ def main(argv=None):
             "status": status_state(final),
             "complete": complete,
             "complete_reason": reasons,
+            "anchor_found": anchor_found,
             "elapsed_s": elapsed,
             "chars": len(screen),
             "run_record": str(record_path),
