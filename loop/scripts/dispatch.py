@@ -9,8 +9,9 @@
 （只用机器上已有的解释器；uv 会在 ~/.cache/uv 建一个很小的 venv，属正常运行环境。）
 
 机械活：读放行提示词 → 核对目标 → hc send --if idle → hc wait 循环 →
-hc read → 完整性检查 → 原文逐字落盘 → pi 抽取 → 合并成一行 JSON。
-异常直接返回 error（退出码非零），不进 pi。只用 Python 标准库。
+hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干净全文 reply 落盘 .md
+＋抽取选段字段 → 合并成一行 JSON。异常直接返回 error（退出码非零），不进 pi。
+只用 Python 标准库。
 
 机械保证（不靠提示词）：
   - 原文照发：文件内容一字不改地作为 hc send 的位置参数。
@@ -22,10 +23,13 @@ hc read → 完整性检查 → 原文逐字落盘 → pi 抽取 → 合并成�
   - 台账记录实际发出内容的 sha256，成功输出也带 prompt_sha256。
   - 完整性判据（锚点 + 折叠标记）命中即 error，不进 pi；原文照常落盘。
   - 抽取字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
-    全部搜不到则 error(extraction_rewritten)。
+    全部搜不到则 error(extraction_rewritten)。reply 干净全文先整体、再逐行校验，
+    未过逐字校验的行标 rewritten["reply"]。
 
 交付：stdout 一行 JSON，同一字符串同时写 .loop/runs/<放行id>.result.json
-（成功与 error 都写）。台账记过程，结果文件记最终交付，重发拒绝仍以台账为准。
+（成功与 error 都写）。run_record 指 pi 裁剪后的干净全文 .md（回看对象），
+raw_record 指整屏原料 .raw.md（审计）。台账记过程，结果文件记最终交付，
+重发拒绝仍以台账为准。
 长任务须用 `hc run --bg` 跑、`hc wait` 等（见 SKILL.md），不要用 hc exec。
 
 已裁定默认值（issue #16，2026-11-19）：墙钟 3600s（发送成功起计、不重置）、
@@ -91,7 +95,7 @@ WAIT_GUARD_MARGIN_S = 30.0
 # 裁定 A3：只取当前屏。对 grok，--lines > 0 时 hc 的 complete 恒 false，语义失真。
 READ_LINES = 0
 
-EXTRACT_FIELDS = ("needs_user", "questions", "summary", "conclusion", "blocked")
+EXTRACT_FIELDS = ("needs_user", "questions", "summary", "conclusion", "blocked", "reply")
 
 
 class DispatchError(Exception):
@@ -221,7 +225,7 @@ def closest_fragment(value, text):
     return best
 
 
-def verify_extraction(ext, screen, record_path):
+def verify_extraction(ext, screen, raw_path):
     """裁定 C：questions/conclusion/summary/blocked 全部逐字摘原文。
     对每个非空字段值做子串校验；搜不到的标 rewritten 并附最接近片段；
     全部搜不到则 error。needs_user 是唯一的布尔判断字段，不参与校验。"""
@@ -240,10 +244,21 @@ def verify_extraction(ext, screen, record_path):
         raise DispatchError(
             "extraction_rewritten",
             "抽取字段全部未通过逐字校验：pi 在改写而不是抽取",
-            [f"原文已落盘：{record_path}",
+            [f"整屏原文已落盘：{raw_path}",
              "最接近的原文片段：" + json.dumps(rewritten, ensure_ascii=False)[:300]],
         )
     return rewritten
+
+
+def verify_reply(reply, screen):
+    """reply 是 pi 裁剪后的干净全文。先整体子串校验（回复本是连续整块时最强）；
+    不中再逐行校验（允许删掉穿插的杂物行）。返回未过逐字校验的行列表，全过返回 []。"""
+    if not reply.strip():
+        return ["(reply 为空)"]
+    if verbatim_present(reply, screen):
+        return []
+    return [ln for ln in reply.splitlines()
+            if ln.strip() and not verbatim_present(ln, screen)]
 
 
 def check_identity(terminal, args):
@@ -374,6 +389,7 @@ def parse_extraction(stdout):
             and all(isinstance(q, str) for q in obj["questions"])
             and isinstance(obj.get("summary"), str)
             and isinstance(obj.get("conclusion"), str)
+            and isinstance(obj.get("reply"), str)
         ):
             return {k: obj[k] for k in EXTRACT_FIELDS}
     raise DispatchError(
@@ -383,14 +399,14 @@ def parse_extraction(stdout):
     )
 
 
-def extract(pi_bin, args, record_path):
+def extract(pi_bin, args, raw_path):
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
     instruction = (
-        "原文已随消息附上（@文件）。按系统提示词抽取，"
-        "只输出一个 JSON 对象，含 needs_user、questions、summary、conclusion、blocked 五个字段。"
-        f'原文落盘路径：{record_path}'
+        "整屏原文已随消息附上（@文件）。按系统提示词裁剪并抽取，"
+        "只输出一个 JSON 对象，含 needs_user、reply、questions、summary、conclusion、blocked 六个字段。"
+        f'整屏原文落盘路径：{raw_path}'
     )
     argv = [
         pi_bin, "-p",
@@ -400,7 +416,7 @@ def extract(pi_bin, args, record_path):
     ]
     if args.pi_model:
         argv += ["--model", args.pi_model]
-    argv += ["--", f"@{record_path}", instruction]
+    argv += ["--", f"@{raw_path}", instruction]
     p = run_cmd(argv, args.extract_timeout)
     if p.returncode != 0:
         raise DispatchError(
@@ -481,12 +497,14 @@ def main(argv=None):
         sha = hashlib.sha256(raw).hexdigest()
 
         runs = Path(args.loop_dir) / "runs"
+        # raw_path = 整屏原料（审计）；record_path = pi 裁剪后的干净全文（回看对象）。
+        raw_path = runs / f"{args.release_id}.raw.md"
         record_path = runs / f"{args.release_id}.md"
         ledger_path = runs / f"{args.release_id}.json"
         # 结果文件是最终交付（成功与 error 都写），台账记过程；
-        # 重发拒绝仍只看台账/原文落盘，结果文件存在不单独拦截。
+        # 重发拒绝仍只看台账/整屏原料落盘，结果文件存在不单独拦截。
         result_path = runs / f"{args.release_id}.result.json"
-        if ledger_path.exists() or record_path.exists():
+        if ledger_path.exists() or raw_path.exists():
             raise DispatchError(
                 "duplicate_release",
                 f"放行 id {args.release_id} 已有台账或原文落盘，一个放行只跑一轮",
@@ -593,15 +611,15 @@ def main(argv=None):
         complete = not reasons
         elapsed = round(time.monotonic() - started, 1)
 
-        # 5) 原文逐字落盘（不加任何头尾），台账记读取元信息。
-        record_path.write_text(screen, encoding="utf-8", newline="")
+        # 5) 整屏原料逐字落盘（不加任何头尾），台账记读取元信息。
+        raw_path.write_text(screen, encoding="utf-8", newline="")
         ledger.update(
             phase="read", read_at=now_iso(),
             turn=final.get("turn"), status=status_state(final),
             elapsed_s=elapsed, chars=len(screen),
             hc_read={"complete": read.get("complete"), "how": read.get("how"), "why": read.get("why")},
             complete=complete, complete_reason=reasons,
-            run_record=str(record_path),
+            run_record=str(raw_path), raw_record=str(raw_path),
         )
         write_json_atomic(ledger_path, ledger)
 
@@ -610,15 +628,22 @@ def main(argv=None):
             raise DispatchError(
                 "incomplete_result",
                 "完整性判据命中：" + "、".join(reasons),
-                [f"原文已落盘：{record_path}", "请用户回看原文；不按键、不自动补发"],
+                [f"整屏原文已落盘：{raw_path}", "请用户回看原文；不按键、不自动补发"],
             )
 
-        # 6) pi 抽取 + 逐字校验（裁定 C），合并输出。
+        # 6) pi 裁剪 + 抽取 + 逐字校验（裁定 C），合并输出。
         ledger.update(phase="extracting")
         write_json_atomic(ledger_path, ledger)
-        ext = extract(pi_bin, args, record_path)
-        rewritten = verify_extraction(ext, screen, record_path)
-        ledger.update(rewritten=rewritten)
+        ext = extract(pi_bin, args, raw_path)
+        reply = ext.pop("reply")
+        rewritten = verify_extraction(ext, screen, raw_path)
+        bad_reply_lines = verify_reply(reply, screen)
+        if bad_reply_lines:
+            rewritten["reply"] = closest_fragment(bad_reply_lines[0], screen)
+        # 干净全文落盘为回看对象；整屏原料另存审计。
+        record_path.write_text(reply, encoding="utf-8", newline="")
+        ledger.update(rewritten=rewritten, run_record=str(record_path),
+                      reply_chars=len(reply), reply_bad_lines=len(bad_reply_lines))
         result = {
             "ok": True,
             "phase": "done",
@@ -631,6 +656,7 @@ def main(argv=None):
             "elapsed_s": elapsed,
             "chars": len(screen),
             "run_record": str(record_path),
+            "raw_record": str(raw_path),
             "prompt_sha256": sha,
             "rewritten": rewritten,
             **ext,

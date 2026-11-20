@@ -1,11 +1,11 @@
 ---
 name: loop
-description: 跑一轮分发：把用户已放行的提示词文件发进 herdr 目标会话，等落定、取回原文落盘、pi 抽取成固定 JSON。手里有放行 id、提示词文件和目标终端地址，要发送并取回新结果时用。
+description: 跑一轮分发：把用户已放行的提示词文件发进 herdr 目标会话，等落定、取回整屏落盘、pi 裁剪出干净回复全文并抽取成固定 JSON。手里有放行 id、提示词文件和目标终端地址，要发送并取回新结果时用。
 ---
 
 # loop：分发脚本 + pi 抽取
 
-调用方给出**放行**（用户对提示词全文说「发」，每次放行有唯一 id）、提示词文件、目标终端地址；`scripts/dispatch.py` 做发送、等待、取回、落盘这些机械活，pi 只读原文做**抽取**。异常由脚本直接返回 error，不进 pi。架构见 `docs/adr/0002`，用词见根目录 `GLOSSARY.md`。
+调用方给出**放行**（用户对提示词全文说「发」，每次放行有唯一 id）、提示词文件、目标终端地址；`scripts/dispatch.py` 做发送、等待、取回、落盘这些机械活，pi 读整屏原料做**裁剪＋抽取**（裁出干净回复全文、摘选段字段）。异常由脚本直接返回 error，不进 pi。架构见 `docs/adr/0002`，用词见根目录 `GLOSSARY.md`。
 
 ## 调用前
 
@@ -50,16 +50,17 @@ stdout 恰好一行 JSON，同一字符串同时写入 `.loop/runs/<放行id>.re
 {"ok": true, "target": "t7", "turn": 3, "status": "idle",
  "complete": true, "complete_reason": [],
  "elapsed_s": 690.5, "chars": 1834,
- "run_record": ".loop/runs/<放行id>.md", "prompt_sha256": "…", "rewritten": {},
+ "run_record": ".loop/runs/<放行id>.md", "raw_record": ".loop/runs/<放行id>.raw.md",
+ "prompt_sha256": "…", "rewritten": {},
  "needs_user": false, "questions": [], "summary": "…", "conclusion": "…", "blocked": ""}
 ```
 
-- **原文为屏幕逐字读回，制表符按终端制表位展开为空格**（终端渲染所致，非 hc 或脚本改写；读回后无法检测原文是否含 tab）。
+- **`raw_record`（`.raw.md`）是整屏原料，屏幕逐字读回，制表符按终端制表位展开为空格**（终端渲染所致，非 hc 或脚本改写；读回后无法检测原文是否含 tab）。`run_record`（`.md`）是 pi 从整屏**裁剪出的干净回复全文**（剔掉 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏），逐字保留回复正文，是调用方回看的对象。error 时尚无干净全文，`run_record` 退回指整屏原料。
 - `complete` / `complete_reason`：脚本的完整性判定。判据两条：`anchor_missing`（**锚点**——提示词第一个非空行的前 24 个字符，不足 24 取整行——在回读里搜不到）、`fold_markers`（回读含 ▲ 或 ▼，目标 TUI 折叠了内容）。锚点取首行前缀是因为目标 TUI 会把提示词回声折叠成「首行 + …」，末行永远看不到。搜索先按字面、再按去空白折叠（屏幕折行、tab 展开成空格）。任一判据命中即落盘后返回 `error(kind=incomplete_result)`，不进 pi；所以成功输出恒 `complete: true`。hc read 自己的 `complete` 字段只记台账，不作判据（对整屏 TUI 目标不可靠）。
 - `elapsed_s`：发送成功到取回落定的秒数，不含抽取。
-- `needs_user`（布尔）：pi 判断回复里是否有需要用户决定的事。其余四个文本字段是 pi 从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批请求一个元素，`summary` 关键段，`conclusion` 结论段（无则 `""`），`blocked` 弹框原句（无则 `""`）。
-- `rewritten`：脚本对四个文本字段逐一做原文子串校验（含去空白折叠），搜不到的字段在此标出，值为最接近的原文片段，如 `{"summary": "…"}`；`{}` 表示全部逐字命中。全部搜不到则返回 `error(kind=extraction_rewritten)`。**`rewritten` 非空时，对应字段是 pi 的改写，不可当作原话引用。**
-- **抽取只摘原文片段、不保证覆盖全文**：这些字段只是原文的选段。涉及要不要批准、要不要改接口的判断，必须回看 `run_record` 原文，不能只凭 JSON。
+- `needs_user`（布尔）：pi 判断回复里是否有需要用户决定的事。四个选段字段是 pi 从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批请求一个元素（**问题＋选项＋推荐整块**），`summary` 关键段，`conclusion` 结论段（无则 `""`），`blocked` 弹框原句（无则 `""`）。干净全文 `reply` 不放进本 JSON，落在 `run_record`（`.md`）。
+- `rewritten`：脚本对四个选段字段逐一做原文子串校验（含去空白折叠），搜不到的字段在此标出，值为最接近的原文片段，如 `{"summary": "…"}`；`{}` 表示全部逐字命中。全部搜不到则返回 `error(kind=extraction_rewritten)`。`reply` 先整体、再逐行校验，未过逐字校验时标 `rewritten["reply"]`。**`rewritten` 非空时，对应字段是 pi 的改写，不可当作原话引用；`reply` 被标时回看 `raw_record`。**
+- **四个选段字段只摘原文片段、不保证覆盖全文**；完整干净回复在 `run_record`。涉及要不要批准、要不要改接口的判断，必须回看 `run_record`（pi 裁剪后的干净全文），不能只凭 JSON 选段。
 
 失败（退出码 1；参数错误退出码 2）：
 
@@ -86,7 +87,8 @@ stdout 恰好一行 JSON，同一字符串同时写入 `.loop/runs/<放行id>.re
 
 ## 本地记录
 
-- `.loop/runs/<放行id>.md`：**原文落盘**，屏幕逐字读回，无任何添加。
+- `.loop/runs/<放行id>.raw.md`：**整屏原料**，屏幕逐字读回，无任何添加（审计）。
+- `.loop/runs/<放行id>.md`：**干净回复全文**，pi 从整屏裁剪而来（逐字保留回复正文、剔掉界面杂物），是回看对象 `run_record`。
 - `.loop/runs/<放行id>.json`：**台账**，记过程。先记账后发送；记录 sha256、发送/等待/读取元信息、逐字校验结果、阶段与错误。台账存在即拒绝同 id 重发——一个放行只跑一轮，至多发送成功一次。
 - `.loop/runs/<放行id>.result.json`：**最终交付**，成功与 error 都写，内容与 stdout 那行逐字一致。后台调用就靠读它收结果。它存在不单独拦截重发，重发拒绝仍以台账为准。例外：放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout——没有可安全落盘的文件名。
 
