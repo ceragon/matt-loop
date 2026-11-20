@@ -44,6 +44,29 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# hc 任务名规则
+TASK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+RESERVED_ID_RE = re.compile(r"^t\d+$")
+
+def generate_short_task_name(release_id: str) -> str:
+    h = hashlib.sha256(release_id.encode("utf-8")).hexdigest()[:8]
+    name = f"loop-{h}"
+    return name[:32]
+
+def validate_task_name(name: str) -> None:
+    if not TASK_NAME_RE.match(name) or RESERVED_ID_RE.match(name):
+        raise DispatchError("bad_task_name", f"任务名不合法：{name}", ["使用自动生成的短名称"])
+
+def check_structure_and_tools():
+    script_dir = Path(__file__).resolve().parent
+    extract_md = script_dir.parent / "prompts" / "extract.md"
+    if not extract_md.is_file():
+        raise DispatchError("missing_structure", f"找不到 {extract_md}", [])
+    for tool in ("hc", "pi", "uv"):
+        if not shutil.which(tool):
+            raise DispatchError("missing_tool", f"找不到 {tool}", ["确认 PATH"])
+
+
 # 版本门：写成 3.9 也能解析的形式。低于 3.10 直接返回 error，
 # 不进入流程（3.9 的 Path.write_text 没有 newline 参数，会在落盘时半路崩）。
 if sys.version_info < (3, 10):
@@ -435,8 +458,11 @@ def main(argv=None):
     result_path = None
     started = None
     try:
+        check_structure_and_tools()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.release_id):
             raise DispatchError("bad_release_id", "放行 id 只允许字母数字与 ._-，且不以符号开头", [])
+        task_name = generate_short_task_name(args.release_id)
+        validate_task_name(task_name)
         prompt_path = Path(args.prompt_file)
         try:
             raw = prompt_path.read_bytes()
@@ -495,6 +521,7 @@ def main(argv=None):
         runs.mkdir(parents=True, exist_ok=True)
         ledger = {
             "release_id": args.release_id,
+            "task_name": task_name,
             "target": args.target,
             "prompt_path": str(prompt_path),
             "prompt_sha256": sha,
@@ -548,7 +575,7 @@ def main(argv=None):
                                     e2.hints + ["本轮不再发送；台账已记录两次尝试"])
             resent = True
         baseline = send["turn"]
-        ledger.update(phase="waiting", sent_at=now_iso(), send=send, resent=resent)
+        ledger.update(phase="sent_waiting", sent_at=now_iso(), send=send, resent=resent)
         write_json_atomic(ledger_path, ledger)
 
         # 3) 等待落定（墙钟从发送成功起计）。
@@ -594,6 +621,8 @@ def main(argv=None):
         ledger.update(rewritten=rewritten)
         result = {
             "ok": True,
+            "phase": "done",
+            "task_name": task_name,
             "target": args.target,
             "turn": final.get("turn"),
             "status": status_state(final),
