@@ -37,7 +37,7 @@ def run_round(screen, rid):
         fake.screen = screen
         dispatch.hc_json = fake
         dispatch.extract = lambda pi_bin, args, raw_path: {
-            "needs_user": False, "questions": [], "summary": "",
+            "needs_user": False, "questions": [],
             "conclusion": "", "blocked": "", "reply": screen}
         dispatch.check_structure_and_tools = lambda: None
         dispatch.shutil.which = lambda name: "/fake/" + name
