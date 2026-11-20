@@ -22,7 +22,7 @@ import dispatch  # noqa: E402
 PROMPT = "请实现某个功能\n第二行说明"
 ANCHOR = PROMPT.splitlines()[0][:24]
 SCREEN = ANCHOR + "\n已完成该功能。"
-EXT = {"needs_user": False, "questions": [], "summary": "",
+EXT = {"needs_user": False, "questions": [],
        "conclusion": "", "blocked": "", "reply": SCREEN}
 
 

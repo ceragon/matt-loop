@@ -158,7 +158,9 @@ RESET_POLL_S = 2.0
 # 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
 WEBHOOK_TIMEOUT_S = 10.0
 
-EXTRACT_FIELDS = ("needs_user", "questions", "summary", "conclusion", "blocked", "reply")
+# summary 已移除（原文才是重点）：pi 若仍多给 summary，投影时直接丢弃，
+# 不算坏行、不进 rewritten。
+EXTRACT_FIELDS = ("needs_user", "questions", "conclusion", "blocked", "reply")
 
 
 class DispatchError(Exception):
@@ -316,11 +318,10 @@ def closest_fragment(value, text):
 
 
 def verify_extraction(ext, screen, raw_path):
-    """裁定 C：questions/conclusion/summary/blocked 全部逐字摘原文。
+    """裁定 C：questions/conclusion/blocked 全部逐字摘原文。
     对每个非空字段值做子串校验；搜不到的标 rewritten 并附最接近片段；
     全部搜不到则 error。needs_user 是唯一的布尔判断字段，不参与校验。"""
-    checks = [("summary", ext["summary"]), ("conclusion", ext["conclusion"]),
-              ("blocked", ext["blocked"])]
+    checks = [("conclusion", ext["conclusion"]), ("blocked", ext["blocked"])]
     checks += [(f"questions[{i}]", q) for i, q in enumerate(ext["questions"])]
     rewritten = {}
     checked = 0
@@ -561,7 +562,6 @@ def parse_extraction(stdout):
             and isinstance(obj.get("blocked"), str)
             and isinstance(obj.get("questions"), list)
             and all(isinstance(q, str) for q in obj["questions"])
-            and isinstance(obj.get("summary"), str)
             and isinstance(obj.get("conclusion"), str)
             and isinstance(obj.get("reply"), str)
         ):
@@ -579,7 +579,7 @@ def extract(pi_bin, args, raw_path):
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
     instruction = (
         "整屏原文已随消息附上（@文件）。按系统提示词裁剪并抽取，"
-        "只输出一个 JSON 对象，含 needs_user、reply、questions、summary、conclusion、blocked 六个字段。"
+        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked 五个字段。"
         f'整屏原文落盘路径：{raw_path}'
     )
     argv = [
