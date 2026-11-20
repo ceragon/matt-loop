@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""check_identity 的 --expect-proc 匹配测试（临时桩，验完可删）。
+
+claude 等的 foreground.name 可能是版本号（如 2.1.325），预检须认
+foreground.argv[0] 与 status.app，不能只认 name，否则误杀。
+"""
+import argparse
+import importlib.util
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location("dispatch", HERE / "dispatch.py")
+dispatch = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(dispatch)
+
+
+def args(expect_proc=None, expect_title=None):
+    return argparse.Namespace(expect_proc=expect_proc, expect_title=expect_title)
+
+
+def claude_terminal():
+    # claude 靶子：name 是版本号，argv[0]=claude，status.app=claude-code
+    return {
+        "title": "示例任务标题",
+        "foreground": {"name": "2.1.325", "argv": ["claude", "--dangerously-skip-permissions"]},
+        "status": {"app": "claude-code", "state": "working"},
+    }
+
+
+def expect_mismatch(terminal, a):
+    try:
+        dispatch.check_identity(terminal, a)
+    except dispatch.DispatchError as e:
+        assert e.kind == "identity_mismatch", e.kind
+        return
+    raise AssertionError("应抛 identity_mismatch")
+
+
+def main():
+    # 1) name 是版本号，但 argv[0]=claude → expect-proc claude 应过
+    dispatch.check_identity(claude_terminal(), args(expect_proc="claude"))
+    print("1 name=版本号但 argv[0]=claude -> 过 OK")
+
+    # 2) status.app 兜底：name/argv 都不含，app 含 → 过
+    t = {"foreground": {"name": "9.9.9", "argv": []}, "status": {"app": "claude-code"}}
+    dispatch.check_identity(t, args(expect_proc="claude"))
+    print("2 仅 status.app 含 claude -> 过 OK")
+
+    # 3) 身份不符 → identity_mismatch
+    t = {"foreground": {"name": "grok", "argv": ["grok"]}, "status": {"app": "grok"}}
+    expect_mismatch(t, args(expect_proc="claude"))
+    print("3 身份不符 -> identity_mismatch OK")
+
+    # 4) expect-title 仍生效
+    expect_mismatch(claude_terminal(), args(expect_title="不存在的标题"))
+    print("4 expect-title 不符 -> identity_mismatch OK")
+
+    print("全部通过")
+
+
+if __name__ == "__main__":
+    main()
