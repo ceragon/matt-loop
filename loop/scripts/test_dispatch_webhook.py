@@ -3,15 +3,20 @@
 
 跑法：python3.12 loop/scripts/test_dispatch_webhook.py
 覆盖：
-  1 默认关：未配 env，webhook=off，不 POST。
-  2 配 env＋POST 成功：webhook=sent，POST 结果 JSON、密钥走 header、不进 stdout。
-  3 配 env＋POST 失败：webhook=failed，整轮仍 ok（结果文件是事实源）。
+  1 默认关：未配 env，webhook=off，不 POST，无 webhook_error。
+  2 配 env＋POST 成功：webhook=sent，Authorization: Bearer、无 X-Loop-Secret、密钥不进 stdout。
+  3 配 env＋POST 失败（OSError）：webhook=failed＋webhook_error 类名，整轮仍 ok。
   4 error 路径也发 webhook、带 webhook 字段。
   5 只配 URL 或只配密钥：仍 off。
+  6 HTTP 401：webhook=failed＋webhook_error="HTTP 401"，密钥/URL 不进 stdout/结果/stderr。
+  7 URLError：webhook_error="URLError"（只记类名，不记 str(e)）。
 """
+import contextlib
+import io
 import json
 import os
 import sys
+import urllib.error
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -61,6 +66,7 @@ def main():
         rc, res, led = run_case(None, FakeHc(), "wh-off-1")
         assert rc == 0 and res["ok"] and res["webhook"] == "off", res
         assert posted == [], posted
+        assert "webhook_error" not in res, res
         print("1 default off: no env -> webhook=off, no POST ok")
 
         # 2 配 env＋POST 成功
@@ -73,21 +79,28 @@ def main():
         req, timeout = posted[0]
         assert req.full_url == URL and timeout == dispatch.WEBHOOK_TIMEOUT_S
         assert req.get_method() == "POST"
-        assert SECRET in req.headers.values(), req.headers
+        assert req.get_header("Authorization") == "Bearer " + SECRET, req.headers
+        assert req.get_header("X-loop-secret") is None, req.headers  # 旧头不再发送
         body = json.loads(req.data.decode("utf-8"))
         assert body["ok"] is True and body["target"] == "t99", body
         assert "webhook" not in body  # POST 发生在记 webhook 字段之前
         assert SECRET not in json.dumps(res, ensure_ascii=False)  # 密钥不进 stdout
-        print("2 env set + POST ok: webhook=sent, secret in header not stdout ok")
+        assert "webhook_error" not in res, res
+        print("2 env set + POST ok: webhook=sent, Authorization Bearer, no X-Loop-Secret ok")
 
-        # 3 配 env＋POST 失败：整轮仍 ok
+        # 3 配 env＋POST 失败（OSError）：整轮仍 ok，webhook_error 记类名
         set_env(URL, SECRET)
         posted.clear()
         dispatch.urllib.request.urlopen = fail_urlopen
-        rc, res, led = run_case(None, FakeHc(), "wh-fail-1")
+        errbuf = io.StringIO()
+        with contextlib.redirect_stderr(errbuf):
+            rc, res, led = run_case(None, FakeHc(), "wh-fail-1")
         assert rc == 0 and res["ok"] and res["webhook"] == "failed", res
+        assert res["webhook_error"] == "OSError", res
         assert len(posted) == 1
-        print("3 POST fails: webhook=failed, round still ok ok")
+        errtext = errbuf.getvalue()
+        assert "OSError" in errtext and SECRET not in errtext and URL not in errtext, errtext
+        print("3 POST fails: webhook=failed, webhook_error=OSError, round still ok ok")
 
         # 4 error 路径也发 webhook
         set_env(URL, SECRET)
@@ -95,6 +108,7 @@ def main():
         dispatch.urllib.request.urlopen = ok_urlopen
         rc, res, led = run_case(None, FakeHc(refuse_nth=1), "wh-err-1")
         assert rc == 1 and not res["ok"] and res["webhook"] == "sent", res
+        assert "webhook_error" not in res, res
         assert len(posted) == 1
         body = json.loads(posted[0][0].data.decode("utf-8"))
         assert body["ok"] is False, body
@@ -108,6 +122,43 @@ def main():
             rc, res, led = run_case(None, FakeHc(), "wh-half-" + tag)
             assert rc == 0 and res["webhook"] == "off" and posted == [], (tag, res)
         print("5 half-configured (only URL or only secret): still off ok")
+
+        # 6 HTTP 401：记状态码，密钥/URL/头内容不进 stdout/结果/stderr
+        def http401_urlopen(req, timeout=None):
+            posted.append((req, timeout))
+            raise urllib.error.HTTPError(URL, 401, "Unauthorized", {}, None)
+
+        set_env(URL, SECRET)
+        posted.clear()
+        dispatch.urllib.request.urlopen = http401_urlopen
+        errbuf = io.StringIO()
+        with contextlib.redirect_stderr(errbuf):
+            rc, res, led = run_case(None, FakeHc(), "wh-401-1")
+        assert rc == 0 and res["ok"] and res["webhook"] == "failed", res
+        assert res["webhook_error"] == "HTTP 401", res
+        dumped = json.dumps(res, ensure_ascii=False)
+        assert SECRET not in dumped and URL not in dumped and "Bearer" not in dumped, res
+        errtext = errbuf.getvalue()
+        assert "HTTP 401" in errtext, errtext
+        assert SECRET not in errtext and URL not in errtext and "Bearer" not in errtext, errtext
+        print("6 HTTP 401: webhook_error='HTTP 401', no secret/URL in stdout/result/stderr ok")
+
+        # 7 URLError：只记类名，不记 str(e)（reason 可能带主机信息）
+        def urlerror_urlopen(req, timeout=None):
+            posted.append((req, timeout))
+            raise urllib.error.URLError("reason-with-host-detail")
+
+        set_env(URL, SECRET)
+        posted.clear()
+        dispatch.urllib.request.urlopen = urlerror_urlopen
+        errbuf = io.StringIO()
+        with contextlib.redirect_stderr(errbuf):
+            rc, res, led = run_case(None, FakeHc(), "wh-urlerr-1")
+        assert rc == 0 and res["ok"] and res["webhook"] == "failed", res
+        assert res["webhook_error"] == "URLError", res
+        assert "reason-with-host-detail" not in json.dumps(res, ensure_ascii=False)
+        assert "reason-with-host-detail" not in errbuf.getvalue()
+        print("7 URLError: webhook_error='URLError', str(e) never logged ok")
     finally:
         dispatch.urllib.request.urlopen = real_urlopen
         set_env(None, None)
