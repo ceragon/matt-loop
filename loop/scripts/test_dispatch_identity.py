@@ -14,8 +14,8 @@ dispatch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dispatch)
 
 
-def args(expect_proc=None, expect_title=None):
-    return argparse.Namespace(expect_proc=expect_proc, expect_title=expect_title)
+def args(expect_proc=None):
+    return argparse.Namespace(expect_proc=expect_proc)
 
 
 def claude_terminal():
@@ -51,9 +51,11 @@ def main():
     expect_mismatch(t, args(expect_proc="claude"))
     print("3 身份不符 -> identity_mismatch OK")
 
-    # 4) expect-title 仍生效
-    expect_mismatch(claude_terminal(), args(expect_title="不存在的标题"))
-    print("4 expect-title 不符 -> identity_mismatch OK")
+    # 4) 标题不再作判据：标题任意、proc 符即过
+    t = claude_terminal()
+    t["title"] = "Claude Code"  # 默认标题，与票号无关
+    dispatch.check_identity(t, args(expect_proc="claude"))
+    print("4 标题任意但 proc 符 -> 过（标题预检已移除）OK")
 
     print("全部通过")
 

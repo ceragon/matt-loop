@@ -5,8 +5,8 @@
 # ///
 """dispatch.py — loop skill 的分发脚本（ADR-0002，方案 C）。
 
-运行方式：uv run --no-python-downloads scripts/dispatch.py …
-（只用机器上已有的解释器；uv 会在 ~/.cache/uv 建一个很小的 venv，属正常运行环境。）
+运行方式：python3 scripts/dispatch.py …（脚本自带版本门：>=3.10 直跑；<3.10
+自动经 uv run --no-python-downloads 用机器上已有的 3.10+ 解释器重跑，不下载。）
 
 机械活：读放行提示词 → 核对目标 → hc send --if idle → hc wait 循环 →
 hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干净全文 reply 落盘 .md
@@ -22,7 +22,7 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
   - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
     再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
     永不 --force，不碰 hc keys。
-  - 发送前核对目标身份（--expect-title / --expect-proc，可选但强烈建议传）。
+  - 发送前核对目标身份（--expect-proc，认 foreground.name/argv[0]/status.app，可选但强烈建议传）。
   - 台账记录实际发出内容的 sha256，成功输出也带 prompt_sha256。
   - 完整性判据：折叠标记（▲▼）命中即 error，不进 pi；原文照常落盘。锚点（提示词
     回声首行前缀）只作信息 anchor_found、不阻断——检查在 turn>基线＋落定之后，
@@ -114,19 +114,34 @@ def check_structure_and_tools():
                                 ["确认 PATH；脚本也会探 ~/.local/bin、homebrew、nvm node bin"])
 
 
-# 版本门：写成 3.9 也能解析的形式。低于 3.10 直接返回 error，
-# 不进入流程（3.9 的 Path.write_text 没有 newline 参数，会在落盘时半路崩）。
-if sys.version_info < (3, 10):
+def handle_old_python():
+    """自身解释器 <3.10：探 uv 重跑（uv run --no-python-downloads 挑已有 3.10+，
+    不下载）；探不到 uv 或已重 exec 过则报 python_too_old 退出。调用方只需
+    python3 直跑，uv 退居内部兜底，后台精简 PATH 也能起。"""
+    uv = find_tool("uv")
+    if uv and not os.environ.get("LOOP_UV_REEXEC"):
+        os.environ["LOOP_UV_REEXEC"] = "1"
+        try:
+            os.execv(uv, [uv, "run", "--no-python-downloads",
+                          str(Path(__file__).resolve()), *sys.argv[1:]])
+        except OSError:
+            pass  # execv 失败（如 uv 不可执行），落到下面报错
     print(json.dumps({
         "ok": False,
         "error": {
             "kind": "python_too_old",
             "message": "需要 Python >= 3.10，当前 %d.%d.%d" % sys.version_info[:3],
-            "hints": ["用 uv run --no-python-downloads scripts/dispatch.py 运行，"
-                      "只用机器上已有的 3.10+ 解释器"],
+            "hints": ["装一个 3.10+ 解释器，或装 uv（脚本会自动经 "
+                      "uv run --no-python-downloads 用已有 3.10+ 重跑）"],
         },
     }, ensure_ascii=False))
     sys.exit(1)
+
+
+# 版本门：写成 3.9 也能解析的形式。低于 3.10 先尝试经 uv 自举重跑，不成再报错
+# （3.9 的 Path.write_text 没有 newline 参数，会在落盘时半路崩）。
+if sys.version_info < (3, 10):
+    handle_old_python()
 
 # 机械护栏（非等待策略，不属待拍板项）：
 # hc send 会等人未写完的草稿（draft_wait 默认 60 秒），护栏须大于它。
@@ -337,17 +352,6 @@ def verify_reply(reply, screen):
 
 
 def check_identity(terminal, args):
-    if args.expect_title:
-        titles = [terminal.get("title") or ""]
-        st = terminal.get("status")
-        if isinstance(st, dict):
-            titles.append(st.get("title") or "")
-        if not any(args.expect_title in t for t in titles):
-            raise DispatchError(
-                "identity_mismatch",
-                f"目标标题不含预期子串（--expect-title）",
-                ["核对 hc get 的 title / status.title；不要向身份不符的终端发送"],
-            )
     if args.expect_proc:
         fg = terminal.get("foreground") or {}
         st = terminal.get("status") or {}
@@ -622,8 +626,7 @@ def parse_args(argv=None):
     ap.add_argument("--reset", choices=["none", "new", "clear", "compact"], default="none",
                     help="主任务前的重置前置，发字面命令 /new /clear /compact（调用方按 agent 认哪个挑）；"
                          "默认 none 不重置，即现状单 prompt")
-    ap.add_argument("--expect-title", help="身份预检：目标标题应含此子串")
-    ap.add_argument("--expect-proc", help="身份预检：前台进程名应含此子串（如 grok）")
+    ap.add_argument("--expect-proc", help="身份预检：前台进程应含此子串（认 name/argv[0]/app，如 grok/claude）")
     ap.add_argument("--loop-dir", default=str(Path(tempfile.gettempdir()) / "loop"),
                     help="本地记录根目录（默认 $TMPDIR/loop，随 OS 临时清理）")
     ap.add_argument("--pi-model", help="pi --model 透传（默认用 pi 自身配置的模型）")
