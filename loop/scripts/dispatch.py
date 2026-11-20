@@ -18,7 +18,7 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
   - 重置前置（--reset new/clear/compact，默认 none）：放行一并授权前置＋主任务；
     先发字面命令、等落定（idle/done + 屏幕静置）再发主任务；前置按枚举校验、不抽取。
   - 一个放行至多发送成功两次（前置＋主任务，各一次）：先写台账
-    .loop/runs/<放行id>.json 再发送；台账存在即拒绝。
+    $TMPDIR/loop/runs/<放行id>.json 再发送；台账存在即拒绝。
   - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
     再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
     永不 --force，不碰 hc keys。
@@ -29,11 +29,14 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
     长任务回声滚出当前屏是常态，回复仍在屏底。
   - 工具定位：hc/pi/uv 先 shutil.which，PATH 找不到时自动探常见目录（~/.local/bin、
     homebrew、nvm node bin），后台 job 缺 PATH 也能起。
+  - 本地记录归置：--loop-dir 默认 $TMPDIR/loop（tempfile.gettempdir()/loop），runs/ 放
+    记录、releases/ 放放行提示词；随 OS 临时清理、不留持久审计，台账拒重发保护止于
+    重启（放行 id 每次唯一）。PATH 由 find_tool 兜底，不需手写包装脚本。
   - 抽取字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
     全部搜不到则 error(extraction_rewritten)。reply 干净全文先整体、再逐行校验，
     未过逐字校验的行标 rewritten["reply"]。
 
-交付：stdout 一行 JSON，同一字符串同时写 .loop/runs/<放行id>.result.json
+交付：stdout 一行 JSON，同一字符串同时写 $TMPDIR/loop/runs/<放行id>.result.json
 （成功与 error 都写）。run_record 指 pi 裁剪后的干净全文 .md（回看对象），
 raw_record 指整屏原料 .raw.md（审计）。台账记过程，结果文件记最终交付，
 重发拒绝仍以台账为准。
@@ -56,6 +59,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -620,7 +624,8 @@ def parse_args(argv=None):
                          "默认 none 不重置，即现状单 prompt")
     ap.add_argument("--expect-title", help="身份预检：目标标题应含此子串")
     ap.add_argument("--expect-proc", help="身份预检：前台进程名应含此子串（如 grok）")
-    ap.add_argument("--loop-dir", default=".loop", help="本地记录根目录（默认 ./.loop）")
+    ap.add_argument("--loop-dir", default=str(Path(tempfile.gettempdir()) / "loop"),
+                    help="本地记录根目录（默认 $TMPDIR/loop，随 OS 临时清理）")
     ap.add_argument("--pi-model", help="pi --model 透传（默认用 pi 自身配置的模型）")
     # ---- 已裁定默认值（issue #16，2026-11-19），可覆盖 ----
     ap.add_argument("--wall-clock", type=positive_float, default=3600.0,
