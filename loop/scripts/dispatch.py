@@ -33,7 +33,11 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
 （成功与 error 都写）。run_record 指 pi 裁剪后的干净全文 .md（回看对象），
 raw_record 指整屏原料 .raw.md（审计）。台账记过程，结果文件记最终交付，
 重发拒绝仍以台账为准。
-长任务须用 `hc run --bg` 跑、`hc wait` 等（见 SKILL.md），不要用 hc exec。
+可选 webhook 完成通知：env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，
+成功/报错都 POST 结果 JSON（密钥走 header），发失败不连累整轮，结果记
+webhook: off/sent/failed。长任务用调用方自己的后台任务跑、靠完成通知收结果
+（DS Bot 用 job 完成通知、Grok Bot 用 webhook，见 SKILL.md 交付清单），
+不要用 hc exec 或短超时包装器同步等。
 
 已裁定默认值（issue #16，2026-11-19）：墙钟 3600s（发送成功起计、不重置）、
 check-in 180s、落定静置 10s × 2 次、pi 抽取护栏 1200s、hc read --lines 0。
@@ -43,11 +47,13 @@ import argparse
 import difflib
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -100,6 +106,8 @@ READ_LINES = 0
 # 前置落定用短轮询而非 hc wait：/clear 是本地命令、可能不进 working，
 # hc wait 会空等一个 check-in。working 时每 RESET_POLL_S 秒 hc get 查一次。
 RESET_POLL_S = 2.0
+# 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
+WEBHOOK_TIMEOUT_S = 10.0
 
 EXTRACT_FIELDS = ("needs_user", "questions", "summary", "conclusion", "blocked", "reply")
 
@@ -195,8 +203,35 @@ def write_json_atomic(path, obj):
     tmp.replace(path)
 
 
+def send_webhook(result):
+    """可选 webhook 完成通知（Grok Bot 等支持 webhook 唤醒的调用方用）。
+    env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，默认关。成功与报错都
+    POST 结果 JSON；密钥走 header（X-Loop-Secret），不进日志、不进 stdout。
+    webhook 只是通知，结果文件才是事实源：发失败不连累整轮。返回 off/sent/failed。"""
+    url = os.environ.get("LOOP_WEBHOOK_URL")
+    secret = os.environ.get("LOOP_WEBHOOK_SECRET")
+    if not url or not secret:
+        return "off"
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(result, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "X-Loop-Secret": secret},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT_S) as resp:
+            resp.read()
+        return "sent"
+    except Exception:
+        # 不打印 URL/密钥；结果文件已含 webhook:failed，足以定位。
+        sys.stderr.write("[dispatch] webhook 发送失败（结果文件仍是事实源）\n")
+        return "failed"
+
+
 def emit_result(obj, result_path):
-    """stdout 一行 JSON；同一字符串再写一份到结果文件（最终交付，逐字一致）。"""
+    """stdout 一行 JSON；同一字符串再写一份到结果文件（最终交付，逐字一致）。
+    交付前可选 POST webhook 唤醒调用方，并把 webhook: off/sent/failed 记进结果。"""
+    obj["webhook"] = send_webhook(obj)
     line = json.dumps(obj, ensure_ascii=False)
     if result_path is not None:
         try:
