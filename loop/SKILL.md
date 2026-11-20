@@ -30,7 +30,7 @@ uv run --no-python-downloads scripts/dispatch.py \
 ```
 
 - 一律 `uv run`：脚本头部声明 `requires-python = ">=3.10"`、无第三方依赖；`--no-python-downloads` 只用机器上已有解释器。解释器低于 3.10 直接返回 `error(kind=python_too_old)`。
-- `--expect-title` / `--expect-proc`：身份预检，强烈建议都传（grok 目标传 `--expect-proc grok`）；不符即拒发。
+- `--expect-title` / `--expect-proc`：身份预检，强烈建议都传（grok 传 `grok`、claude 传 `claude`）；`--expect-proc` 匹配 foreground.name/argv[0]/status.app 任一（claude 的 name 可能是版本号，认 argv[0]/app），不符即拒发。
 - `--reset {none,new,clear,compact}`（默认 `none`）：主任务前的重置前置。选 `new`/`clear`/`compact` 就在同一 target 先 `--if idle` 发字面命令 `/new`/`/clear`/`/compact`，等落定（idle/done＋屏幕静置）再发主任务；`none` 即单 prompt，向后兼容。**发哪条由调用方按目标 agent 认哪个挑**（claude/grok 的 `/new`≡`/clear` 都认，只认 `/new` 的挑 `new`），脚本不按 agent 映射。前置不抽取、不落 run_record；前置或主任务任一步发不出即整轮停，error 带 `reset_sent` 标明部分状态。`/clear` 是本地命令、可能不进 working，前置落定用屏幕静置而非 turn 判据。
 - 等待与抽取默认值一般不用动：墙钟 3600 秒（主任务发送成功起计）、check-in 180 秒、落定静置 10 秒 × 2 次、pi 抽取护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 0`。
 - `--loop-dir` 默认 `./.loop`；`--pi-model` 透传 `pi --model`。

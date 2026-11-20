@@ -346,11 +346,16 @@ def check_identity(terminal, args):
             )
     if args.expect_proc:
         fg = terminal.get("foreground") or {}
-        if args.expect_proc not in (fg.get("name") or ""):
+        st = terminal.get("status") or {}
+        argv = fg.get("argv") or []
+        first = argv[0] if isinstance(argv, list) and argv else ""
+        # claude 等的 foreground.name 可能是版本号；argv[0] 与 status.app 才是可靠信号
+        candidates = [fg.get("name") or "", first, st.get("app") or ""]
+        if not any(args.expect_proc in c for c in candidates):
             raise DispatchError(
                 "identity_mismatch",
-                "目标前台进程名不含预期子串（--expect-proc）",
-                ["核对 hc get 的 foreground.name；不要向身份不符的终端发送"],
+                "目标前台进程不含预期子串（--expect-proc）",
+                ["核对 hc get 的 foreground.name/argv[0] 与 status.app；不要向身份不符的终端发送"],
             )
 
 
