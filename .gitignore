@@ -1,0 +1,6 @@
+# Python 编译产物
+__pycache__/
+*.pyc
+
+# loop 运行记录：含放行提示词与 agent 输出，勿提交进公开仓库
+.loop/

@@ -14,8 +14,11 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
 只用 Python 标准库。
 
 机械保证（不靠提示词）：
-  - 原文照发：文件内容一字不改地作为 hc send 的位置参数。
-  - 至多发送成功一次：先写台账 .loop/runs/<放行id>.json 再发送；台账存在即拒绝。
+  - 原文照发：主任务文件内容一字不改地作为 hc send 的位置参数。
+  - 重置前置（--reset new/clear/compact，默认 none）：放行一并授权前置＋主任务；
+    先发字面命令、等落定（idle/done + 屏幕静置）再发主任务；前置按枚举校验、不抽取。
+  - 一个放行至多发送成功两次（前置＋主任务，各一次）：先写台账
+    .loop/runs/<放行id>.json 再发送；台账存在即拒绝。
   - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
     再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
     永不 --force，不碰 hc keys。
@@ -94,6 +97,9 @@ QUERY_GUARD_S = 30.0
 WAIT_GUARD_MARGIN_S = 30.0
 # 裁定 A3：只取当前屏。对 grok，--lines > 0 时 hc 的 complete 恒 false，语义失真。
 READ_LINES = 0
+# 前置落定用短轮询而非 hc wait：/clear 是本地命令、可能不进 working，
+# hc wait 会空等一个 check-in。working 时每 RESET_POLL_S 秒 hc get 查一次。
+RESET_POLL_S = 2.0
 
 EXTRACT_FIELDS = ("needs_user", "questions", "summary", "conclusion", "blocked", "reply")
 
@@ -369,6 +375,96 @@ def settle(hc_bin, args, wait_turn):
     return g
 
 
+def do_send(hc_bin, args, text, ledger, ledger_path):
+    """--if idle 首发；被拒（status_mismatch）且 hc get 复核为 done 才补发一次。
+    返回 (send, resent)。前置与主任务共用同一套发送护栏（裁定 6）：
+    永不 --force、不碰 hc keys；被拒时零字节进入，不算重发。"""
+    try:
+        send = hc_json(
+            hc_bin,
+            ["send", "--if", "idle", "--", args.target, text],
+            SEND_GUARD_S,
+        )
+        return send, False
+    except HcFailure as e:
+        if e.kind != "status_mismatch":
+            kind = "send_refused" if e.kind == "blocked" else "hc_failed"
+            raise DispatchError(kind, f"hc send 失败：{e.message}",
+                                e.hints + ["未再发送；台账已记录本次尝试"])
+        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        if status_state(g) != "done":
+            raise DispatchError(
+                "send_refused",
+                f"hc send --if idle 被拒，复核状态是 {status_state(g) or '未自报'} 而非 done，不补发",
+                e.hints,
+            )
+        ledger.update(phase="resending",
+                      first_refusal={"kind": e.kind, "returncode": e.returncode})
+        write_json_atomic(ledger_path, ledger)
+        g2 = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        if g2.get("state") != "live" or status_state(g2) not in ("idle", "done"):
+            raise DispatchError(
+                "send_refused",
+                f"补发前复核状态是 {status_state(g2) or '未自报'}，不补发",
+                ["目标可能已重新开始工作或停在弹框；本轮未再发送"],
+            )
+        try:
+            send = hc_json(hc_bin, ["send", "--", args.target, text], SEND_GUARD_S)
+        except HcFailure as e2:
+            raise DispatchError("send_refused", f"done 补发仍失败：{e2.message}",
+                                e2.hints + ["本轮不再发送；台账已记录两次尝试"])
+        return send, True
+
+
+def reset_settle(hc_bin, args):
+    """前置落定复核：idle/done 且屏幕连续 settle_checks 次静置不变。
+    /clear 是本地命令、可能不进 working/不增 turn，故用屏幕内容稳定而非 turn 判据。
+    屏幕仍在变或离开 idle/done 返回 False；blocked/error/退出照常抛错。"""
+    prev = None
+    for _ in range(args.settle_checks):
+        time.sleep(args.settle_seconds)
+        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        if g.get("state") != "live":
+            raise DispatchError("target_exited", "前置落定复核时目标终端已结束", [])
+        state = status_state(g)
+        if state == "blocked":
+            raise dialog_error(g)
+        if state == "error":
+            raise DispatchError("target_error", "前置落定复核时目标自报 error", [])
+        if state not in ("idle", "done"):
+            return False
+        screen = hc_json(hc_bin, ["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)["text"]
+        if prev is not None and screen != prev:
+            return False
+        prev = screen
+    return True
+
+
+def wait_for_reset(hc_bin, args, deadline):
+    """等前置（/new /clear /compact）落定：短轮询 hc get 至 idle/done，再屏幕静置复核。
+    不要求 turn 增长（/clear 可能不增 turn）。前置不抽取、不落 run_record。"""
+    while True:
+        if time.monotonic() >= deadline:
+            raise DispatchError(
+                "timeout",
+                "前置墙钟超时：目标仍未落定",
+                ["主任务未发送；本轮已停止，可经用户放行后另起一轮"],
+            )
+        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        if g.get("state") != "live":
+            raise DispatchError("target_exited", "前置期间目标终端已结束", ["hc get 查看 reason"])
+        state = status_state(g)
+        if state == "blocked":
+            raise dialog_error(g)
+        if state == "error":
+            raise DispatchError("target_error", "前置期间目标自报 error", ["到目标会话屏幕前查看"])
+        if state in ("idle", "done"):
+            if reset_settle(hc_bin, args):
+                return
+            continue  # 屏幕仍在变（/clear 重绘 / /compact 收尾）：重新复核
+        time.sleep(RESET_POLL_S)  # working：短轮询
+
+
 def parse_extraction(stdout):
     s = stdout.strip()
     candidates = []
@@ -449,6 +545,9 @@ def parse_args(argv=None):
     ap.add_argument("--target", required=True, help="目标终端地址（hc 的 t7、名字或 machine/t7）")
     ap.add_argument("--release-id", required=True, help="放行 id（唯一；一个放行只跑一轮）")
     ap.add_argument("--prompt-file", required=True, help="已放行的提示词文件路径（原文照发）")
+    ap.add_argument("--reset", choices=["none", "new", "clear", "compact"], default="none",
+                    help="主任务前的重置前置，发字面命令 /new /clear /compact（调用方按 agent 认哪个挑）；"
+                         "默认 none 不重置，即现状单 prompt")
     ap.add_argument("--expect-title", help="身份预检：目标标题应含此子串")
     ap.add_argument("--expect-proc", help="身份预检：前台进程名应含此子串（如 grok）")
     ap.add_argument("--loop-dir", default=".loop", help="本地记录根目录（默认 ./.loop）")
@@ -473,6 +572,7 @@ def main(argv=None):
     ledger_path = None
     result_path = None
     started = None
+    reset_sent = False
     try:
         check_structure_and_tools()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.release_id):
@@ -544,6 +644,7 @@ def main(argv=None):
             "prompt_path": str(prompt_path),
             "prompt_sha256": sha,
             "anchor": anchor,
+            "reset": args.reset,
             "params": {
                 "wall_clock": args.wall_clock, "check_in": args.check_in,
                 "settle_seconds": args.settle_seconds, "settle_checks": args.settle_checks,
@@ -554,53 +655,34 @@ def main(argv=None):
         }
         write_json_atomic(ledger_path, ledger)
 
-        started = time.monotonic()
-        resent = False
-        try:
-            send = hc_json(
-                hc_bin,
-                ["send", "--if", "idle", "--", args.target, text],
-                SEND_GUARD_S,
-            )
-        except HcFailure as e:
-            if e.kind != "status_mismatch":
-                kind = "send_refused" if e.kind == "blocked" else "hc_failed"
-                raise DispatchError(kind, f"hc send 失败：{e.message}",
-                                    e.hints + ["未再发送；台账已记录本次尝试"])
-            # 裁定 6：--if idle 被拒（零字节进入，不算重发）→ hc get 复核，
-            # 确认 done 才补发；补发前再核一次非 working/blocked。
-            g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
-            if status_state(g) != "done":
-                raise DispatchError(
-                    "send_refused",
-                    f"hc send --if idle 被拒，复核状态是 {status_state(g) or '未自报'} 而非 done，不补发",
-                    e.hints,
-                )
-            ledger.update(phase="resending",
-                          first_refusal={"kind": e.kind, "returncode": e.returncode})
+        # 2.5) 重置前置（--reset != none）：同一 target 上先发字面命令 /new /clear /compact，
+        #      等落定（idle/done + 屏幕静置）后再发主任务。放行一并授权前置＋主任务：
+        #      前置按枚举校验（argparse choices），主任务仍逐字来自放行文件、校 sha256。
+        #      前置不抽取、不落 run_record；任一步发不出即整轮停（台账记部分状态）。
+        if args.reset != "none":
+            reset_cmd = "/" + args.reset
+            ledger.update(phase="reset_sending")
             write_json_atomic(ledger_path, ledger)
-            g2 = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
-            if g2.get("state") != "live" or status_state(g2) not in ("idle", "done"):
-                raise DispatchError(
-                    "send_refused",
-                    f"补发前复核状态是 {status_state(g2) or '未自报'}，不补发",
-                    ["目标可能已重新开始工作或停在弹框；本轮未再发送"],
-                )
-            try:
-                send = hc_json(hc_bin, ["send", "--", args.target, text], SEND_GUARD_S)
-            except HcFailure as e2:
-                raise DispatchError("send_refused", f"done 补发仍失败：{e2.message}",
-                                    e2.hints + ["本轮不再发送；台账已记录两次尝试"])
-            resent = True
+            pre_send, pre_resent = do_send(hc_bin, args, reset_cmd, ledger, ledger_path)
+            reset_sent = True
+            ledger.update(phase="reset_waiting", reset_send=pre_send, reset_resent=pre_resent)
+            write_json_atomic(ledger_path, ledger)
+            wait_for_reset(hc_bin, args, time.monotonic() + args.wall_clock)
+            ledger.update(phase="reset_done", reset_done_at=now_iso())
+            write_json_atomic(ledger_path, ledger)
+
+        # 3) 主任务发送（墙钟从主任务发送成功起计，不重置）。
+        started = time.monotonic()
+        send, resent = do_send(hc_bin, args, text, ledger, ledger_path)
         baseline = send["turn"]
         ledger.update(phase="sent_waiting", sent_at=now_iso(), send=send, resent=resent)
         write_json_atomic(ledger_path, ledger)
 
-        # 3) 等待落定（墙钟从发送成功起计）。
+        # 4) 等待落定（墙钟从主任务发送成功起计）。
         deadline = started + args.wall_clock
         final = wait_for_result(hc_bin, args, baseline, deadline)
 
-        # 4) 取回当前屏 + 完整性检查。
+        # 5) 取回当前屏 + 完整性检查。
         read = hc_json(hc_bin, ["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)
         screen = read["text"]
         reasons = []
@@ -611,7 +693,7 @@ def main(argv=None):
         complete = not reasons
         elapsed = round(time.monotonic() - started, 1)
 
-        # 5) 整屏原料逐字落盘（不加任何头尾），台账记读取元信息。
+        # 6) 整屏原料逐字落盘（不加任何头尾），台账记读取元信息。
         raw_path.write_text(screen, encoding="utf-8", newline="")
         ledger.update(
             phase="read", read_at=now_iso(),
@@ -631,7 +713,7 @@ def main(argv=None):
                 [f"整屏原文已落盘：{raw_path}", "请用户回看原文；不按键、不自动补发"],
             )
 
-        # 6) pi 裁剪 + 抽取 + 逐字校验（裁定 C），合并输出。
+        # 7) pi 裁剪 + 抽取 + 逐字校验（裁定 C），合并输出。
         ledger.update(phase="extracting")
         write_json_atomic(ledger_path, ledger)
         ext = extract(pi_bin, args, raw_path)
@@ -649,6 +731,7 @@ def main(argv=None):
             "phase": "done",
             "task_name": task_name,
             "target": args.target,
+            "reset": args.reset,
             "turn": final.get("turn"),
             "status": status_state(final),
             "complete": complete,
@@ -674,6 +757,9 @@ def main(argv=None):
             except OSError:
                 pass
         out = {"ok": False, "error": {"kind": e.kind, "message": e.message, "hints": e.hints}}
+        if args.reset != "none":
+            out["reset"] = args.reset
+            out["error"]["reset_sent"] = reset_sent
         if started is not None:
             out["error"]["elapsed_s"] = round(time.monotonic() - started, 1)
         if ledger is not None and ledger.get("run_record"):
