@@ -39,7 +39,21 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 抽取逐字校验：选段字段逐一做原文子串校验（含去空白折叠），搜不到标 `rewritten` 附最接近片段，全部搜不到则 `error(extraction_rewritten)`；`reply` 干净全文先整体、再逐行校验，未过逐字校验的行标 `rewritten["reply"]`。
 
-可选 webhook：env `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET` 都配才发，成功/报错都 POST 结果 JSON，鉴权走 `Authorization: Bearer <密钥>`，不进日志、不进 stdout，~10 秒超时；发失败不连累整轮，result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`（HTTP 状态码如 `"HTTP 401"`，或异常类名如 `"URLError"`；不含 URL/密钥/头内容），结果文件仍是事实源。
+可选 webhook：env `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET` 都配才发，成功/报错都 POST 结果 JSON，鉴权走 `Authorization: Bearer <密钥>`，不进日志、不进 stdout，~10 秒超时；发失败不连累整轮，result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`（HTTP 状态码如 `"HTTP 401"`，或异常类名如 `"URLError"`）与 `webhook_error_detail`（脱敏诊断，stderr 打印同一份），结果文件仍是事实源。
+
+`webhook_error_detail` 只收类名、数字、布尔和三态字符串，不收 `str(e)`/`repr(e)`/响应体/字符串 reason，避免 URL、密钥、主机名、请求头回显。字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `type` | 外层异常类名（如 `URLError`、`HTTPError`、`TimeoutError`） |
+| `reason_type` | `URLError.reason` 是异常时的类名（如 `ConnectionRefusedError`、`gaierror`、`SSLCertVerificationError`）；reason 是字符串时不出现 |
+| `errno` / `errno_name` | 可用的 errno 与名字（如 `61`/`ECONNREFUSED`；DNS 给 `EAI_NONAME`/`EAI_AGAIN`） |
+| `is_timeout` | 是否超时（外层或 reason 为 `TimeoutError`） |
+| `ssl_verify_code` | `SSLCertVerificationError.verify_code`（如 `18` 自签、`20` 缺中间证书；含义以 OpenSSL 为准） |
+| `http_status` | 仅 `HTTPError`：HTTP 状态码 |
+| `proxy.configured` / `proxy.matches` | 是否配置了代理 / 本请求是否实际命中代理；`yes`/`no`/`unknown`，不输出代理地址或凭据 |
+
+下一次 `failed` 时按证据读，不预设根因：`http_status` 非空＝已连上端点、按状态码（401 多为密钥；5xx 为服务端）；`is_timeout=true`＝超时；`errno_name` 为 `ECONNREFUSED`/`ECONNRESET`＝连接层被拒/被断；为 `EAI_*`＝DNS 解析失败；`ssl_verify_code` 非空＝证书校验失败；`proxy.matches=yes` 且其余疑点指向网络路径时，代理只是有嫌疑、仍须其它证据。配置了代理但 `matches=no`，说明这次请求没走它。诊断只记录事实，不改鉴权、证书校验、代理或网络策略；修法等下一次真实运行的证据再定。
 
 工具定位：`hc`/`pi`/`uv` 先 `shutil.which`（尊重显式 PATH），找不到再探 `~/.local/bin`、`/opt/homebrew/bin`、`/usr/local/bin`、nvm node bin（`~/.nvm/versions/node/*/bin`）；后台 job 缺 PATH 也能起，探不到才报 `missing_tool`。调用方 `python3` 直跑即可：版本门 `>=3.10` 直跑，`<3.10` 由 `handle_old_python` 探 uv 并 `os.execv` 经 `uv run --no-python-downloads` 自举重跑（env `LOOP_UV_REEXEC` 防循环），uv 退居内部兜底，调用方不用管 PATH。
 
