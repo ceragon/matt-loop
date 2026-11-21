@@ -47,8 +47,11 @@ def set_env(url=None, secret=None):
 
 
 def main():
-    real_urlopen = dispatch.urllib.request.urlopen
+    real_open = dispatch.webhook_open
     posted = []
+
+    def use(fn):
+        dispatch.webhook_open = lambda req, timeout, proxies: fn(req, timeout)
 
     def ok_urlopen(req, timeout=None):
         posted.append((req, timeout))
@@ -62,7 +65,7 @@ def main():
         # 1 默认关：未配 env
         set_env(None, None)
         posted.clear()
-        dispatch.urllib.request.urlopen = ok_urlopen
+        use(ok_urlopen)
         rc, res, led = run_case(None, FakeHc(), "wh-off-1")
         assert rc == 0 and res["ok"] and res["webhook"] == "off", res
         assert posted == [], posted
@@ -72,7 +75,7 @@ def main():
         # 2 配 env＋POST 成功
         set_env(URL, SECRET)
         posted.clear()
-        dispatch.urllib.request.urlopen = ok_urlopen
+        use(ok_urlopen)
         rc, res, led = run_case(None, FakeHc(), "wh-sent-1")
         assert rc == 0 and res["ok"] and res["webhook"] == "sent", res
         assert len(posted) == 1, posted
@@ -91,7 +94,7 @@ def main():
         # 3 配 env＋POST 失败（OSError）：整轮仍 ok，webhook_error 记类名
         set_env(URL, SECRET)
         posted.clear()
-        dispatch.urllib.request.urlopen = fail_urlopen
+        use(fail_urlopen)
         errbuf = io.StringIO()
         with contextlib.redirect_stderr(errbuf):
             rc, res, led = run_case(None, FakeHc(), "wh-fail-1")
@@ -105,7 +108,7 @@ def main():
         # 4 error 路径也发 webhook
         set_env(URL, SECRET)
         posted.clear()
-        dispatch.urllib.request.urlopen = ok_urlopen
+        use(ok_urlopen)
         rc, res, led = run_case(None, FakeHc(refuse_nth=1), "wh-err-1")
         assert rc == 1 and not res["ok"] and res["webhook"] == "sent", res
         assert "webhook_error" not in res, res
@@ -118,7 +121,7 @@ def main():
         for tag, u, s in (("url", URL, None), ("secret", None, SECRET)):
             set_env(u, s)
             posted.clear()
-            dispatch.urllib.request.urlopen = ok_urlopen
+            use(ok_urlopen)
             rc, res, led = run_case(None, FakeHc(), "wh-half-" + tag)
             assert rc == 0 and res["webhook"] == "off" and posted == [], (tag, res)
         print("5 half-configured (only URL or only secret): still off ok")
@@ -130,7 +133,7 @@ def main():
 
         set_env(URL, SECRET)
         posted.clear()
-        dispatch.urllib.request.urlopen = http401_urlopen
+        use(http401_urlopen)
         errbuf = io.StringIO()
         with contextlib.redirect_stderr(errbuf):
             rc, res, led = run_case(None, FakeHc(), "wh-401-1")
@@ -150,7 +153,7 @@ def main():
 
         set_env(URL, SECRET)
         posted.clear()
-        dispatch.urllib.request.urlopen = urlerror_urlopen
+        use(urlerror_urlopen)
         errbuf = io.StringIO()
         with contextlib.redirect_stderr(errbuf):
             rc, res, led = run_case(None, FakeHc(), "wh-urlerr-1")
@@ -160,7 +163,7 @@ def main():
         assert "reason-with-host-detail" not in errbuf.getvalue()
         print("7 URLError: webhook_error='URLError', str(e) never logged ok")
     finally:
-        dispatch.urllib.request.urlopen = real_urlopen
+        dispatch.webhook_open = real_open
         set_env(None, None)
 
     print("all webhook tests passed")

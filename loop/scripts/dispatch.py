@@ -46,7 +46,9 @@ raw_record 指整屏原料 .raw.md（审计）。台账记过程，结果文件�
 与 webhook_error_detail（脱敏诊断：异常类名、reason 类名、errno/errno_name、是否
 超时、SSL 验证错误码、HTTP 状态码、代理是否配置/是否命中）；不收 str(e)/repr(e)/
 字符串 reason/响应体，不含 URL、密钥、主机名、头内容。stderr 打印同一份诊断。
-诊断只记录事实，不改鉴权、证书校验或代理策略。长任务用调用方自己的后台任务跑、靠完成通知收结果
+出网默认跟随本机系统代理：标准 http_proxy/https_proxy 显式配置时优先，否则读
+系统代理（macOS），系统例外表或 no_proxy 命中则直连；只作用于 webhook POST，
+不改证书校验、不关代理、不换网络策略。长任务用调用方自己的后台任务跑、靠完成通知收结果
 （DS Bot 用 job 完成通知、Grok Bot 用 webhook，见 SKILL.md 交付清单），
 不要用 hc exec 或短超时包装器同步等。
 
@@ -277,36 +279,87 @@ def _errno_label(obj, num):
     return names[0] if names else None
 
 
-def _proxy_diagnostic(url):
-    """只报「是否配置了代理」与「该请求是否实际命中代理」，两值均为
-    yes/no/unknown；不输出代理地址、端口、用户名或密码。
-    「命中」按 urllib 的真实行为判断：<scheme> 键存在且未被 proxy_bypass 放行；
-    只配了 ALL_PROXY（urllib 不按协议分派 'all'）时如实标 unknown，不猜。"""
-    diag = {"configured": "unknown", "matches": "unknown"}
+def _proxy_bypass(host):
+    """系统例外表或显式 no_proxy 任一命中即直连。检查失败按未命中处理。"""
+    if not host:
+        return False
+    fns = [getattr(urllib.request, "proxy_bypass_macosx_sysconf", None),
+           getattr(urllib.request, "proxy_bypass_environment", None)]
+    if all(fn is None for fn in fns):
+        fns = [getattr(urllib.request, "proxy_bypass", None)]
+    for fn in fns:
+        if fn is None:
+            continue
+        try:
+            if fn(host):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def webhook_proxy_resolution(url):
+    """决定 webhook 这一发怎么出网，返回 (proxies, source)。
+
+    默认跟随本机系统代理：标准环境变量 http_proxy/https_proxy 显式配置时优先
+    （source=env）；否则读系统代理（macOS SystemConfiguration，source=system）；
+    系统例外表或 no_proxy 命中则直连（source=bypass），没配代理是 none。
+    只作用于 webhook 的 POST，不改进程全局代理，也不动证书校验。
+    注意不能用 getproxies() 直接判：只设了 no_proxy/非标准 *_proxy 时它也会返回
+    非空字典，却没有任何 http/https 键，urllib 实际不会走代理。"""
     try:
-        proxies = urllib.request.getproxies()
+        env = urllib.request.getproxies_environment()
     except Exception:
-        return diag
-    diag["configured"] = "yes" if proxies else "no"
-    if not proxies:
-        diag["matches"] = "no"
-        return diag
+        env = {}
+    explicit = {k: v for k, v in env.items() if k in ("http", "https")}
+    if explicit:
+        return explicit, "env"
     try:
-        parts = urllib.parse.urlsplit(url)
-        scheme, host = parts.scheme.lower(), parts.hostname
-        if not host or scheme not in ("http", "https"):
-            return diag           # 判断不了：matches 保持 unknown
-        if urllib.request.proxy_bypass(host):
-            diag["matches"] = "no"
-        elif scheme in proxies:
-            diag["matches"] = "yes"
-        elif "all" in proxies:
-            diag["matches"] = "unknown"
+        mac = getattr(urllib.request, "getproxies_macosx_sysconf", None)
+        if mac is not None:
+            system = mac() or {}
         else:
-            diag["matches"] = "no"
+            # 其它平台：getproxies() 已覆盖环境变量/Windows 注册表，
+            # 只保留 urllib 真会分派的 scheme 键。
+            system = {k: v for k, v in urllib.request.getproxies().items()
+                      if k in ("http", "https")}
     except Exception:
-        diag["matches"] = "unknown"
-    return diag
+        return {}, "unknown"
+    if not system:
+        return {}, "none"
+    parts = urllib.parse.urlsplit(url)
+    scheme, host = parts.scheme.lower(), parts.hostname
+    if not host or scheme not in ("http", "https"):
+        return {}, "none"
+    if _proxy_bypass(host):
+        return {}, "bypass"
+    if scheme in system:
+        return {scheme: system[scheme]}, "system"
+    return {}, "none"
+
+
+def _proxy_diagnostic(url):
+    """与 webhook_proxy_resolution 同源：只报是否配置、是否实际命中、来源
+    （env/system/bypass/none/unknown），不输出代理地址、端口、用户名或密码。"""
+    try:
+        proxies, source = webhook_proxy_resolution(url)
+    except Exception:
+        return {"configured": "unknown", "matches": "unknown", "source": "unknown"}
+    if source == "unknown":
+        return {"configured": "unknown", "matches": "unknown", "source": "unknown"}
+    if proxies:
+        return {"configured": "yes", "matches": "yes", "source": source}
+    return {"configured": "yes" if source == "bypass" else "no",
+            "matches": "no", "source": source}
+
+
+def webhook_open(req, timeout, proxies):
+    """webhook 请求出口。proxies 非空时按它建 opener（ProxyHandler 自带
+    proxy_bypass），否则直连。独立函数便于测试替换，不碰进程全局 opener。"""
+    if proxies:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
+        return opener.open(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout)
 
 
 def webhook_error_detail(exc, url):
@@ -355,6 +408,7 @@ def send_webhook(result):
     env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，默认关。成功与报错都
     POST 结果 JSON；鉴权走 Authorization: Bearer <密钥>，不进日志、不进 stdout。
     webhook 只是通知，结果文件才是事实源：发失败不连累整轮。
+    出网默认跟随本机系统代理（见 webhook_proxy_resolution）。
     返回 (off/sent/failed, webhook_error, webhook_error_detail)；失败时
     webhook_error 只记 HTTP 状态码（如 "HTTP 401"）或异常类名（如 "URLError"），
     webhook_error_detail 是同一份脱敏诊断（见 webhook_error_detail），stderr
@@ -371,7 +425,8 @@ def send_webhook(result):
                      "Authorization": "Bearer " + secret},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT_S) as resp:
+        proxies, _source = webhook_proxy_resolution(url)
+        with webhook_open(req, WEBHOOK_TIMEOUT_S, proxies) as resp:
             resp.read()
         return "sent", None, None
     except urllib.error.HTTPError as e:
