@@ -42,8 +42,11 @@ raw_record 指整屏原料 .raw.md（审计）。台账记过程，结果文件�
 重发拒绝仍以台账为准。
 可选 webhook 完成通知：env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，
 成功/报错都 POST 结果 JSON（鉴权走 Authorization: Bearer），发失败不连累整轮，
-结果记 webhook: off/sent/failed，失败另记 webhook_error（HTTP 状态码或异常类名，
-不含 URL/密钥）。长任务用调用方自己的后台任务跑、靠完成通知收结果
+结果记 webhook: off/sent/failed，失败另记 webhook_error（HTTP 状态码或异常类名）
+与 webhook_error_detail（脱敏诊断：异常类名、reason 类名、errno/errno_name、是否
+超时、SSL 验证错误码、HTTP 状态码、代理是否配置/是否命中）；不收 str(e)/repr(e)/
+字符串 reason/响应体，不含 URL、密钥、主机名、头内容。stderr 打印同一份诊断。
+诊断只记录事实，不改鉴权、证书校验或代理策略。长任务用调用方自己的后台任务跑、靠完成通知收结果
 （DS Bot 用 job 完成通知、Grok Bot 用 webhook，见 SKILL.md 交付清单），
 不要用 hc exec 或短超时包装器同步等。
 
@@ -53,16 +56,20 @@ check-in 180s、落定静置 10s × 2 次、pi 抽取护栏 1200s、hc read --li
 
 import argparse
 import difflib
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
+import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -256,18 +263,106 @@ def write_json_atomic(path, obj):
     tmp.replace(path)
 
 
+def _errno_label(obj, num):
+    """给 errno 数字配一个名字。gaierror 先查 socket.EAI_*（DNS 负数/平台值，
+    如 macOS 的 8 不是 POSIX 的 8）；其余先查 errno.errorcode。查不到就给 None。"""
+    if not isinstance(num, int):
+        return None
+    if not isinstance(obj, socket.gaierror):
+        name = errno.errorcode.get(num)
+        if name:
+            return name
+    names = sorted(n for n in dir(socket)
+                   if n.startswith("EAI_") and getattr(socket, n) == num)
+    return names[0] if names else None
+
+
+def _proxy_diagnostic(url):
+    """只报「是否配置了代理」与「该请求是否实际命中代理」，两值均为
+    yes/no/unknown；不输出代理地址、端口、用户名或密码。
+    「命中」按 urllib 的真实行为判断：<scheme> 键存在且未被 proxy_bypass 放行；
+    只配了 ALL_PROXY（urllib 不按协议分派 'all'）时如实标 unknown，不猜。"""
+    diag = {"configured": "unknown", "matches": "unknown"}
+    try:
+        proxies = urllib.request.getproxies()
+    except Exception:
+        return diag
+    diag["configured"] = "yes" if proxies else "no"
+    if not proxies:
+        diag["matches"] = "no"
+        return diag
+    try:
+        parts = urllib.parse.urlsplit(url)
+        scheme, host = parts.scheme.lower(), parts.hostname
+        if not host or scheme not in ("http", "https"):
+            return diag           # 判断不了：matches 保持 unknown
+        if urllib.request.proxy_bypass(host):
+            diag["matches"] = "no"
+        elif scheme in proxies:
+            diag["matches"] = "yes"
+        elif "all" in proxies:
+            diag["matches"] = "unknown"
+        else:
+            diag["matches"] = "no"
+    except Exception:
+        diag["matches"] = "unknown"
+    return diag
+
+
+def webhook_error_detail(exc, url):
+    """把 webhook 失败整理成脱敏诊断对象。只收类名、数字、布尔与枚举字符串：
+    不读 str(e)/repr(e)/响应体，不记录字符串 reason（可能带主机/地址）、
+    URL、密钥或请求头。未知项直接省略，代理状态未知标 "unknown"。"""
+    reason = getattr(exc, "reason", None)
+    detail = {
+        "type": type(exc).__name__,
+        "is_timeout": isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError),
+        "proxy": _proxy_diagnostic(url),
+    }
+    if isinstance(exc, urllib.error.HTTPError):
+        # HTTPError 是 URLError 子类；只保留状态码，服务端 reason 短语不收。
+        detail["http_status"] = exc.code
+        return detail
+    if isinstance(reason, BaseException):
+        detail["reason_type"] = type(reason).__name__
+    errno_obj, errno_val = None, None
+    for obj in (reason, exc):
+        # SSLError/SSLCertVerificationError 的 errno 是 OpenSSL 错误码，不是系统
+        # errno（如 1 会被误读成 EPERM）；证书校验码单独在 ssl_verify_code 里给。
+        if isinstance(obj, ssl.SSLError):
+            continue
+        if isinstance(obj, BaseException):
+            v = getattr(obj, "errno", None)
+            if isinstance(v, int):
+                errno_obj, errno_val = obj, v
+                break
+    if errno_val is not None:
+        detail["errno"] = errno_val
+        label = _errno_label(errno_obj, errno_val)
+        if label:
+            detail["errno_name"] = label
+    for obj in (reason, exc):
+        if isinstance(obj, ssl.SSLCertVerificationError):
+            code = getattr(obj, "verify_code", None)
+            if isinstance(code, int):
+                detail["ssl_verify_code"] = code
+            break
+    return detail
+
+
 def send_webhook(result):
     """可选 webhook 完成通知（Grok Bot 等支持 webhook 唤醒的调用方用）。
     env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，默认关。成功与报错都
     POST 结果 JSON；鉴权走 Authorization: Bearer <密钥>，不进日志、不进 stdout。
     webhook 只是通知，结果文件才是事实源：发失败不连累整轮。
-    返回 (off/sent/failed, webhook_error)；失败时 webhook_error 只记 HTTP 状态码
-    （如 "HTTP 401"）或异常类名（如 "URLError"）——不用 str(e)、不读响应体，
-    两者都可能回显 URL/密钥/头内容。"""
+    返回 (off/sent/failed, webhook_error, webhook_error_detail)；失败时
+    webhook_error 只记 HTTP 状态码（如 "HTTP 401"）或异常类名（如 "URLError"），
+    webhook_error_detail 是同一份脱敏诊断（见 webhook_error_detail），stderr
+    打印的也是它——三处信息一致，都不含 URL/密钥/主机名/头内容。"""
     url = os.environ.get("LOOP_WEBHOOK_URL")
     secret = os.environ.get("LOOP_WEBHOOK_SECRET")
     if not url or not secret:
-        return "off", None
+        return "off", None, None
     try:
         req = urllib.request.Request(
             url,
@@ -278,24 +373,30 @@ def send_webhook(result):
         )
         with urllib.request.urlopen(req, timeout=WEBHOOK_TIMEOUT_S) as resp:
             resp.read()
-        return "sent", None
+        return "sent", None, None
     except urllib.error.HTTPError as e:
         err = f"HTTP {e.code}"
+        detail = webhook_error_detail(e, url)
     except Exception as e:
         err = type(e).__name__
-    # 不打印 URL/密钥/头内容；状态码或类名足以定位，结果文件仍是事实源。
-    sys.stderr.write(f"[dispatch] webhook 发送失败：{err}（结果文件仍是事实源）\n")
-    return "failed", err
+        detail = webhook_error_detail(e, url)
+    # 不打印 URL/密钥/头内容；状态码/类名定位失败面，detail 给证据，结果文件仍是事实源。
+    sys.stderr.write("[dispatch] webhook 发送失败：%s %s（结果文件仍是事实源）\n"
+                     % (err, json.dumps(detail, ensure_ascii=False, sort_keys=True)))
+    return "failed", err, detail
 
 
 def emit_result(obj, result_path):
     """stdout 一行 JSON；同一字符串再写一份到结果文件（最终交付，逐字一致）。
     交付前可选 POST webhook 唤醒调用方，把 webhook: off/sent/failed 记进结果；
-    失败时另记 webhook_error（HTTP 状态码或异常类名，不含 URL/密钥）。"""
-    status, wh_err = send_webhook(obj)
+    失败时另记 webhook_error（HTTP 状态码或异常类名）与 webhook_error_detail
+    （脱敏诊断，与 stderr 同一份，不含 URL/密钥）。"""
+    status, wh_err, wh_detail = send_webhook(obj)
     obj["webhook"] = status
     if wh_err is not None:
         obj["webhook_error"] = wh_err
+        if wh_detail is not None:
+            obj["webhook_error_detail"] = wh_detail
     line = json.dumps(obj, ensure_ascii=False)
     if result_path is not None:
         try:
