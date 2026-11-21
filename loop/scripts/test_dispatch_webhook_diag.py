@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""test_dispatch_webhook_diag.py — webhook 失败诊断测试（mock hc/pi/urllib，不打真实端点）。
+"""test_dispatch_webhook_diag.py — webhook 失败诊断与出网代理选择测试
+（mock hc/pi/urllib，不打真实端点）。
 
 跑法：python3 loop/scripts/test_dispatch_webhook_diag.py
 覆盖：
@@ -9,9 +10,11 @@
     OpenSSL 错误码误记成系统 errno。
   4 超时（URLError/TimeoutError）：is_timeout=true。
   5 HTTP 401：http_status=401，webhook_error="HTTP 401"。
-  6 配了代理且命中：只记 configured/matches，不泄漏代理地址、端口、凭据。
-  7 代理被 bypass、只有 ALL_PROXY：matches 分别 no/unknown，不猜。
-  8 getproxies 探测失败：两值均 unknown。
+  6 默认跟随系统代理：env 只有 no_proxy/非标准键时不劫持，改用系统代理（7890），
+    且代理地址不外泄。
+  7 标准 http_proxy/https_proxy 显式配置时优先于系统代理。
+  8 系统例外表命中 → 直连（source=bypass，configured=yes/matches=no）。
+  9 系统代理探测失败 → 两值 unknown（不猜）。
 每个端到端场景都断言：整轮仍 ok=true、webhook=failed、stdout/stderr/结果文件三处
 诊断一致，且都不含 URL、密钥、Authorization 头或异常 message 里的哨兵串。
 """
@@ -34,7 +37,8 @@ from test_dispatch_reset import EXT, PROMPT, FakeHc  # noqa: E402
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
 SENTINELS = ("example.invalid", SECRET, "Bearer", "Authorization",
-             "reason-with-host-detail")
+             "reason-with-host-detail", "sysproxy.corp", "envproxy.corp",
+             "hunter2", "3128")
 
 
 def set_env(url=None, secret=None):
@@ -51,7 +55,24 @@ def assert_clean(*texts):
             assert bad not in text, (bad, text)
 
 
-def run_case(rid, urlopen):
+def set_net(env_proxies=None, system_proxies=None, bypass=False, boom=False):
+    """替换网络探测：环境变量代理、系统代理、系统例外表。"""
+    dispatch.urllib.request.getproxies_environment = lambda: dict(env_proxies or {})
+
+    def fake_system():
+        if boom:
+            raise OSError("proxy probe failed")
+        return dict(system_proxies or {})
+
+    def fake_bypass(host):
+        return bypass
+
+    dispatch.urllib.request.getproxies_macosx_sysconf = fake_system
+    dispatch.urllib.request.proxy_bypass_macosx_sysconf = fake_bypass
+    dispatch.urllib.request.proxy_bypass_environment = lambda host: False
+
+
+def run_case(rid, opener):
     """跑一轮完整 dispatch，保留临时目录以读结果文件；返回 (rc, result, stderr, 结果文件文本)。"""
     td = tempfile.mkdtemp()
     try:
@@ -67,7 +88,7 @@ def run_case(rid, urlopen):
         dispatch.check_structure_and_tools = lambda: None
         dispatch.shutil.which = lambda name: "/fake/" + name
         dispatch.time.sleep = lambda s: None
-        dispatch.urllib.request.urlopen = urlopen
+        dispatch.webhook_open = opener
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = dispatch.main(argv)
@@ -78,10 +99,10 @@ def run_case(rid, urlopen):
 
 
 def fail_with(exc, rid):
-    """让 urlopen 抛 exc，返回整轮 (rc, result, stderr, 结果文件文本)。"""
-    def fake_urlopen(req, timeout=None):
+    """让 webhook 出口抛 exc；返回整轮 (rc, result, stderr, 结果文件文本)。"""
+    def fake_open(req, timeout, proxies):
         raise exc
-    return run_case(rid, fake_urlopen)
+    return run_case(rid, fake_open)
 
 
 def check_common(rc, res, errtext, result_text):
@@ -95,26 +116,17 @@ def check_common(rc, res, errtext, result_text):
     return detail
 
 
-def set_proxies(mapping=None, bypass=False, boom=False):
-    def fake_getproxies():
-        if boom:
-            raise OSError("proxy probe failed")
-        return dict(mapping or {})
-
-    def fake_bypass(host):
-        return bypass
-
-    dispatch.urllib.request.getproxies = fake_getproxies
-    dispatch.urllib.request.proxy_bypass = fake_bypass
-
-
 def main():
-    real_urlopen = dispatch.urllib.request.urlopen
-    real_getproxies = dispatch.urllib.request.getproxies
-    real_bypass = dispatch.urllib.request.proxy_bypass
+    real_open = dispatch.webhook_open
+    real_getproxy_env = dispatch.urllib.request.getproxies_environment
+    had_sysconf = hasattr(dispatch.urllib.request, "getproxies_macosx_sysconf")
+    real_sysconf = getattr(dispatch.urllib.request, "getproxies_macosx_sysconf", None)
+    real_mac_bypass = getattr(dispatch.urllib.request, "proxy_bypass_macosx_sysconf", None)
+    real_env_bypass = dispatch.urllib.request.proxy_bypass_environment
+    no_proxy = {"configured": "no", "matches": "no", "source": "none"}
     try:
         set_env(URL, SECRET)
-        set_proxies()  # 默认无代理，保证断言确定性
+        set_net()  # 默认无代理，保证基础场景断言确定性
 
         # 1 连接被拒：reason 是 ConnectionRefusedError，message 里塞哨兵也不得外泄
         exc = urllib.error.URLError(
@@ -125,7 +137,7 @@ def main():
         assert d["type"] == "URLError" and d["reason_type"] == "ConnectionRefusedError", d
         assert d["errno"] == 61 and d["errno_name"] == "ECONNREFUSED", d
         assert d["is_timeout"] is False, d
-        assert d["proxy"] == {"configured": "no", "matches": "no"}, d
+        assert d["proxy"] == no_proxy, d
         assert "http_status" not in d and "ssl_verify_code" not in d, d
         print("1 connection refused -> errno 61/ECONNREFUSED ok")
 
@@ -175,38 +187,62 @@ def main():
         assert "Unauthorized" not in errtext and "s3cret-token" not in errtext, errtext
         print("5 HTTP 401 -> http_status 401, no reason phrase/headers ok")
 
-        # 6 配了代理且命中：只记 yes/yes，代理地址/端口/凭据不外泄
-        set_proxies({"https": "http://user:hunter2@proxy.corp:3128"})
-        exc = urllib.error.URLError(ConnectionRefusedError(61, "refused"))
-        rc, res, errtext, rtext = fail_with(exc, "diag-proxy-hit-1")
-        d = check_common(rc, res, errtext, rtext)
-        assert d["proxy"] == {"configured": "yes", "matches": "yes"}, d
-        for bad in ("proxy.corp", "3128", "hunter2"):
-            assert bad not in errtext and bad not in rtext, (bad, errtext)
-        print("6 proxy configured+matched -> yes/yes, no address/creds ok")
+        # 6 默认跟随系统代理：env 只有 no_proxy＋非标准键（正是本机现场），
+        #   不能用 getproxies() 的非空结果挡住系统代理；代理地址/端口不得外泄。
+        set_net({"no": "localhost,127.0.0.1",
+                 "jev_upstream": "http://127.0.0.1:7890"},
+                {"https": "http://user:hunter2@sysproxy.corp:3128"})
+        seen = []
 
-        # 7 代理被 bypass / 只有 ALL_PROXY：不猜
-        set_proxies({"https": "http://proxy.corp:3128"}, bypass=True)
-        exc = urllib.error.URLError(ConnectionRefusedError(61, "refused"))
-        rc, res, errtext, rtext = fail_with(exc, "diag-proxy-bypass-1")
-        d = check_common(rc, res, errtext, rtext)
-        assert d["proxy"] == {"configured": "yes", "matches": "no"}, d
-        set_proxies({"all": "http://proxy.corp:3128"})
-        rc, res, errtext, rtext = fail_with(exc, "diag-proxy-all-1")
-        d = check_common(rc, res, errtext, rtext)
-        assert d["proxy"] == {"configured": "yes", "matches": "unknown"}, d
-        print("7 proxy bypassed/all-only -> no/unknown ok")
+        def system_proxy_open(req, timeout, proxies):
+            seen.append(proxies)
+            raise urllib.error.URLError(ConnectionRefusedError(61, "refused"))
 
-        # 8 getproxies 探测失败：两值均 unknown
-        set_proxies(boom=True)
-        rc, res, errtext, rtext = fail_with(exc, "diag-proxy-unknown-1")
+        rc, res, errtext, rtext = run_case("diag-proxy-sys-1", system_proxy_open)
         d = check_common(rc, res, errtext, rtext)
-        assert d["proxy"] == {"configured": "unknown", "matches": "unknown"}, d
-        print("8 proxy probe fails -> unknown/unknown ok")
+        assert d["proxy"] == {"configured": "yes", "matches": "yes", "source": "system"}, d
+        assert seen == [{"https": "http://user:hunter2@sysproxy.corp:3128"}], seen
+        assert "sysproxy.corp" not in errtext and "hunter2" not in rtext, errtext
+        print("6 default system proxy (env pollution ignored) -> system yes/yes ok")
+
+        # 7 标准 https_proxy 显式配置时优先于系统代理
+        set_net({"https": "http://envproxy.corp:8080"},
+                {"https": "http://sysproxy.corp:3128"})
+        seen.clear()
+        rc, res, errtext, rtext = run_case("diag-proxy-env-1", system_proxy_open)
+        d = check_common(rc, res, errtext, rtext)
+        assert d["proxy"] == {"configured": "yes", "matches": "yes", "source": "env"}, d
+        assert seen == [{"https": "http://envproxy.corp:8080"}], seen
+        assert "envproxy.corp" not in errtext and "sysproxy.corp" not in rtext, errtext
+        print("7 explicit https_proxy wins over system -> env ok")
+
+        # 8 系统例外表命中：有代理配置，但本请求直连
+        set_net({}, {"https": "http://sysproxy.corp:3128"}, bypass=True)
+        seen.clear()
+        rc, res, errtext, rtext = run_case("diag-proxy-bypass-1", system_proxy_open)
+        d = check_common(rc, res, errtext, rtext)
+        assert d["proxy"] == {"configured": "yes", "matches": "no", "source": "bypass"}, d
+        assert seen == [{}], seen
+        print("8 system exception table -> bypass, direct ok")
+
+        # 9 系统代理探测失败：不猜，两值 unknown
+        set_net(boom=True)
+        diag = dispatch._proxy_diagnostic(URL)
+        assert diag == {"configured": "unknown", "matches": "unknown",
+                        "source": "unknown"}, diag
+        print("9 proxy probe fails -> unknown ok")
     finally:
-        dispatch.urllib.request.urlopen = real_urlopen
-        dispatch.urllib.request.getproxies = real_getproxies
-        dispatch.urllib.request.proxy_bypass = real_bypass
+        dispatch.webhook_open = real_open
+        dispatch.urllib.request.getproxies_environment = real_getproxy_env
+        if had_sysconf:
+            dispatch.urllib.request.getproxies_macosx_sysconf = real_sysconf
+        else:
+            delattr(dispatch.urllib.request, "getproxies_macosx_sysconf")
+        if real_mac_bypass is not None:
+            dispatch.urllib.request.proxy_bypass_macosx_sysconf = real_mac_bypass
+        else:
+            delattr(dispatch.urllib.request, "proxy_bypass_macosx_sysconf")
+        dispatch.urllib.request.proxy_bypass_environment = real_env_bypass
         set_env(None, None)
 
     print("all webhook diagnostics tests passed")
