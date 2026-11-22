@@ -18,6 +18,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch  # noqa: E402
+import os  # noqa: E402
+# 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
+os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
+
 
 PROMPT = "请实现某个功能\n第二行说明"
 ANCHOR = PROMPT.splitlines()[0][:24]

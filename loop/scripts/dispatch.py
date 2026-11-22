@@ -9,9 +9,9 @@
 自动经 uv run --no-python-downloads 用机器上已有的 3.10+ 解释器重跑，不下载。）
 
 机械活：读放行提示词 → 核对目标 → hc send --if idle → hc wait 循环 →
-hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干净全文 reply 落盘 .md
-＋抽取选段字段 → 合并成一行 JSON。异常直接返回 error（退出码非零），不进 pi。
-只用 Python 标准库。
+hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净全文 reply 落盘 .md
+＋抽取选段字段（默认直连 API，pi 显式备选，ADR-0005）→ 合并成一行 JSON。
+异常直接返回 error（退出码非零），不进抽取。只用 Python 标准库。
 
 机械保证（不靠提示词）：
   - 原文照发：主任务文件内容一字不改地作为 hc send 的位置参数。
@@ -30,7 +30,7 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
   - 完整性判据：折叠标记（▲▼）命中即 error，不进 pi；原文照常落盘。锚点（提示词
     回声首行前缀）只作信息 anchor_found、不阻断——检查在 turn>基线＋落定之后，
     长任务回声滚出当前屏是常态，回复仍在屏底。
-  - 工具定位：hc/pi/uv 先 shutil.which，PATH 找不到时自动探常见目录（~/.local/bin、
+  - 工具定位：hc/uv（及 backend=pi 时的 pi）先 shutil.which，PATH 找不到时自动探常见目录（~/.local/bin、
     homebrew、nvm node bin），后台 job 缺 PATH 也能起。
   - 本地记录归置：--loop-dir 默认 $TMPDIR/loop（tempfile.gettempdir()/loop），runs/ 放
     记录、releases/ 放放行提示词；随 OS 临时清理、不留持久审计，台账拒重发保护止于
@@ -38,6 +38,11 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
   - 抽取字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
     全部搜不到则 error(extraction_rewritten)。reply 干净全文先整体、再逐行校验，
     未过逐字校验的行标 rewritten["reply"]。
+  - 抽取后端（ADR-0005）：LOOP_EXTRACT_BACKEND=api|pi，默认 api。api 走 OpenAI 兼容
+    chat completions（LOOP_API_BASE/KEY/MODEL 全必填无默认，启动预检缺失即
+    api_not_configured）；temp 0、max_tokens 默认 32768（LOOP_API_MAX_TOKENS 可覆盖）、
+    超时复用 --extract-timeout、不重试不流式；代理与 webhook 同源（ADR-0003）；
+    失败只记状态码/类名，不读响应体，密钥/URL 零回显。pi 备选路径照旧。
 
 交付：stdout 一行 JSON，同一字符串同时写 $TMPDIR/loop/runs/<放行id>.result.json
 （成功与 error 都写）。run_record 指 pi 裁剪后的干净全文 .md（回看对象），
@@ -194,6 +199,46 @@ def find_session_start_trigger(text):
     if m is None:
         return None
     return m.group(1), text.count("\n", 0, m.start()) + 1
+
+
+# 抽取后端（ADR-0005）：默认直连 API（OpenAI 兼容 chat completions），pi 为显式备选。
+# API 参数全走 env、全必填、无内置默认；密钥与 URL 零回显。
+EXTRACT_BACKENDS = ("api", "pi")
+API_MAX_TOKENS_DEFAULT = 32768
+
+
+def resolve_extract_backend():
+    """LOOP_EXTRACT_BACKEND=api|pi，默认 api；非法值是参数类错误（退出码 2）。"""
+    v = os.environ.get("LOOP_EXTRACT_BACKEND", "api").strip().lower()
+    if v not in EXTRACT_BACKENDS:
+        raise DispatchError("bad_extract_backend",
+                            "LOOP_EXTRACT_BACKEND 值非法（只认 api|pi）", [], returncode=2)
+    return v
+
+
+def api_config():
+    """读 API 三个 env＋可选 max_tokens；缺必填项报 api_not_configured
+    （只列变量名，不带值），max_tokens 非法报 bad_api_max_tokens。启动预检用。"""
+    names = ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL")
+    vals = {n: os.environ.get(n, "").strip() for n in names}
+    missing = [n for n in names if not vals[n]]
+    if missing:
+        raise DispatchError(
+            "api_not_configured",
+            "抽取后端=api 但 env 缺失：" + ", ".join(missing),
+            ["配齐三个变量（见 webhook.env.example 抽取配置节）后重试",
+             "或设 LOOP_EXTRACT_BACKEND=pi 走 pi 备选"],
+            returncode=2)
+    try:
+        max_tokens = int(os.environ.get("LOOP_API_MAX_TOKENS", "").strip()
+                         or API_MAX_TOKENS_DEFAULT)
+        if max_tokens <= 0:
+            raise ValueError
+    except ValueError:
+        raise DispatchError("bad_api_max_tokens",
+                            "LOOP_API_MAX_TOKENS 须为正整数", [], returncode=2)
+    return (vals["LOOP_API_BASE"].rstrip("/"), vals["LOOP_API_KEY"],
+            vals["LOOP_API_MODEL"], max_tokens)
 
 
 class DispatchError(Exception):
@@ -760,12 +805,12 @@ def parse_extraction(stdout):
             return {k: obj[k] for k in EXTRACT_FIELDS}
     raise DispatchError(
         "extraction_invalid",
-        "pi 输出中找不到符合固定形状的 JSON",
-        ["原文已落盘，可人工用 pi 按 prompts/extract.md 重做抽取", stdout.strip()[:300]],
+        "抽取输出中找不到符合固定形状的 JSON",
+        ["原文已落盘，可人工按 prompts/extract.md 重做抽取", stdout.strip()[:300]],
     )
 
 
-def extract(pi_bin, args, raw_path):
+def extract_via_pi(pi_bin, args, raw_path):
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
@@ -792,6 +837,65 @@ def extract(pi_bin, args, raw_path):
         )
     # 研究表明 pi 模型失败时退出码可能仍为 0，所以无论退出码都要校验输出。
     return parse_extraction(p.stdout)
+
+
+def extract_via_api(args, raw_path):
+    """直连 API 裁剪＋抽取（ADR-0005）：OpenAI 兼容 chat completions，
+    system=extract.md，user=指令＋内联整屏原文。temp 0、不流式、不重试、
+    不发 response_format；超时复用 --extract-timeout。代理决议与出口和
+    webhook 同一套（ADR-0003）。失败只记状态码/类名，不读响应体，密钥/URL 零回显。"""
+    base, key, model, max_tokens = api_config()
+    extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
+    if not extract_md.is_file():
+        raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
+    raw_text = Path(raw_path).read_text(encoding="utf-8")
+    instruction = (
+        "整屏原文已内联在本消息末尾。按系统提示词裁剪并抽取，"
+        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked 五个字段。"
+    )
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": extract_md.read_text(encoding="utf-8")},
+            {"role": "user", "content": instruction + "\n\n" + raw_text},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+    }).encode("utf-8")
+    url = base + "/chat/completions"
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer " + key})
+    proxies, _ = webhook_proxy_resolution(url)
+    try:
+        with webhook_open(req, args.extract_timeout, proxies) as r:
+            payload = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise DispatchError("extraction_failed", f"API HTTP {e.code}",
+                            ["原文已落盘，可人工重做抽取"])
+    except Exception as e:
+        reason = getattr(e, "reason", None)
+        if isinstance(e, TimeoutError) or isinstance(reason, TimeoutError):
+            raise DispatchError("tool_timeout",
+                                f"API 抽取超护栏 {args.extract_timeout} 秒",
+                                ["原文已落盘，可人工重做抽取"])
+        raise DispatchError("extraction_failed", f"API {type(e).__name__}",
+                            ["原文已落盘，可人工重做抽取"])
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise DispatchError("extraction_invalid",
+                            "API 响应缺 choices[0].message.content",
+                            ["原文已落盘，可人工重做抽取"])
+    return parse_extraction(content)
+
+
+def extract(pi_bin, args, raw_path):
+    """抽取入口：按 LOOP_EXTRACT_BACKEND 分叉（默认 api 直连，pi 显式备选）。"""
+    if resolve_extract_backend() == "api":
+        return extract_via_api(args, raw_path)
+    return extract_via_pi(pi_bin, args, raw_path)
 
 
 def positive_float(s):
@@ -821,7 +925,7 @@ def parse_args(argv=None):
     ap.add_argument("--expect-proc", help="身份预检：前台进程应含此子串（认 name/argv[0]/app，如 grok/claude）")
     ap.add_argument("--loop-dir", default=str(Path(tempfile.gettempdir()) / "loop"),
                     help="本地记录根目录（默认 $TMPDIR/loop，随 OS 临时清理）")
-    ap.add_argument("--pi-model", help="pi --model 透传（默认用 pi 自身配置的模型）")
+    ap.add_argument("--pi-model", help="pi --model 透传（仅 LOOP_EXTRACT_BACKEND=pi 时生效；默认用 pi 自身配置的模型）")
     # ---- 已裁定默认值（issue #16，2026-11-19），可覆盖 ----
     ap.add_argument("--wall-clock", type=positive_float, default=3600.0,
                     help="墙钟上限秒数，从发送成功起计，不重置（默认 3600）")
@@ -843,8 +947,14 @@ def main(argv=None):
     result_path = None
     started = None
     reset_sent = False
+    backend = None
     try:
         check_structure_and_tools()
+        # 抽取后端启动预检（ADR-0005）：api 缺配置立刻报错，不跑完一轮才发现；
+        # pi 备选才需要 find_tool(pi)，api 路径不依赖 node/pi。
+        backend = resolve_extract_backend()
+        if backend == "api":
+            api_config()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.release_id):
             raise DispatchError("bad_release_id", "放行 id 只允许字母数字与 ._-，且不以符号开头", [])
         task_name = generate_short_task_name(args.release_id)
@@ -894,10 +1004,10 @@ def main(argv=None):
                      "清单与边界见 SKILL.md「会话起始 skill」；工作流出处 /ask-matt"],
                     returncode=2)
         hc_bin = find_tool("hc")
-        pi_bin = find_tool("pi")
+        pi_bin = find_tool("pi") if backend == "pi" else None
         if not hc_bin:
             raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 hc", [])
-        if not pi_bin:
+        if backend == "pi" and not pi_bin:
             raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 pi",
                                 ["某些机器非交互 shell 的 PATH 里没有 node；"
                                  "脚本已探 ~/.local/bin、homebrew、nvm node bin 仍未果"])
@@ -932,6 +1042,7 @@ def main(argv=None):
                 "wall_clock": args.wall_clock, "check_in": args.check_in,
                 "settle_seconds": args.settle_seconds, "settle_checks": args.settle_checks,
                 "lines": READ_LINES, "extract_timeout": args.extract_timeout,
+                "extract_backend": backend,
             },
             "phase": "sending",
             "created_at": now_iso(),
@@ -999,7 +1110,7 @@ def main(argv=None):
                 [f"整屏原文已落盘：{raw_path}", "请用户回看原文；不按键、不自动补发"],
             )
 
-        # 7) pi 裁剪 + 抽取 + 逐字校验（裁定 C），合并输出。
+        # 7) 裁剪＋抽取（默认 API 直连，pi 备选）＋逐字校验（裁定 C），合并输出。
         ledger.update(phase="extracting")
         write_json_atomic(ledger_path, ledger)
         ext = extract(pi_bin, args, raw_path)
@@ -1029,6 +1140,7 @@ def main(argv=None):
             "raw_record": str(raw_path),
             "prompt_sha256": sha,
             "rewritten": rewritten,
+            "extract_backend": backend,
             **ext,
         }
         ledger.update(phase="done", done_at=now_iso())
@@ -1044,6 +1156,8 @@ def main(argv=None):
             except OSError:
                 pass
         out = {"ok": False, "error": {"kind": e.kind, "message": e.message, "hints": e.hints}}
+        if backend is not None:
+            out["extract_backend"] = backend
         if args.reset != "none":
             out["reset"] = args.reset
             out["error"]["reset_sent"] = reset_sent
