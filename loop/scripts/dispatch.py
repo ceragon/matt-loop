@@ -19,6 +19,9 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → pi 裁剪出干�
     先发字面命令、等落定（idle/done + 屏幕静置）再发主任务；前置按枚举校验、不抽取。
   - 一个放行至多发送成功两次（前置＋主任务，各一次）：先写台账
     $TMPDIR/loop/runs/<放行id>.json 再发送；台账存在即拒绝。
+  - 会话起始 skill 纪律（ADR-0004）：提示词行首出现 /wayfinder、/grill-with-docs、
+    /implement、/implement-spec、/prototype 之一且 --reset=none 时，写台账前拒发
+    （reset_required，退出码 2）；放行 id 不消耗，补 --reset 同 id 可重试。
   - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
     再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
     永不 --force，不碰 hc keys。
@@ -173,13 +176,33 @@ WEBHOOK_TIMEOUT_S = 10.0
 # 不算坏行、不进 rewritten。
 EXTRACT_FIELDS = ("needs_user", "questions", "conclusion", "blocked", "reply")
 
+# 会话起始 skill（ADR-0004）：新会话必须以其中之一开场，调用时目标会话必须先重置。
+# 清单出自 /ask-matt 工作流（默认调用方已装 Matt 全套 skill）；中途 skill
+# （to-spec/to-tickets/tdd/code-review/retro 等）不在内，普通回复不触发。
+SESSION_START_SKILLS = ("wayfinder", "grill-with-docs", "implement", "implement-spec", "prototype")
+# 行首匹配：允许行前空白，命令后须不是词字符或连字符（/implementing、/implement-foo
+# 不误中，/wayfinder#7 无空格带参算调用）；implement-spec 排在 implement 前，命中时报长名。
+# 行文中提及不触发——讨论工作流的普通回复要放行；「调用独占一行」由 SKILL.md 纪律约定。
+SESSION_START_RE = re.compile(
+    r"^[ \t]*/(implement-spec|implement|wayfinder|grill-with-docs|prototype)(?![\w-])",
+    re.MULTILINE)
+
+
+def find_session_start_trigger(text):
+    """行首斜杠命令命中会话起始 skill 时返回 (skill, 行号)，否则 None。"""
+    m = SESSION_START_RE.search(text)
+    if m is None:
+        return None
+    return m.group(1), text.count("\n", 0, m.start()) + 1
+
 
 class DispatchError(Exception):
-    def __init__(self, kind, message, hints=None):
+    def __init__(self, kind, message, hints=None, returncode=1):
         super().__init__(message)
         self.kind = kind
         self.message = message
         self.hints = hints or []
+        self.returncode = returncode
 
 
 class HcFailure(DispatchError):
@@ -857,6 +880,19 @@ def main(argv=None):
                 f"放行 id {args.release_id} 已有台账或原文落盘，一个放行只跑一轮",
                 ["查看台账确认上次结果；要重发须经用户重新放行、用新 id"],
             )
+        # 1.2) 工程纪律预检（ADR-0004）：会话起始 skill 必须重置目标会话。
+        #      在写台账与任何发送之前拒发：放行 id 不消耗，补 --reset 同 id 可重试。
+        if args.reset == "none":
+            hit = find_session_start_trigger(text)
+            if hit is not None:
+                skill, lineno = hit
+                raise DispatchError(
+                    "reset_required",
+                    f"提示词第 {lineno} 行调用会话起始 skill /{skill}："
+                    "必须先重置目标会话，--reset=none 拒发",
+                    ["补 --reset new/clear/compact（按目标 agent 认哪条命令挑）后用同一放行 id 重试",
+                     "清单与边界见 SKILL.md「会话起始 skill」；工作流出处 /ask-matt"],
+                    returncode=2)
         hc_bin = find_tool("hc")
         pi_bin = find_tool("pi")
         if not hc_bin:
@@ -1016,7 +1052,7 @@ def main(argv=None):
         if ledger is not None and ledger.get("run_record"):
             out["error"]["run_record"] = ledger["run_record"]
         emit_result(out, result_path)
-        return 1
+        return e.returncode
 
 
 if __name__ == "__main__":
