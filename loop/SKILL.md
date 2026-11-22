@@ -1,6 +1,6 @@
 ---
 name: loop
-description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（pi 裁剪＋抽取成 JSON）；监听只读随时可，仅报错时可直推（仍须放行）。可选 --reset 先发 /new /clear /compact。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
+description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（pi 裁剪＋抽取成 JSON）；监听只读随时可，仅报错时可直推（仍须放行）。可选 --reset 先发 /new /clear /compact；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）必须带 --reset。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
 ---
 
 # loop：走管道
@@ -31,9 +31,18 @@ python3 scripts/dispatch.py \
 
 - `python3` 直跑：脚本无第三方依赖、头部声明 `requires-python = ">=3.10"`。版本门 `>=3.10` 直跑；`<3.10` 自动 `find_tool` 探 uv 并经 `uv run --no-python-downloads` 用已有 3.10+ 重跑（不下载），uv 探不到才报 `error(kind=python_too_old)`。后台精简 PATH 里 python3 也在，uv 退居内部兜底，调用方不用管 PATH、不需手写包装。
 - `--expect-proc`：身份预检，强烈建议传（grok 传 `grok`、claude 传 `claude`）；匹配 foreground.name/argv[0]/status.app 任一（claude 的 name 可能是版本号，认 argv[0]/app），不符即拒发。标题易变（默认「Claude Code」→跑起来才改），不作预检判据。
-- `--reset {none,new,clear,compact}`（默认 `none`）：主任务前的重置前置。选 `new`/`clear`/`compact` 就在同一 target 先 `--if idle` 发字面命令 `/new`/`/clear`/`/compact`，等落定（idle/done＋屏幕静置）再发主任务；`none` 即单 prompt，向后兼容。**发哪条由调用方按目标 agent 认哪个挑**（claude/grok 的 `/new`≡`/clear` 都认，只认 `/new` 的挑 `new`），脚本不按 agent 映射。前置不抽取、不落 run_record；前置或主任务任一步发不出即整轮停，error 带 `reset_sent` 标明部分状态。`/clear` 是本地命令、可能不进 working，前置落定用屏幕静置而非 turn 判据。
+- `--reset {none,new,clear,compact}`（默认 `none`）：主任务前的重置前置。选 `new`/`clear`/`compact` 就在同一 target 先 `--if idle` 发字面命令 `/new`/`/clear`/`/compact`，等落定（idle/done＋屏幕静置）再发主任务；`none` 即单 prompt，向后兼容。**发哪条由调用方按目标 agent 认哪个挑**（claude/grok 的 `/new`≡`/clear` 都认，只认 `/new` 的挑 `new`），脚本不按 agent 映射。前置不抽取、不落 run_record；前置或主任务任一步发不出即整轮停，error 带 `reset_sent` 标明部分状态。`/clear` 是本地命令、可能不进 working，前置落定用屏幕静置而非 turn 判据。**提示词行首调用会话起始 skill 时必须带 `new`/`clear`/`compact`，`none` 会被脚本拒发**（见「会话起始 skill」）。
 - 等待与抽取默认值一般不用动：墙钟 3600 秒（主任务发送成功起计）、check-in 180 秒、落定静置 10 秒 × 2 次、pi 抽取护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 0`。
 - `--loop-dir` 默认 `$TMPDIR/loop`（随 OS 临时清理，记录不持久）；`--prompt-file` 传 `$TMPDIR/loop/releases/<放行id>.txt`；`--pi-model` 透传 `pi --model`。
+
+## 会话起始 skill（工程纪律）
+
+五个 skill 是**会话起始 skill**：`wayfinder`、`grill-with-docs`、`implement`、`implement-spec`、`prototype`。它们只能作为空会话的开场任务：（继续）调用时**必须带 `--reset new/clear/compact`** 先清目标执行者会话，不能带旧上下文接着跑；调用方自己的会话不动。出处是 `/ask-matt` 工作流（默认调用方已装 Matt 全套 skill）：连续性在工件里——地图 issue、GLOSSARY/ADR、票、handoff 文件——不在聊天里，清会话不丢东西。
+
+- **调用独占一行**：放行提示词里，会话起始 skill 的斜杠命令写在行首（可带参数，如 `/wayfinder #7`）。脚本按行首匹配做机械预检：命中且 `--reset=none` → 写台账前拒发（`reset_required`，退出码 2），零发送、放行 id 不消耗，补 `--reset` 同 id 重试。
+- **中途不触发**：清完以 `/grill-with-docs` 开场后，同会话接着跑 `to-spec`/`to-tickets` 不再清（ask-matt 的 Context hygiene：grill→spec→tickets 一个不间断窗口）；`tdd`、`code-review`、`retro` 等中途 skill、回答提问的普通回复、行文中提及（如「答完再跑 /implement」）都不触发。
+- **prototype 的桥是 handoff**：旧会话写 handoff 文件，新会话以 `/prototype` 对着该文件开场。
+- `compact` 也算重置（留摘要可接受），唯一拒发值是 `none`；选哪条命令仍按目标 agent 认哪个挑。
 
 ## 交付：后台跑＋完成通知
 
@@ -78,4 +87,4 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 
 ## 护栏
 
-调用方要守的只剩一条：**先放行，后调用**。其余机械保证由脚本兜底，细节见 `REFERENCE.md`。
+调用方要守的两条：**先放行，后调用**；**调会话起始 skill 必须 `--reset`**（见「会话起始 skill」，脚本对行首调用机械兜底）。其余机械保证由脚本兜底，细节见 `REFERENCE.md`。

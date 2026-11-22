@@ -4,7 +4,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 ## error 返回契约
 
-失败退出码 1（参数错误退出码 2，只有 argparse 报错、无 JSON）。stdout 一行、同一字符串写 `.result.json`：
+失败退出码 1；参数错误退出码 2（argparse 报错无 JSON；`reset_required` 是预检拒发，退出码 2、有 JSON）。stdout 一行、同一字符串写 `.result.json`：
 
 ```json
 {"ok": false, "error": {"kind": "…", "message": "…", "hints": ["…"]}}
@@ -18,6 +18,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 | --- | --- | --- |
 | `python_too_old` | 解释器低于 3.10 且 uv 自举失败（uv 探不到或重 exec 失败） | 装 3.10+ 解释器，或装 uv（脚本自动经 `uv run --no-python-downloads` 重跑） |
 | `duplicate_release` | 该放行 id 已有台账/落盘 | 查台账；重发须用户重新放行、新 id |
+| `reset_required` | 提示词行首调用会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）且 `--reset=none`；写台账前拒发，零发送（ADR-0004） | 补 `--reset new/clear/compact` 用**同一放行 id** 重试（id 不消耗）；清单与边界见 SKILL.md「会话起始 skill」 |
 | `not_idle` / `identity_mismatch` | 预检不过，未发送 | 整理成选项卡告知用户 |
 | `send_refused` | 前置或主任务 hc 拒发且 done 补发不适用或仍失败；看 `reset_sent` 判断前置是否已发 | 同上 |
 | `dialog_blocked` | 目标停在弹框（审批/提问/认证） | 告知用户去目标屏幕前处理；不按键、不代答 |
@@ -34,6 +35,8 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 ## 机械保证（脚本兜底，调用方无需自查）
 
 原文照发、一个放行至多发送成功两次（重置前置＋主任务，各一次）、永不 `--force`、不碰 `hc keys`、身份预检（`--expect-proc` 匹配 foreground.name/argv[0]/status.app 任一）、sha256 记账并随成功输出回报、不完整不进 pi、改写字段标 `rewritten`。重置前置按枚举校验、与主任务共用同一发送门，任一步发不出即整轮停。
+
+会话起始 skill 纪律（ADR-0004）：提示词**行首**出现 `/wayfinder`、`/grill-with-docs`、`/implement`、`/implement-spec`、`/prototype` 之一（允许行前空白；命令后须非词字符且非连字符，`/implementing`、`/implement-foo` 不误中，`/wayfinder#7` 算调用；`implement-spec` 优先报长名）且 `--reset=none` 时，在写台账与任何发送之前拒发（`reset_required`，退出码 2）。行文中提及不触发；放行 id 不消耗，补 `--reset` 同 id 可重试。`new`/`clear`/`compact` 都算重置。「调用独占一行」是 SKILL.md 的文字纪律，机械检查只兜行首这一层。
 
 发送门：首发只 `--if idle`；被拒（`status_mismatch`，零字节进入，不算重发）后 `hc get` 复核确认 `done`，补发前再核一次非 working/blocked，才不带 `--if` 补发一次；仍失败即 error。
 
