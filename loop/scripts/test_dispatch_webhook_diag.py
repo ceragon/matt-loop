@@ -204,9 +204,11 @@ def main():
         rc, res, errtext, rtext = run_case("diag-proxy-sys-1", system_proxy_open)
         d = check_common(rc, res, errtext, rtext)
         assert d["proxy"] == {"configured": "yes", "matches": "yes", "source": "system"}, d
-        assert seen == [{"https": "http://user:hunter2@sysproxy.corp:3128"}], seen
+        assert d["attempts"] == 4 and d["fallback_direct"] is True and d["fallback_error"] == "URLError", d
+        sys_proxy = {"https": "http://user:hunter2@sysproxy.corp:3128"}
+        assert seen == [sys_proxy, sys_proxy, sys_proxy, {}], seen
         assert "sysproxy.corp" not in errtext and "hunter2" not in rtext, errtext
-        print("6 default system proxy (env pollution ignored) -> system yes/yes ok")
+        print("6 default system proxy (env pollution ignored) -> system yes/yes + 3+1 attempts ok")
 
         # 7 标准 https_proxy 显式配置时优先于系统代理
         set_net({"https": "http://envproxy.corp:8080"},
@@ -215,18 +217,21 @@ def main():
         rc, res, errtext, rtext = run_case("diag-proxy-env-1", system_proxy_open)
         d = check_common(rc, res, errtext, rtext)
         assert d["proxy"] == {"configured": "yes", "matches": "yes", "source": "env"}, d
-        assert seen == [{"https": "http://envproxy.corp:8080"}], seen
+        assert d["attempts"] == 4 and d["fallback_direct"] is True and d["fallback_error"] == "URLError", d
+        env_proxy = {"https": "http://envproxy.corp:8080"}
+        assert seen == [env_proxy, env_proxy, env_proxy, {}], seen
         assert "envproxy.corp" not in errtext and "sysproxy.corp" not in rtext, errtext
-        print("7 explicit https_proxy wins over system -> env ok")
+        print("7 explicit https_proxy wins over system -> env + 3+1 attempts ok")
 
-        # 8 系统例外表命中：有代理配置，但本请求直连
+        # 8 系统例外表命中：有代理配置，但本请求直连（无直连兜底，只重试 3 次）
         set_net({}, {"https": "http://sysproxy.corp:3128"}, bypass=True)
         seen.clear()
         rc, res, errtext, rtext = run_case("diag-proxy-bypass-1", system_proxy_open)
         d = check_common(rc, res, errtext, rtext)
         assert d["proxy"] == {"configured": "yes", "matches": "no", "source": "bypass"}, d
-        assert seen == [{}], seen
-        print("8 system exception table -> bypass, direct ok")
+        assert d["attempts"] == 3 and "fallback_direct" not in d, d
+        assert seen == [{}, {}, {}], seen
+        print("8 system exception table -> bypass, direct (3 attempts) ok")
 
         # 9 系统代理探测失败：不猜，两值 unknown
         set_net(boom=True)

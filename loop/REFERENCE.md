@@ -45,21 +45,23 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 抽取逐字校验：选段字段逐一做原文子串校验（含去空白折叠），搜不到标 `rewritten` 附最接近片段，全部搜不到则 `error(extraction_rewritten)`；`reply` 干净全文先整体、再逐行校验，未过逐字校验的行标 `rewritten["reply"]`。
 
-可选 webhook：env `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET` 都配才发，成功/报错都 POST 结果 JSON，鉴权走 `Authorization: Bearer <密钥>`，不进日志、不进 stdout，~10 秒超时；发失败不连累整轮，result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`（HTTP 状态码如 `"HTTP 401"`，或异常类名如 `"URLError"`）与 `webhook_error_detail`（脱敏诊断，stderr 打印同一份），结果文件仍是事实源。
+可选 webhook：env `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET` 都配才发，成功/报错都 POST 结果 JSON，鉴权走 `Authorization: Bearer <密钥>`，不进日志、不进 stdout，单次 ~10 秒超时；发失败不连累整轮，result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`（HTTP 状态码如 `"HTTP 401"`，或异常类名如 `"URLError"`）与 `webhook_error_detail`（脱敏诊断，stderr 打印同一份），结果文件仍是事实源。
 
-webhook 出网默认跟随本机系统代理（见 ADR-0003）：标准 `http_proxy`/`https_proxy` 显式配置时优先（source=env）；否则读系统代理（macOS SystemConfiguration，source=system）；系统例外表或 `no_proxy` 命中则直连（source=bypass）；都没配是 none；探测失败为 unknown。不能用 `getproxies()` 直接判——只设了 `no_proxy` 或非标准 `*_proxy`（如 `JEV_UPSTREAM_PROXY`）时它也返回非空字典，却没有任何 http/https 键，urllib 实际会直连。该选择只作用于 webhook POST，不改进程全局代理、不关证书校验。
+webhook 出网默认跟随本机系统代理（见 ADR-0003）：标准 `http_proxy`/`https_proxy` 显式配置时优先（source=env）；否则读系统代理（macOS SystemConfiguration，source=system）；系统例外表或 `no_proxy` 命中则直连（source=bypass）；都没配是 none；探测失败为 unknown。不能用 `getproxies()` 直接判——只设了 `no_proxy` 或非标准 `*_proxy`（如 `JEV_UPSTREAM_PROXY`）时它也返回非空字典，却没有任何 http/https 键，urllib 实际会直连。选定出口对传输层异常与 `HTTP 5xx` 最多试 3 次（首发＋2 次重试，退避 `0.5s`、`1.0s`）；若走了代理且 3 次全败，再传 `ProxyHandler({})` 强制跳过 env/系统代理真直连兜底 1 次（`4xx` 等非 5xx 状态码立刻失败、不重试也不兜底）。该策略只作用于 webhook POST，不改进程全局代理、不关证书校验。
 
 `webhook_error_detail` 只收类名、数字、布尔和三态字符串，不收 `str(e)`/`repr(e)`/响应体/字符串 reason，避免 URL、密钥、主机名、请求头回显。字段：
 
 | 字段 | 含义 |
 | --- | --- |
-| `type` | 外层异常类名（如 `URLError`、`HTTPError`、`TimeoutError`） |
+| `type` | 外层异常类名（如 `URLError`、`HTTPError`、`TimeoutError`；以主路由最后一次尝试为准以对齐 `proxy`） |
 | `reason_type` | `URLError.reason` 是异常时的类名（如 `ConnectionRefusedError`、`gaierror`、`SSLCertVerificationError`）；reason 是字符串时不出现 |
 | `errno` / `errno_name` | 可用的 errno 与名字（如 `61`/`ECONNREFUSED`；DNS 给 `EAI_NONAME`/`EAI_AGAIN`） |
 | `is_timeout` | 是否超时（外层或 reason 为 `TimeoutError`） |
 | `ssl_verify_code` | `SSLCertVerificationError.verify_code`（如 `18` 自签、`20` 缺中间证书；含义以 OpenSSL 为准） |
 | `http_status` | 仅 `HTTPError`：HTTP 状态码 |
 | `proxy.configured` / `proxy.matches` / `proxy.source` | 是否配置了代理 / 本请求是否实际命中 / 代理来源（`env`/`system`/`bypass`/`none`/`unknown`）；不输出代理地址或凭据 |
+| `attempts` | 本轮 webhook 总尝试次数（`4xx` 为 `1`；直连无代理全败为 `3`；走代理＋直连兜底全败为 `4`） |
+| `fallback_direct` / `fallback_error` | 仅当走了代理且 3 次全败后执行直连兜底仍失败时出现：`fallback_direct: true`，`fallback_error` 为直连那次的 `"HTTP <码>"` 或异常类名 |
 
 下一次 `failed` 时按证据读，不预设根因：`http_status` 非空＝已连上端点、按状态码（401 多为密钥；5xx 为服务端）；`is_timeout=true`＝超时；`errno_name` 为 `ECONNREFUSED`/`ECONNRESET`＝连接层被拒/被断；为 `EAI_*`＝DNS 解析失败；`ssl_verify_code` 非空＝证书校验失败；`proxy.source=system` 说明这次走的是本机系统代理，`bypass` 是例外表放行、`none` 是没配代理，`matches=yes` 时代理只是有嫌疑、仍须其它证据。诊断只记录事实，不关证书校验、不改系统代理设置；修法等下一次真实运行的证据再定。
 

@@ -177,6 +177,8 @@ READ_LINES = 0
 RESET_POLL_S = 2.0
 # 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
 WEBHOOK_TIMEOUT_S = 10.0
+# webhook 主出口重试退避（共 3 次：首发 + 2 次重试）；全败且用了代理时再直连兜底 1 次。
+WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
 
 # summary 已移除（原文才是重点）：pi 若仍多给 summary，投影时直接丢弃，
 # 不算坏行、不进 rewritten。
@@ -423,12 +425,10 @@ def _proxy_diagnostic(url):
 
 
 def webhook_open(req, timeout, proxies):
-    """webhook 请求出口。proxies 非空时按它建 opener（ProxyHandler 自带
-    proxy_bypass），否则直连。独立函数便于测试替换，不碰进程全局 opener。"""
-    if proxies:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies))
-        return opener.open(req, timeout=timeout)
-    return urllib.request.urlopen(req, timeout=timeout)
+    """webhook 请求出口。proxies 非空时走该代理；为空 dict 时显式传
+    ProxyHandler({}) 强制直连（不回退读取环境或系统代理）。独立函数便于测试替换，不碰全局 opener。"""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(proxies or {}))
+    return opener.open(req, timeout=timeout)
 
 
 def webhook_error_detail(exc, url):
@@ -472,38 +472,76 @@ def webhook_error_detail(exc, url):
     return detail
 
 
+def _is_retryable_webhook_error(exc):
+    """4xx（含 401/403/404）属于认证或请求错，不重试也不直连兜底；
+    传输层异常与 HTTP 5xx 可重试。"""
+    if isinstance(exc, urllib.error.HTTPError):
+        return 500 <= exc.code < 600
+    return True
+
+
+def _webhook_error_label(exc):
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}"
+    return type(exc).__name__
+
+
 def send_webhook(result):
     """可选 webhook 完成通知（Grok Bot 等支持 webhook 唤醒的调用方用）。
     env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，默认关。成功与报错都
     POST 结果 JSON；鉴权走 Authorization: Bearer <密钥>，不进日志、不进 stdout。
     webhook 只是通知，结果文件才是事实源：发失败不连累整轮。
-    出网默认跟随本机系统代理（见 webhook_proxy_resolution）。
+    出网默认跟随本机系统代理（见 webhook_proxy_resolution）：主出口最多尝试 3 次
+    （退避 0.5s、1.0s）；若用了代理且 3 次均因瞬态/5xx 失败，再强制直连（proxies={}）
+    兜底 1 次；HTTP 4xx 等非 5xx 状态码立刻失败、不重试也不兜底。
     返回 (off/sent/failed, webhook_error, webhook_error_detail)；失败时
-    webhook_error 只记 HTTP 状态码（如 "HTTP 401"）或异常类名（如 "URLError"），
-    webhook_error_detail 是同一份脱敏诊断（见 webhook_error_detail），stderr
-    打印的也是它——三处信息一致，都不含 URL/密钥/主机名/头内容。"""
+    webhook_error 与 webhook_error_detail 保留主出口最后一次错误（与 detail["proxy"]
+    一致），另带 attempts（总尝试次数），走过直连兜底时附 fallback_direct 与
+    fallback_error，stderr 打印同一份脱敏诊断，都不含 URL/密钥/主机名/头内容。"""
     url = os.environ.get("LOOP_WEBHOOK_URL")
     secret = os.environ.get("LOOP_WEBHOOK_SECRET")
     if not url or not secret:
         return "off", None, None
-    try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(result, ensure_ascii=False).encode("utf-8"),
-            headers={"Content-Type": "application/json",
-                     "Authorization": "Bearer " + secret},
-            method="POST",
-        )
-        proxies, _source = webhook_proxy_resolution(url)
-        with webhook_open(req, WEBHOOK_TIMEOUT_S, proxies) as resp:
-            resp.read()
-        return "sent", None, None
-    except urllib.error.HTTPError as e:
-        err = f"HTTP {e.code}"
-        detail = webhook_error_detail(e, url)
-    except Exception as e:
-        err = type(e).__name__
-        detail = webhook_error_detail(e, url)
+    body = json.dumps(result, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json",
+               "Authorization": "Bearer " + secret}
+    proxies, _source = webhook_proxy_resolution(url)
+    attempts = 0
+    primary_exc = None
+    max_primary = 1 + len(WEBHOOK_RETRY_DELAYS)
+    for i in range(max_primary):
+        attempts += 1
+        try:
+            # 每次新建 Request：urllib ProxyHandler.proxy_open 会原地改写 req.host，复用会污染直连兜底
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            with webhook_open(req, WEBHOOK_TIMEOUT_S, proxies) as resp:
+                resp.read()
+            return "sent", None, None
+        except Exception as e:
+            primary_exc = e
+            if not _is_retryable_webhook_error(e):
+                break
+            if i < len(WEBHOOK_RETRY_DELAYS):
+                time.sleep(WEBHOOK_RETRY_DELAYS[i])
+    fallback_exc = None
+    fallback_direct = False
+    if proxies and _is_retryable_webhook_error(primary_exc):
+        fallback_direct = True
+        attempts += 1
+        try:
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            with webhook_open(req, WEBHOOK_TIMEOUT_S, {}) as resp:
+                resp.read()
+            return "sent", None, None
+        except Exception as e:
+            fallback_exc = e
+    err = _webhook_error_label(primary_exc)
+    detail = webhook_error_detail(primary_exc, url)
+    detail["attempts"] = attempts
+    if fallback_direct:
+        detail["fallback_direct"] = True
+        if fallback_exc is not None:
+            detail["fallback_error"] = _webhook_error_label(fallback_exc)
     # 不打印 URL/密钥/头内容；状态码/类名定位失败面，detail 给证据，结果文件仍是事实源。
     sys.stderr.write("[dispatch] webhook 发送失败：%s %s（结果文件仍是事实源）\n"
                      % (err, json.dumps(detail, ensure_ascii=False, sort_keys=True)))
