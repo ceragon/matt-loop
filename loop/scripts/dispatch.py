@@ -17,7 +17,10 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
   - 原文照发：主任务文件内容一字不改地作为 hc send 的位置参数。
   - 重置前置（--reset new/clear/compact，默认 none）：放行一并授权前置＋主任务；
     先发字面命令、等落定（idle/done + 屏幕静置）再发主任务；前置按枚举校验、不抽取。
-  - 一个放行至多发送成功两次（前置＋主任务，各一次）：先写台账
+  - 切模型前置（--target-model <名字>，ADR-0006）：重置（如有）之后、主任务之前发
+    字面命令 /model <名字>，等落定再发主任务；名字原样透传、不核实生效、不预读跳过、
+    不按 agent 映射，与 --reset 独立可单独带；target_model 是请求值非验证值。
+  - 一个放行至多发送成功三次（重置＋切模型前置＋主任务，各一次）：先写台账
     $TMPDIR/loop/runs/<放行id>.json 再发送；台账存在即拒绝。
   - 会话起始 skill 纪律（ADR-0004）：提示词行首出现 /wayfinder、/grill-with-docs、
     /implement、/implement-spec、/prototype 之一且 --reset=none 时，在 hc get ＋
@@ -796,8 +799,8 @@ def reset_settle(hc_bin, args):
 
 
 def wait_for_reset(hc_bin, args, deadline):
-    """等前置（/new /clear /compact）落定：短轮询 hc get 至 idle/done，再屏幕静置复核。
-    不要求 turn 增长（/clear 可能不增 turn）。前置不抽取、不落 run_record。"""
+    """等前置（/new /clear /compact /model）落定：短轮询 hc get 至 idle/done，再屏幕静置复核。
+    不要求 turn 增长（/clear、/model 可能不增 turn）。前置不抽取、不落 run_record。"""
     while True:
         if time.monotonic() >= deadline:
             raise DispatchError(
@@ -961,6 +964,9 @@ def parse_args(argv=None):
     ap.add_argument("--reset", choices=["none", "new", "clear", "compact"], default="none",
                     help="主任务前的重置前置，发字面命令 /new /clear /compact（调用方按 agent 认哪个挑）；"
                          "默认 none 不重置，即现状单 prompt")
+    ap.add_argument("--target-model", help="切模型前置（ADR-0006）：主任务前发字面命令 /model <名字>，"
+                    "名字原样透传（脚本不认识模型、不按 agent 映射、不核实生效）；与 --reset 独立，"
+                    "同传时顺序 重置→切模型→主任务；默认不传即现状")
     ap.add_argument("--expect-proc", help="身份预检：前台进程应含此子串（认 name/argv[0]/app，如 grok/claude）")
     ap.add_argument("--loop-dir", default=str(Path(tempfile.gettempdir()) / "loop"),
                     help="本地记录根目录（默认 $TMPDIR/loop，随 OS 临时清理）")
@@ -986,6 +992,7 @@ def main(argv=None):
     result_path = None
     started = None
     reset_sent = False
+    model_sent = False
     backend = None
     task_name = None
     try:
@@ -1089,6 +1096,7 @@ def main(argv=None):
             "prompt_sha256": sha,
             "anchor": anchor,
             "reset": args.reset,
+            "target_model": args.target_model,
             "params": {
                 "wall_clock": args.wall_clock, "check_in": args.check_in,
                 "settle_seconds": args.settle_seconds, "settle_checks": args.settle_checks,
@@ -1114,6 +1122,23 @@ def main(argv=None):
             write_json_atomic(ledger_path, ledger)
             wait_for_reset(hc_bin, args, time.monotonic() + args.wall_clock)
             ledger.update(phase="reset_done", reset_done_at=now_iso())
+            write_json_atomic(ledger_path, ledger)
+
+        # 2.6) 切模型前置（--target-model，ADR-0006）：重置（如有）之后、主任务之前，
+        #      发字面命令 /model <名字>，等落定（idle/done + 屏幕静置）再发主任务。
+        #      名字原样透传：脚本不认识模型、不按 agent 映射、不核实生效、不预读跳过；
+        #      与 --reset 零耦合，可单独带。放行一并授权；前置不抽取、不落 run_record；
+        #      发不出即整轮停（台账记部分状态 model_sent）。
+        if args.target_model:
+            model_cmd = "/model " + args.target_model
+            ledger.update(phase="model_sending")
+            write_json_atomic(ledger_path, ledger)
+            pre_send, pre_resent = do_send(hc_bin, args, model_cmd, ledger, ledger_path)
+            model_sent = True
+            ledger.update(phase="model_waiting", model_send=pre_send, model_resent=pre_resent)
+            write_json_atomic(ledger_path, ledger)
+            wait_for_reset(hc_bin, args, time.monotonic() + args.wall_clock)
+            ledger.update(phase="model_done", model_done_at=now_iso())
             write_json_atomic(ledger_path, ledger)
 
         # 3) 主任务发送（墙钟从主任务发送成功起计，不重置）。
@@ -1195,6 +1220,9 @@ def main(argv=None):
             "extract_backend": backend,
             **ext,
         }
+        # target_model 仅传了才出现：语义是「本轮请求切换到的名字」，非「已验证生效」。
+        if args.target_model:
+            result["target_model"] = args.target_model
         ledger.update(phase="done", done_at=now_iso())
         write_json_atomic(ledger_path, ledger)
         emit_result(result, result_path)
@@ -1220,6 +1248,9 @@ def main(argv=None):
         if args.reset != "none":
             out["reset"] = args.reset
             out["error"]["reset_sent"] = reset_sent
+        if args.target_model:
+            out["target_model"] = args.target_model
+            out["error"]["model_sent"] = model_sent
         if started is not None:
             out["error"]["elapsed_s"] = round(time.monotonic() - started, 1)
         if ledger is not None and ledger.get("run_record"):
