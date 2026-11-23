@@ -10,7 +10,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 {"ok": false, "release_id": "…", "target": "…", "error": {"kind": "…", "message": "…", "hints": ["…"]}}
 ```
 
-`release_id` 与 `target` 必带；在放行 id 校验后算出 `task_name` 的，也一并带顶层 `task_name`（含发给 webhook 的同一份 JSON）。发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout（及配置了时的 webhook）——没有可安全落盘的文件名。
+`release_id` 与 `target` 必带；在放行 id 校验后算出 `task_name` 的，也一并带顶层 `task_name`（含发给 webhook 的同一份 JSON）。发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）；用了 `--target-model` 的 error 另带 `target_model`（请求值非验证值）与 `error.model_sent`（切模型前置是否已发出）；两个前置都用时 `reset_sent`/`model_sent` 一起标明部分状态。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout（及配置了时的 webhook）——没有可安全落盘的文件名。
 
 ## error kind 表
 
@@ -21,7 +21,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 | `reset_required` | 提示词行首调用会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）、`--reset=none` 且目标 `turn != 0`（或缺失）；在 `hc get`＋身份检查之后、写台账前拒发，零发送（ADR-0004） | 补 `--reset new/clear/compact`（agy/pi 认 `new`，claude 认 `clear`，codex 认 `new`/`clear`）用**同一放行 id** 重试（id 不消耗）；清单与边界见 SKILL.md「会话起始 skill」 |
 | `api_not_configured` / `bad_extract_backend` / `bad_api_max_tokens` | 抽取后端启动预检不过（ADR-0005）：backend=api 缺 `LOOP_API_BASE/KEY/MODEL`；`LOOP_EXTRACT_BACKEND` 值非法；`LOOP_API_MAX_TOKENS` 非正整数。未发送 | 配齐/改正 env 用同一放行 id 重试，或设 `LOOP_EXTRACT_BACKEND=pi`；见 SKILL.md「抽取后端」 |
 | `not_idle` / `identity_mismatch` | 预检不过，未发送 | 整理成选项卡告知用户 |
-| `send_refused` | 前置或主任务 hc 拒发且 done 补发不适用或仍失败；看 `reset_sent` 判断前置是否已发 | 同上 |
+| `send_refused` | 前置或主任务 hc 拒发且 done 补发不适用或仍失败；看 `reset_sent`/`model_sent` 判断哪些前置已发 | 同上 |
 | `dialog_blocked` | 目标停在弹框（审批/提问/认证） | 告知用户去目标屏幕前处理；不按键、不代答 |
 | `timeout` | 墙钟到点（前置或主任务），目标仍未落定 | 告知用户；前置超时则主任务未发、原文未取回 |
 | `not_started` / `target_exited` / `target_error` | 发出后未开工 / 程序退出 / 自报 error | 告知用户 |
@@ -35,7 +35,9 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 ## 机械保证（脚本兜底，调用方无需自查）
 
-原文照发、一个放行至多发送成功两次（重置前置＋主任务，各一次）、永不 `--force`、不碰 `hc keys`、身份预检（`--expect-proc` 匹配 foreground.name/argv[0]/status.app 任一）、sha256 记账并随成功输出回报、不完整不进抽取、改写字段标 `rewritten`。重置前置按枚举校验、与主任务共用同一发送门，任一步发不出即整轮停。
+原文照发、一个放行至多发送成功三次（重置＋切模型前置＋主任务，各一次）、永不 `--force`、不碰 `hc keys`、身份预检（`--expect-proc` 匹配 foreground.name/argv[0]/status.app 任一）、sha256 记账并随成功输出回报、不完整不进抽取、改写字段标 `rewritten`。重置前置按枚举校验、与主任务共用同一发送门，任一步发不出即整轮停。
+
+切模型前置（`--target-model`，ADR-0006）：重置（如有）之后、主任务之前发字面 `/model <名字>`，等落定（idle/done＋屏幕静置，复用重置的落定机械）再发主任务。名字原样透传：脚本不认识模型、不按 agent 映射、不核实生效、不预读跳过；与 `--reset` 独立可单独带，同传顺序固定 重置→切模型→主任务。`target_model` 是请求值非验证值（仅传了才出现在结果，成功与 error 都带）；前置不抽取、不落 run_record，任一步发不出即整轮停（`error.model_sent` 标明部分状态）。会话起始 skill 纪律不变：`turn > 0` 且 `--reset=none` 仍拒发 `reset_required`，切模型不能替代重置；`turn == 0` 豁免时切模型前置照跑。agent 支持对照见 SKILL.md「调用」（codex 别传：裸 `/model` 开选择器会 blocked 停轮）。
 
 会话起始 skill 纪律（ADR-0004）：提示词**行首**出现 `/wayfinder`、`/grill-with-docs`、`/implement`、`/implement-spec`、`/prototype` 之一（允许行前空白；命令后须非词字符且非连字符，`/implementing`、`/implement-foo` 不误中，`/wayfinder#7` 算调用；`implement-spec` 优先报长名）且 `--reset=none` 时，在 `hc get`＋身份预检之后、写台账与任何发送之前校验目标 `turn`：`turn == 0`（精确整数 `0`，尚未跑过任何轮次的全新空会话）直接豁免放行；`turn > 0` 或缺失时拒发（`reset_required`，退出码 2，message 带 skill 名、行号与当前 `turn` 值）。行文中提及不触发；放行 id 不消耗，补 `--reset` 同 id 可重试。`new`/`clear`/`compact` 都算重置。「调用独占一行」是 SKILL.md 的文字纪律，机械检查只兜行首这一层；`not_idle`/`identity_mismatch` 先于 `reset_required`。
 

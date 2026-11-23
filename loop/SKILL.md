@@ -1,6 +1,6 @@
 ---
 name: loop
-description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（裁剪＋抽取成 JSON，默认直连 API、pi 备选）；监听只读随时可，仅报错时可直推（仍须放行）。可选 --reset 先发 /new /clear /compact；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）时，全新空会话（turn == 0）自动豁免，复用旧会话（turn > 0）必须带 --reset。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
+description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（裁剪＋抽取成 JSON，默认直连 API、pi 备选）；监听只读随时可，仅报错时可直推（仍须放行）。可选 --reset 先发 /new /clear /compact；可选 --target-model 先发 /model <名字> 切目标模型（独立于 --reset，顺序 重置→切模型→主任务）；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）时，全新空会话（turn == 0）自动豁免，复用旧会话（turn > 0）必须带 --reset。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
 ---
 
 # loop：走管道
@@ -11,9 +11,9 @@ dispatch 做发送、等待、取回、落盘这些机械活，抽取器（默�
 
 ## 每轮循环（走管道）
 
-1. **讨论定稿**：和用户定出要回复执行者的全文。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。完成判据：用户对全文（及需要时的重置方式）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
+1. **讨论定稿**：和用户定出要回复执行者的全文。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
 2. **写放行文件**：全文写成 UTF-8 文件，放 `$TMPDIR/loop/releases/<放行id>.txt`（目录不存在就建），放行后一字未改。完成判据：文件就绪（dispatch 核对 sha256，改动即拒发）。
-3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset` 时该放行一并授权重置前置＋主任务（前置是枚举里可预知的固定命令）。
+3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset`/`--target-model` 时该放行一并授权全部前置＋主任务（重置是枚举里可预知的固定命令，切模型是字面 `/model <名字>`）。
 4. **判读结果**：读 `.result.json`＋`run_record`，整理成选项卡给用户。完成判据：用户看到结果、给出下一轮方向。
 5. 回到 1，下一轮回复仍走管道。
 
@@ -32,6 +32,7 @@ python3 scripts/dispatch.py \
 - `python3` 直跑：脚本无第三方依赖、头部声明 `requires-python = ">=3.10"`。版本门 `>=3.10` 直跑；`<3.10` 自动 `find_tool` 探 uv 并经 `uv run --no-python-downloads` 用已有 3.10+ 重跑（不下载），uv 探不到才报 `error(kind=python_too_old)`。后台精简 PATH 里 python3 也在，uv 退居内部兜底，调用方不用管 PATH、不需手写包装。
 - `--expect-proc`：身份预检，强烈建议传（grok 传 `grok`、claude 传 `claude`）；匹配 foreground.name/argv[0]/status.app 任一（claude 的 name 可能是版本号，认 argv[0]/app），不符即拒发。标题易变（默认「Claude Code」→跑起来才改），不作预检判据。
 - `--reset {none,new,clear,compact}`（默认 `none`）：主任务前的重置前置。选 `new`/`clear`/`compact` 就在同一 target 先 `--if idle` 发字面命令 `/new`/`/clear`/`/compact`，等落定（idle/done＋屏幕静置）再发主任务；`none` 即单 prompt，向后兼容。**发哪条由调用方按目标 agent 认哪个挑**（`agy`/antigravity、`pi` 认 `/new`＋`/compact`；`claude` 认 `/clear`＋`/compact`，不认 `/new`；`codex` 认 `/new`/`/clear`/`/compact`；`grok` 的 `/new`≡`/clear` 都认），脚本不按 agent 映射。前置不抽取、不落 run_record；前置或主任务任一步发不出即整轮停，error 带 `reset_sent` 标明部分状态。`/clear` 是本地命令、可能不进 working，前置落定用屏幕静置而非 turn 判据。**提示词行首调用会话起始 skill 时：`turn == 0`（全新空会话）可不传 `--reset` 直接发；`turn > 0` 或未知时必须带 `new`/`clear`/`compact`，`none` 会被脚本拒发**（见「会话起始 skill」）。
+- `--target-model <名字>`（默认不传，ADR-0006）：切模型前置。重置（如有）之后、主任务之前，在同一 target 先 `--if idle` 发字面命令 `/model <名字>`，等落定（idle/done＋屏幕静置）再发主任务。**与 `--reset` 独立**：可单独传（任意一轮都能随下一条消息带模型切换），同传时顺序固定 **重置 → 切模型 → 主任务**。名字**原样透传**：脚本不认识模型、不按 agent 映射、不核实生效、不预读跳过；`target_model` 是请求值非验证值，名字对错归调用方纪律。**哪些 agent 认行内 `/model <名字>`**（已核实）：`agy`/antigravity 认 name/slug/label 并存为默认（已是该模型报 `Model already set`、名字不认打印有效列表，都不弹框；注意 `/model <名字> <提示词>` 是其一次性语义，多词值按字面发出可能触发，别传多词名字）；`claude` 认别名或完整模型 ID（如 `/model sonnet`）；`pi` 认 `/model [provider/model]`；`grok` 认 `/model <名字> [window] [effort]`；**`codex` 的裸 `/model` 开选择器、行内名字未实证——别对 codex 传 `--target-model`**（选择器 → blocked → `dialog_blocked` 停轮），换 codex 模型用启动旗标 `-m` 重开会话。前置不抽取、不落 run_record；任一步发不出即整轮停，error 带 `model_sent` 标明部分状态。会话起始 skill 纪律不变：`turn > 0` 且 `--reset=none` 仍拒发 `reset_required`，切模型不能替代重置。
 - 等待与抽取默认值一般不用动：墙钟 3600 秒（主任务发送成功起计）、check-in 180 秒、落定静置 10 秒 × 2 次、抽取护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 0`。
 - `--loop-dir` 默认 `$TMPDIR/loop`（随 OS 临时清理，记录不持久）；`--prompt-file` 传 `$TMPDIR/loop/releases/<放行id>.txt`；`--pi-model` 透传 `pi --model`（仅 pi 备选后端生效）。
 
@@ -81,7 +82,7 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `run_record`（`.md`）是抽取器从整屏**裁剪出的干净回复全文**（剔 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏，逐字保留正文），是回看对象；`raw_record`（`.raw.md`）是整屏原料（逐字读回，制表符按终端制表位展开为空格，审计用）。error 时尚无干净全文，`run_record` 退回指整屏原料。
 - `needs_user`（布尔）：回复里是否有需用户决定的事。三个选段字段是抽取器从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批一个元素（问题＋选项＋推荐整块）、`conclusion` 结论段（无则 `""`）、`blocked` 弹框原句（无则 `""`）。干净全文 `reply` 不进本 JSON，落在 `run_record`；要展示回复内容直接用 `run_record` 原文。
 - `rewritten`：脚本对选段字段逐一做原文子串校验，搜不到的在此标出、值为最接近原文片段；`{}` 即全部逐字命中。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `raw_record`。**
-- `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性判定，只看折叠标记（成功恒 `complete:true`）；`anchor_found`：提示词回声是否还在当前屏——仅信息，长任务回声滚出屏为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
+- `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性判定，只看折叠标记（成功恒 `complete:true`）；`anchor_found`：提示词回声是否还在当前屏——仅信息，长任务回声滚出屏为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
 - `webhook_error_detail`：仅失败时出现，与 stderr 同一份脱敏诊断。字段：`type`（外层异常类名）、`reason_type`（`URLError.reason` 是异常时的类名）、`errno`/`errno_name`（可用时，如 `61`/`ECONNREFUSED`；DNS 给 `EAI_*`）、`is_timeout`（布尔）、`ssl_verify_code`（`SSLCertVerificationError.verify_code`，可用时）、`http_status`（仅 HTTPError）、`proxy`（`{"configured": "yes|no|unknown", "matches": "yes|no|unknown", "source": "env|system|bypass|none|unknown"}`：是否配置代理、本请求是否命中、代理来自环境变量还是系统配置）、`attempts`（总尝试次数），走过代理全败直连兜底仍失败时另带 `fallback_direct: true` 与 `fallback_error`（直连尝试的类名或 `"HTTP <码>"`；`webhook_error` 与主体字段保留主路由最后一次错误以对齐 `proxy`）。不含 URL、密钥、主机名、请求头或字符串形式的 reason；判断不了就标 `unknown`。
 - **三个选段只摘原文片段、不保证覆盖全文**；要不要批准、要不要改接口的判断，必须回看 `run_record`，不能只凭 JSON 选段。
 
@@ -92,7 +93,7 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `releases/<放行id>.txt`：放行提示词（调用方写，dispatch 原文照发）。
 - `runs/<放行id>.raw.md`：整屏原料（审计）。
 - `runs/<放行id>.md`：干净回复全文（回看对象 `run_record`）。
-- `runs/<放行id>.json`：台账，先记账后发送；一个放行只跑一轮，至多发送成功两次（前置＋主任务各一次），台账存在即拒同 id 重发。
+- `runs/<放行id>.json`：台账，先记账后发送；一个放行只跑一轮，至多发送成功三次（重置＋切模型前置＋主任务各一次），台账存在即拒同 id 重发。
 - `runs/<放行id>.result.json`：最终交付，后台调用靠读它收结果；重发拒绝仍以台账为准。
 
 记录与台账都随 OS 临时清理、不持久：事后审计与拒重发保护止于重启（放行 id 每次唯一，跨重启复用风险低）。要长期留存某轮，自行另存。
