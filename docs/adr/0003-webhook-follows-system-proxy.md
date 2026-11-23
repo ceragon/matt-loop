@@ -32,3 +32,5 @@ webhook POST 默认跟随本机系统代理：
 - 非 macOS 平台没有系统代理回退，仍按标准环境变量；诊断 `source` 如实反映。
 - urllib 不按协议分派 `ALL_PROXY`，不作为可用来源；只配 ALL_PROXY 时回退系统代理。
 - 代理是否连通仍可能失败；失败证据看 `webhook_error_detail`（仍在 ADR-0002 的 webhook 机制内）。
+
+> 重试与直连兜底补记（2026-11-23）：实测经代理出网偶发 TLS 握手阶段 `SSLEOFError`（~0.21s 瞬断）。`send_webhook()` 现对选定出口的传输层异常与 `HTTP 5xx` 最多试 3 次（首发＋2 次重试，退避 0.5s、1.0s）；若选用了代理且 3 次全败，再以 `ProxyHandler({})` 强制跳过环境与系统代理直连兜底 1 次（`HTTP 4xx` 立刻失败、不重试不兜底）。全败时 `webhook_error` 与 `webhook_error_detail` 保留主路由最后一次错误以对齐 `proxy`，并附 `attempts`、`fallback_direct`、`fallback_error`。本文「按系统代理优先、不改进程全局代理、不关证书校验」原则不变。
