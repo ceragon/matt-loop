@@ -21,14 +21,10 @@ subagent，prototype 经 handoff 文件在全新会话里开场。这些 skill �
 五个 skill 定为**会话起始 skill**：`wayfinder`、`grill-with-docs`、`implement`、
 `implement-spec`、`prototype`。它们只能作为空会话的开场任务，两层强制：
 
-1. **文字纪律**（SKILL.md「会话起始 skill」节＋护栏第二条）：调用必须带
-   `--reset new/clear/compact` 先清目标执行者会话；调用独占一行（行首斜杠命令）；
-   点名 /ask-matt 为工作流出处，默认调用方已装 Matt 全套 skill。
-2. **机械预检**（dispatch.py）：提示词文件**行首**命中五个斜杠命令之一
-   （允许行前空白；命令后须非词字符且非连字符；implement-spec 优先报长名）
-   且 `--reset=none` 时，在写台账与任何发送之前拒发：
-   `error(kind=reset_required)`，退出码 2，message 带 skill 名与行号。
-   放行 id 不消耗，补 `--reset` 同 id 可重试；台账已存在时 duplicate_release 优先。
+1. **文字纪律**（SKILL.md「会话起始 skill」节＋护栏第二条＋「每轮循环」Step 1）：目标已有轮次（`turn > 0`）时，调用必须带 `--reset new/clear/compact` 先清目标执行者会话（Step 1 讨放行时一并确认，不先空跑撞拒发再回来二轮请示）；`turn == 0` 的全新空会话免 `--reset`；调用独占一行（行首斜杠命令）；点名 /ask-matt 为工作流出处，默认调用方已装 Matt 全套 skill。SKILL.md 同时写明已核实的 agent 命令对照（`agy`/`pi` 认 `/new`＋`/compact`、`claude` 认 `/clear`＋`/compact`、`codex` 三者都认、`grok` `/new`≡`/clear`）。
+2. **机械预检**（dispatch.py）：放在 `hc get`＋身份预检之后、写台账与任何发送之前。提示词文件**行首**命中五个斜杠命令之一（允许行前空白；命令后须非词字符且非连字符；implement-spec 优先报长名）且 `--reset=none` 时：
+   - 若 `hc get` 的 `turn` 为精确整数 `0`（全新空会话，无历史上下文可污染），**直接豁免放行**，省去无效重置与来回请示；
+   - 若 `turn > 0` 或缺失，拒发：`error(kind=reset_required)`，退出码 2，message 带 skill 名、行号与当前 `turn` 值。放行 id 不消耗，补 `--reset` 同 id 可重试；台账已存在时 `duplicate_release` 优先，`not_idle`/`identity_mismatch` 先于 `reset_required`。
 
 边界：`new`/`clear`/`compact` 都算重置，唯一拒发值是 `none`。中途 skill
 （to-spec/to-tickets/tdd/code-review/retro 等）、回答提问的普通回复、行文中提及
@@ -65,3 +61,9 @@ subagent，prototype 经 handoff 文件在全新会话里开场。这些 skill �
 - 清单是常量（SESSION_START_SKILLS），Matt 工作流演化时改清单＋测试即可；
   退出码 2 从「只有 argparse」扩为「参数类错误（含 reset_required）」，
   REFERENCE 的 error 契约已同步。
+
+## 修订补记（2026-11-23）
+
+实跑暴露一条摩擦：新开 `agy` 会话（`turn == 0`，刚就绪无任何历史对话）首条发送 `/wayfinder` 且 `--reset=none` 时被 `reset_required` 拦下，调用方停下来二轮请示用户选 `/new`/`/clear`/`/compact`，选择 `/new` 后又白等 ~26 秒重置前置；且 SKILL.md 仅写了 `claude/grok` 示例、未写 `agy` 认 `/new`。本次校准：
+1. `reset_required` 预检移至 `hc get`＋身份检查之后（仍在写台账前），`turn == 0`（精确整数 `0`）自动豁免放行，`turn > 0` 或缺失才拒发且 message 带 `turn` 值（否决了「`turn > 0` 也按 agent 自动清」的 `auto` 方案——旧上下文清空仍须用户授权）；
+2. SKILL.md 补充「`turn > 0` 复用旧会话在 Step 1 讨放行时一并带出推荐 `--reset`」并核实补全各 agent 命令对照（顺带修正先前对 `claude` 认 `/new` 的误写）。

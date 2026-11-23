@@ -6,12 +6,16 @@
   1 纯函数 find_session_start_trigger：五个 skill 行首命中（带参/无空格带参/行前空白/
     多行行号/CRLF/报长名）；行中提及、/implementing、/implement-foo、/prototype2、
     无斜杠裸名都不触发；多处命中报第一处。
-  2 触发＋--reset=none：写台账前拒发，rc=2、kind=reset_required、message 带 skill 与行号；
+  2 触发＋--reset=none＋turn>0：写台账前拒发，rc=2、kind=reset_required、message 带 skill/行号/turn；
     零发送、台账不存在（放行 id 不消耗）、result.json 与 stdout 逐字一致。
   3 同一放行 id 补 --reset clear 重试成功：前置＋主任务两条，证明 id 未被消耗。
   4 触发＋new/clear/compact 都放行（compact 也算重置，Q4 定案）。
   5 非触发提示词（行中提及）＋不传 --reset：照常单发，向后兼容。
   6 台账已存在时 duplicate_release 优先于 reset_required。
+  7 触发＋--reset=none＋turn==0（全新空会话）：自动豁免、单发直过、不发重置前置。
+  8 触发＋显式 --reset new＋turn==0：仍按显式参数发前置。
+  9 触发＋--reset=none＋turn 缺失或非整数（如 None/False）：不豁免，仍报 reset_required（turn 未知）。
+ 10 目标 working 时 not_idle 优先于 reset_required（预检在 hc get 之后）。
 """
 import contextlib
 import io
@@ -34,23 +38,26 @@ EXT = {"needs_user": False, "questions": [],
 
 
 class FakeHc:
-    def __init__(self):
+    def __init__(self, turn=5, state="idle"):
         self.sends = []          # (text, if_idle)
-        self.turn = 5
-        self.state = "idle"
+        self.turn = turn
+        self.state = state
         self.screen = SCREEN
 
     def __call__(self, hc_bin, args, timeout_s):
         cmd = args[0]
         if cmd == "get":
-            return {"state": "live", "turn": self.turn, "title": "claude-test",
-                    "status": {"state": self.state, "title": "claude-test"},
-                    "foreground": {"name": "claude"}}
+            g = {"state": "live", "title": "claude-test",
+                 "status": {"state": self.state, "title": "claude-test"},
+                 "foreground": {"name": "claude"}}
+            if self.turn is not None:
+                g["turn"] = self.turn
+            return g
         if cmd == "send":
             text = args[-1]
             self.sends.append((text, "--if" in args))
-            baseline = self.turn
-            self.turn += 1
+            baseline = self.turn if isinstance(self.turn, int) and not isinstance(self.turn, bool) else 0
+            self.turn = baseline + 1
             return {"turn": baseline}
         if cmd == "read":
             return {"text": self.screen, "complete": True, "how": "current", "why": ""}
@@ -111,19 +118,20 @@ def main():
     assert f("普通回复，没有命令") is None
     print("1 find_session_start_trigger: hits and non-hits ok")
 
-    # 2 触发＋none：台账前拒发，id 不消耗
+    # 2 触发＋none＋turn>0：台账前拒发，id 不消耗
     with tempfile.TemporaryDirectory() as td:
-        fake = FakeHc()
+        fake = FakeHc(turn=5)
         rc, res, lp, rp = run_case("/wayfinder #7", None, "disc-1", td, fake)
         assert rc == 2, rc
         assert not res["ok"] and res["error"]["kind"] == "reset_required", res
-        assert "/wayfinder" in res["error"]["message"] and "第 1 行" in res["error"]["message"]
+        msg = res["error"]["message"]
+        assert "/wayfinder" in msg and "第 1 行" in msg and "turn=5" in msg, msg
         assert res["error"]["hints"], res
         assert fake.sends == [], fake.sends                # 零发送
         assert not lp.exists(), "拒发不应写台账"
         assert rp.exists(), "拒发也要写 result.json"
         assert "reset" not in res                          # reset=none 不带 reset 键
-        print("2 trigger + none: refused before ledger, rc=2, id unconsumed")
+        print("2 trigger + none + turn>0: refused before ledger, rc=2, id unconsumed")
 
         # 3 同 id 补 --reset clear 重试成功
         fake2 = FakeHc()
@@ -162,6 +170,46 @@ def main():
         assert rc == 1 and res["error"]["kind"] == "duplicate_release", res
         assert fake2.sends == []
     print("6 duplicate_release takes precedence over reset_required")
+
+    # 7 turn == 0 自动豁免：全新空会话不传 --reset 直接发
+    with tempfile.TemporaryDirectory() as td:
+        fake = FakeHc(turn=0)
+        rc, res, lp, _ = run_case("/wayfinder #7", None, "disc-7", td, fake)
+        assert rc == 0 and res["ok"], res
+        assert fake.sends == [("/wayfinder #7", True)], fake.sends
+        assert res["reset"] == "none"
+        assert lp.exists()
+    print("7 turn==0 + none: exempted, single send ok")
+
+    # 8 turn == 0 但显式传 --reset new：仍按显式参数执行前置
+    with tempfile.TemporaryDirectory() as td:
+        fake = FakeHc(turn=0)
+        rc, res, _, _ = run_case("/wayfinder #7", "new", "disc-8", td, fake)
+        assert rc == 0 and res["ok"], res
+        assert fake.sends == [("/new", True), ("/wayfinder #7", True)], fake.sends
+        assert res["reset"] == "new"
+    print("8 turn==0 + explicit --reset new: still sends /new first")
+
+    # 9 turn 缺失或布尔 False：不豁免，仍拒发 reset_required（turn 未知）
+    for idx, bad_turn in enumerate((None, False)):
+        with tempfile.TemporaryDirectory() as td:
+            fake = FakeHc(turn=bad_turn)
+            rc, res, lp, _ = run_case("/wayfinder #7", None, f"disc-9-{idx}", td, fake)
+            assert rc == 2, (bad_turn, rc)
+            assert res["error"]["kind"] == "reset_required", res
+            assert "turn 未知" in res["error"]["message"], res
+            assert fake.sends == []
+            assert not lp.exists()
+    print("9 missing/bool turn + none: still refused (turn 未知)")
+
+    # 10 working 状态时 not_idle 先于 reset_required
+    with tempfile.TemporaryDirectory() as td:
+        fake = FakeHc(turn=5, state="working")
+        rc, res, lp, _ = run_case("/wayfinder #7", None, "disc-10", td, fake)
+        assert rc == 1 and res["error"]["kind"] == "not_idle", res
+        assert fake.sends == []
+        assert not lp.exists()
+    print("10 working state: not_idle takes precedence over reset_required")
 
     print("ALL OK")
 
