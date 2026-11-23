@@ -20,8 +20,9 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
   - 一个放行至多发送成功两次（前置＋主任务，各一次）：先写台账
     $TMPDIR/loop/runs/<放行id>.json 再发送；台账存在即拒绝。
   - 会话起始 skill 纪律（ADR-0004）：提示词行首出现 /wayfinder、/grill-with-docs、
-    /implement、/implement-spec、/prototype 之一且 --reset=none 时，写台账前拒发
-    （reset_required，退出码 2）；放行 id 不消耗，补 --reset 同 id 可重试。
+    /implement、/implement-spec、/prototype 之一且 --reset=none 时，在 hc get ＋
+    身份预检之后、写台账前校验：turn == 0（全新空会话）直接豁免放行；turn > 0
+    或缺失时拒发（reset_required，退出码 2），放行 id 不消耗，补 --reset 同 id 可重试。
   - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
     再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
     永不 --force，不碰 hc keys。
@@ -990,19 +991,6 @@ def main(argv=None):
                 f"放行 id {args.release_id} 已有台账或原文落盘，一个放行只跑一轮",
                 ["查看台账确认上次结果；要重发须经用户重新放行、用新 id"],
             )
-        # 1.2) 工程纪律预检（ADR-0004）：会话起始 skill 必须重置目标会话。
-        #      在写台账与任何发送之前拒发：放行 id 不消耗，补 --reset 同 id 可重试。
-        if args.reset == "none":
-            hit = find_session_start_trigger(text)
-            if hit is not None:
-                skill, lineno = hit
-                raise DispatchError(
-                    "reset_required",
-                    f"提示词第 {lineno} 行调用会话起始 skill /{skill}："
-                    "必须先重置目标会话，--reset=none 拒发",
-                    ["补 --reset new/clear/compact（按目标 agent 认哪条命令挑）后用同一放行 id 重试",
-                     "清单与边界见 SKILL.md「会话起始 skill」；工作流出处 /ask-matt"],
-                    returncode=2)
         hc_bin = find_tool("hc")
         pi_bin = find_tool("pi") if backend == "pi" else None
         if not hc_bin:
@@ -1025,6 +1013,30 @@ def main(argv=None):
                 ["--if idle 只认 idle；等目标落定或请用户处理后再来"],
             )
         check_identity(g, args)
+
+        # 1.2) 工程纪律预检（ADR-0004）：会话起始 skill 须在空会话或重置后运行。
+        #      放在 hc get ＋身份预检之后、写台账与任何发送之前：
+        #      turn == 0（精确整数 0）代表尚未跑过任何轮次的全新空会话，直接豁免放行；
+        #      turn > 0 或 turn 缺失且 --reset=none 时拒发（放行 id 不消耗，补 --reset 同 id 可重试）。
+        if args.reset == "none":
+            hit = find_session_start_trigger(text)
+            if hit is not None:
+                turn = g.get("turn")
+                is_fresh = isinstance(turn, int) and not isinstance(turn, bool) and turn == 0
+                if not is_fresh:
+                    skill, lineno = hit
+                    turn_desc = (
+                        f"turn={turn}"
+                        if isinstance(turn, int) and not isinstance(turn, bool)
+                        else "turn 未知"
+                    )
+                    raise DispatchError(
+                        "reset_required",
+                        f"提示词第 {lineno} 行调用会话起始 skill /{skill}，"
+                        f"目标当前 {turn_desc}（非全新空会话）：必须先重置目标会话，--reset=none 拒发",
+                        ["补 --reset new/clear/compact（agy/pi 认 new，claude 认 clear，codex 认 new/clear）后用同一放行 id 重试",
+                         "清单与边界见 SKILL.md「会话起始 skill」；工作流出处 /ask-matt"],
+                        returncode=2)
 
         # 2) 发送前再核一次文件未变，先记账后发送。
         if hashlib.sha256(prompt_path.read_bytes()).hexdigest() != sha:
