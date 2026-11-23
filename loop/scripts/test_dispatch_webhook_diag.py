@@ -19,6 +19,7 @@
 诊断一致，且都不含 URL、密钥、Authorization 头或异常 message 里的哨兵串。
 """
 import contextlib
+import errno
 import io
 import json
 import os
@@ -133,16 +134,16 @@ def main():
 
         # 1 连接被拒：reason 是 ConnectionRefusedError，message 里塞哨兵也不得外泄
         exc = urllib.error.URLError(
-            ConnectionRefusedError(61, "refused while posting to " + URL))
+            ConnectionRefusedError(errno.ECONNREFUSED, "refused while posting to " + URL))
         rc, res, errtext, rtext = fail_with(exc, "diag-refused-1")
         d = check_common(rc, res, errtext, rtext)
         assert res["webhook_error"] == "URLError", res
         assert d["type"] == "URLError" and d["reason_type"] == "ConnectionRefusedError", d
-        assert d["errno"] == 61 and d["errno_name"] == "ECONNREFUSED", d
+        assert d["errno"] == errno.ECONNREFUSED and d["errno_name"] == "ECONNREFUSED", d
         assert d["is_timeout"] is False, d
         assert d["proxy"] == no_proxy, d
         assert "http_status" not in d and "ssl_verify_code" not in d, d
-        print("1 connection refused -> errno 61/ECONNREFUSED ok")
+        print("1 connection refused -> errno ECONNREFUSED ok")
 
         # 2 DNS：gaierror 的 errno 是 EAI_*，不能按 POSIX errno 命名
         exc = urllib.error.URLError(
@@ -199,7 +200,7 @@ def main():
 
         def system_proxy_open(req, timeout, proxies):
             seen.append(proxies)
-            raise urllib.error.URLError(ConnectionRefusedError(61, "refused"))
+            raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
 
         rc, res, errtext, rtext = run_case("diag-proxy-sys-1", system_proxy_open)
         d = check_common(rc, res, errtext, rtext)
