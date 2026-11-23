@@ -20,7 +20,16 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
   - 切模型前置（--target-model <名字>，ADR-0006）：重置（如有）之后、主任务之前发
     字面命令 /model <名字>，等落定再发主任务；名字原样透传、不核实生效、不预读跳过、
     不按 agent 映射，与 --reset 独立可单独带；target_model 是请求值非验证值。
-  - 一个放行至多发送成功三次（重置＋切模型前置＋主任务，各一次）：先写台账
+  - 换 kind 前置（--switch-agent <启动命令>，ADR-0007）：与 --reset/--target-model 互斥
+    （新会话 turn 0、模型写进启动命令）。按终端形态分流：持久 shell 包装终端（程序是 zsh 等、
+    agent 是子进程）同地址换——调用方字面传的 --exit-command（hc send）/--exit-keys（hc keys）
+    退旧 agent→等回 shell→send 启动命令→等新 agent 就绪→核身份；直接起 agent 的终端显式新地址
+    ——kill＋hc run 新终端、结果回报 target_new。启动命令与退出方式都字面透传、脚本不映射 kind→命令；
+    --expect-proc 须同步改新 kind。shell 分支失败即 blocked、绝不静默换地址；新地址是显式回报。
+    实证基础：keep＋信号恢复对真实 agent 不可行（agent 接 SIGINT/esc、干净退出→finished 不恢复），
+    故同地址靠 shell 包装而非 keep 恢复；hc 按前台进程认 agent/追 turn，shell 包装下照常。
+  - 一个放行至多发送成功三次（重置＋切模型前置＋主任务，各一次；换 kind 与二者互斥，
+    其 shell 分支为退旧＋起新＋主任务）：先写台账
     $TMPDIR/loop/runs/<放行id>.json 再发送；台账存在即拒绝。
   - 会话起始 skill 纪律（ADR-0004）：提示词行首出现 /wayfinder、/grill-with-docs、
     /implement、/implement-spec、/prototype 之一且 --reset=none 时，在 hc get ＋
@@ -823,6 +832,139 @@ def wait_for_reset(hc_bin, args, deadline):
         time.sleep(RESET_POLL_S)  # working：短轮询
 
 
+# 换 kind（ADR-0007）：认作持久 shell 包装的进程名（basename、去登录前缀 -）。
+SHELL_NAMES = {"sh", "bash", "zsh", "nu", "fish", "dash", "ksh", "tcsh", "csh"}
+
+
+def _proc_base(name):
+    return (name or "").rsplit("/", 1)[-1].lstrip("-")
+
+
+def fg_is_shell(fg):
+    """前台进程是不是 shell（认 name 与 argv[0] 的 basename）。"""
+    argv = fg.get("argv") or []
+    first = argv[0] if isinstance(argv, list) and argv else ""
+    return _proc_base(fg.get("name")) in SHELL_NAMES or _proc_base(first) in SHELL_NAMES
+
+
+def terminal_form(terminal):
+    """按启动 argv 判终端形态：持久 shell 包装（zsh -l 等，agent 是子进程）→ shell；
+    直接起 agent、或 sh -c 一次性包装 → direct。sh -c 随 agent 退出而死，不是持久包装。"""
+    argv = terminal.get("argv") or []
+    first = argv[0] if isinstance(argv, list) and argv else ""
+    if _proc_base(first) in SHELL_NAMES and "-c" not in argv[1:]:
+        return "shell"
+    return "direct"
+
+
+def wait_for_shell(hc_bin, args, deadline):
+    """shell 包装分支：退旧 agent 后短轮询等前台回到 shell（同地址、state live）。
+    终端变 finished＝地址丢失→switch_recovery_failed（绝不静默换地址，Q4）；超时→switch_timeout。"""
+    while True:
+        if time.monotonic() >= deadline:
+            raise DispatchError("switch_timeout", "等旧 agent 退出回 shell 超时",
+                                ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
+        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        if g.get("state") != "live":
+            raise DispatchError("switch_recovery_failed",
+                                "退旧 agent 后终端已结束（地址丢失），不静默换地址",
+                                ["hc get 查看 reason；经用户放行后另起一轮"])
+        state = status_state(g)
+        if state == "blocked":
+            raise dialog_error(g)
+        if state == "error":
+            raise DispatchError("target_error", "退旧 agent 期间目标自报 error", [])
+        if fg_is_shell(g.get("foreground") or {}):
+            return g
+        time.sleep(RESET_POLL_S)
+
+
+def wait_for_agent_ready(hc_bin, args, deadline):
+    """等新 agent 就绪：前台不再是 shell 且状态 idle/done。超时→switch_timeout；
+    终端结束→switch_recovery_failed；弹框/error 照常抛。返回就绪时的 hc get。"""
+    while True:
+        if time.monotonic() >= deadline:
+            raise DispatchError("switch_timeout", "等新 agent 就绪超时",
+                                ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
+        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        if g.get("state") != "live":
+            raise DispatchError("switch_recovery_failed", "新 agent 启动期间终端已结束",
+                                ["hc get 查看 reason"])
+        state = status_state(g)
+        if state == "blocked":
+            raise dialog_error(g)
+        if state == "error":
+            raise DispatchError("target_error", "新 agent 自报 error", ["到目标会话屏幕前查看"])
+        fg = g.get("foreground") or {}
+        if not fg_is_shell(fg) and state in ("idle", "done"):
+            return g
+        time.sleep(RESET_POLL_S)
+
+
+def do_switch(hc_bin, args, ledger, ledger_path, g):
+    """换 kind 前置（ADR-0007）：按终端形态分流，返回 (target, form, new_target)。
+    shell 包装→同地址：退旧 agent（调用方字面传的 --exit-command/--exit-keys）→等回 shell
+      →send 新启动命令→等新 agent 就绪→核身份（--expect-proc 已是新 kind）。地址不变。
+    直接起 agent→显式新地址：kill 旧终端→hc run 新终端（sh -c 字面透传启动命令）→等就绪
+      →核身份；args.target 改为新地址，new_target 回报调用方更新定位。
+    启动命令与退出方式都由调用方字面提供，脚本不映射 kind→命令。shell 分支任一环节失败
+    即 blocked、绝不静默换地址（Q4）；新地址分支的新地址是显式回报（不违反 Q4）。"""
+    form = terminal_form(g)
+    ledger.update(switch_form=form, phase="switch_start")
+    write_json_atomic(ledger_path, ledger)
+    deadline = time.monotonic() + args.wall_clock
+    if form == "shell":
+        fg = g.get("foreground") or {}
+        if not fg_is_shell(fg):
+            # 有 agent 在跑：须调用方传退出方式（pi=ctrl+d 走 keys，claude=/exit 走 send）
+            if not (args.exit_command or args.exit_keys):
+                raise DispatchError(
+                    "switch_exit_required",
+                    "shell 包装终端里有 agent 在跑，换 kind 须传 --exit-command 或 --exit-keys 退旧",
+                    ["按旧 agent 认哪个退出方式挑；退出命令脚本不映射、字面透传"])
+            ledger.update(phase="switch_exit_sending")
+            write_json_atomic(ledger_path, ledger)
+            if args.exit_command:
+                do_send(hc_bin, args, args.exit_command, ledger, ledger_path)
+            else:
+                # 调用方显式授权的退出按键（不是提示词）；提示词发送仍永不碰 hc keys（裁定 6）。
+                hc_json(hc_bin, ["keys", args.target, args.exit_keys], SEND_GUARD_S)
+            ledger.update(phase="switch_waiting_shell")
+            write_json_atomic(ledger_path, ledger)
+            wait_for_shell(hc_bin, args, deadline)
+        # 前台已是 shell：send 新启动命令。shell 不是 agent、不报 idle，用裸 send（不带 --if）。
+        ledger.update(phase="switch_launching")
+        write_json_atomic(ledger_path, ledger)
+        hc_json(hc_bin, ["send", "--", args.target, args.switch_agent], SEND_GUARD_S)
+        ledger.update(phase="switch_waiting_agent")
+        write_json_atomic(ledger_path, ledger)
+        g2 = wait_for_agent_ready(hc_bin, args, deadline)
+        check_identity(g2, args)
+        ledger.update(phase="switch_done", switch_done_at=now_iso())
+        write_json_atomic(ledger_path, ledger)
+        return args.target, form, None
+    # direct：kill 旧终端 → hc run 新终端（新地址）。cwd 沿用旧终端，新 agent 仍在原工程目录。
+    ledger.update(phase="switch_killing")
+    write_json_atomic(ledger_path, ledger)
+    hc_json(hc_bin, ["kill", args.target], SEND_GUARD_S)
+    cwd = g.get("cwd") or "."
+    ledger.update(phase="switch_running")
+    write_json_atomic(ledger_path, ledger)
+    r = hc_json(hc_bin, ["run", "--bg", "--keep", "--cwd", cwd,
+                         "--", "sh", "-c", args.switch_agent], SEND_GUARD_S)
+    new_target = r.get("address")
+    if not new_target:
+        raise DispatchError("switch_failed", "hc run 未返回新终端地址", [str(r)[:200]])
+    args.target = new_target
+    ledger.update(target_new=new_target, phase="switch_waiting_agent")
+    write_json_atomic(ledger_path, ledger)
+    g2 = wait_for_agent_ready(hc_bin, args, deadline)
+    check_identity(g2, args)
+    ledger.update(phase="switch_done", switch_done_at=now_iso())
+    write_json_atomic(ledger_path, ledger)
+    return new_target, form, new_target
+
+
 def parse_extraction(stdout):
     s = stdout.strip()
     candidates = []
@@ -967,6 +1109,15 @@ def parse_args(argv=None):
     ap.add_argument("--target-model", help="切模型前置（ADR-0006）：主任务前发字面命令 /model <名字>，"
                     "名字原样透传（脚本不认识模型、不按 agent 映射、不核实生效）；与 --reset 独立，"
                     "同传时顺序 重置→切模型→主任务；默认不传即现状")
+    ap.add_argument("--switch-agent", help="换 kind 前置（ADR-0007）：新 agent 的完整启动命令，字面透传"
+                    "（脚本不映射 kind→命令）。按终端形态分流：持久 shell 包装终端同地址换（退旧 agent→回 shell"
+                    "→send 此命令）；直接起 agent 的终端 kill＋run 新终端、结果回报 target_new。与 --reset/"
+                    "--target-model 互斥（新会话 turn 0、模型写进启动命令）；--expect-proc 须同步改成新 kind")
+    exit_group = ap.add_mutually_exclusive_group()
+    exit_group.add_argument("--exit-command", help="换 kind 时退旧 agent 的文本命令（如 /exit），走 hc send；"
+                    "须配合 --switch-agent，与 --exit-keys 互斥；脚本不映射、字面透传")
+    exit_group.add_argument("--exit-keys", help="换 kind 时退旧 agent 的按键（如 pi 的 ctrl+d），走 hc keys；"
+                    "须配合 --switch-agent，与 --exit-command 互斥；调用方显式授权，非提示词强制")
     ap.add_argument("--expect-proc", help="身份预检：前台进程应含此子串（认 name/argv[0]/app，如 grok/claude）")
     ap.add_argument("--loop-dir", default=str(Path(tempfile.gettempdir()) / "loop"),
                     help="本地记录根目录（默认 $TMPDIR/loop，随 OS 临时清理）")
@@ -995,7 +1146,22 @@ def main(argv=None):
     model_sent = False
     backend = None
     task_name = None
+    original_target = args.target
+    switch_new_target = None
     try:
+        # 换 kind 旗标互斥校验（ADR-0007，Q3）：--switch-agent 与 --reset/--target-model 互斥
+        # （新会话 turn 0 无需重置、模型写进启动命令）；退出旗标须配合 --switch-agent。
+        # 静态旗标错误，放行 id 不消耗（退出码 2）。
+        if args.switch_agent:
+            if args.reset != "none":
+                raise DispatchError("bad_args", "--switch-agent 与 --reset 互斥：换 kind 起全新 turn 0 会话，无需重置",
+                                    ["去掉 --reset；新 agent 的配置都在 --switch-agent 启动命令里"], returncode=2)
+            if args.target_model:
+                raise DispatchError("bad_args", "--switch-agent 与 --target-model 互斥：模型写进启动命令",
+                                    ["去掉 --target-model，把模型旗标放进 --switch-agent 启动命令"], returncode=2)
+        if (args.exit_command or args.exit_keys) and not args.switch_agent:
+            raise DispatchError("bad_args", "--exit-command/--exit-keys 须配合 --switch-agent 使用",
+                                ["退出旗标只在换 kind 时有意义"], returncode=2)
         check_structure_and_tools()
         # 抽取后端启动预检（ADR-0005）：api 缺配置立刻报错，不跑完一轮才发现；
         # pi 备选才需要 find_tool(pi)，api 路径不依赖 node/pi。
@@ -1058,13 +1224,16 @@ def main(argv=None):
                 f"目标状态是 {state or '未自报'}，不是 idle/done，不发送",
                 ["--if idle 只认 idle；等目标落定或请用户处理后再来"],
             )
-        check_identity(g, args)
+        # 换 kind 时 --expect-proc 已是新 kind，与旧前台不符，身份核对推迟到换 kind 之后（do_switch 内核）。
+        if not args.switch_agent:
+            check_identity(g, args)
 
         # 1.2) 工程纪律预检（ADR-0004）：会话起始 skill 须在空会话或重置后运行。
         #      放在 hc get ＋身份预检之后、写台账与任何发送之前：
         #      turn == 0（精确整数 0）代表尚未跑过任何轮次的全新空会话，直接豁免放行；
         #      turn > 0 或 turn 缺失且 --reset=none 时拒发（放行 id 不消耗，补 --reset 同 id 可重试）。
-        if args.reset == "none":
+        #      换 kind 起全新 turn 0 会话，本身即满足纪律，跳过此预检（ADR-0007）。
+        if args.reset == "none" and not args.switch_agent:
             hit = find_session_start_trigger(text)
             if hit is not None:
                 turn = g.get("turn")
@@ -1097,6 +1266,9 @@ def main(argv=None):
             "anchor": anchor,
             "reset": args.reset,
             "target_model": args.target_model,
+            "switch_agent": args.switch_agent,
+            "exit_command": args.exit_command,
+            "exit_keys": args.exit_keys,
             "params": {
                 "wall_clock": args.wall_clock, "check_in": args.check_in,
                 "settle_seconds": args.settle_seconds, "settle_checks": args.settle_checks,
@@ -1107,6 +1279,13 @@ def main(argv=None):
             "created_at": now_iso(),
         }
         write_json_atomic(ledger_path, ledger)
+
+        # 2.4) 换 kind 前置（--switch-agent，ADR-0007）：与重置/切模型互斥（上面已校验）。
+        #      按终端形态分流：shell 包装同地址换、直接起 agent 显式新地址（do_switch）。
+        #      换 kind 后 args.target 可能改为新地址（direct 分支），主任务发到新终端；
+        #      新 agent turn 0，主任务免重置。放行一并授权；前置不抽取、不落 run_record。
+        if args.switch_agent:
+            _, _, switch_new_target = do_switch(hc_bin, args, ledger, ledger_path, g)
 
         # 2.5) 重置前置（--reset != none）：同一 target 上先发字面命令 /new /clear /compact，
         #      等落定（idle/done + 屏幕静置）后再发主任务。放行一并授权前置＋主任务：
@@ -1204,7 +1383,7 @@ def main(argv=None):
             "phase": "done",
             "release_id": args.release_id,
             "task_name": task_name,
-            "target": args.target,
+            "target": original_target,
             "reset": args.reset,
             "turn": final.get("turn"),
             "status": status_state(final),
@@ -1223,6 +1402,13 @@ def main(argv=None):
         # target_model 仅传了才出现：语义是「本轮请求切换到的名字」，非「已验证生效」。
         if args.target_model:
             result["target_model"] = args.target_model
+        # 换 kind（ADR-0007）：target 恒为调用方传入的原地址；direct 分支另报 target_new
+        # （新终端地址，调用方据此更新 --target）；shell 分支地址不变、无 target_new。
+        if args.switch_agent:
+            result["switch_agent"] = args.switch_agent
+            result["switch_form"] = ledger.get("switch_form")
+            if switch_new_target:
+                result["target_new"] = switch_new_target
         ledger.update(phase="done", done_at=now_iso())
         write_json_atomic(ledger_path, ledger)
         emit_result(result, result_path)
@@ -1238,7 +1424,7 @@ def main(argv=None):
         out = {
             "ok": False,
             "release_id": args.release_id,
-            "target": args.target,
+            "target": original_target,
             "error": {"kind": e.kind, "message": e.message, "hints": e.hints},
         }
         if task_name is not None:
@@ -1251,6 +1437,12 @@ def main(argv=None):
         if args.target_model:
             out["target_model"] = args.target_model
             out["error"]["model_sent"] = model_sent
+        if args.switch_agent:
+            out["switch_agent"] = args.switch_agent
+            if ledger is not None and ledger.get("switch_form"):
+                out["switch_form"] = ledger["switch_form"]
+            if switch_new_target:
+                out["target_new"] = switch_new_target
         if started is not None:
             out["error"]["elapsed_s"] = round(time.monotonic() - started, 1)
         if ledger is not None and ledger.get("run_record"):
