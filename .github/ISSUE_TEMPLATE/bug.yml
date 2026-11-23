@@ -1,0 +1,44 @@
+name: Bug report
+description: Something in the dispatch loop is not working as documented
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Privacy check — this is a public repository.**
+        Do **not** paste real API keys or tokens, webhook URLs with token
+        paths, machine-specific absolute paths (`/Users/…`, `/home/…`),
+        usernames, hostnames, or internal IP addresses. Replace them with
+        placeholders such as `<USER>`, `<HOST>`, `<KEY>`,
+        `https://example.invalid`, and redact logs before posting.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did dispatch.py do, and what did you expect instead? Quote the result JSON error kind if you have one (it contains no secrets by design).
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The command line (with placeholders for paths and ids) and the sequence of rounds that led to the problem.
+      placeholder: |
+        python3 loop/scripts/dispatch.py --target <terminal> --release-id <id> --prompt-file <path> …
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, executor agent kind and version, herdr version. No machine names or usernames.
+      placeholder: macOS / Python 3.12 / claude x.y.z
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or result JSON (optional)
+      description: Paste only after removing anything listed in the privacy check above.
+      render: json

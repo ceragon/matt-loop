@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  hygiene:
+    name: Hygiene scan (whole repo, redacted output)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Scan tracked files for privacy-leak shapes
+        run: python3 .github/scripts/hygiene_scan.py
+
+  tests:
+    name: Dispatch test suites (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run all test suites
+        working-directory: loop/scripts
+        run: |
+          set -e
+          for f in test_*.py; do
+            echo "== $f"
+            python3 "$f"
+          done
