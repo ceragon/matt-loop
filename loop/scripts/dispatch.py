@@ -949,6 +949,7 @@ def main(argv=None):
     started = None
     reset_sent = False
     backend = None
+    task_name = None
     try:
         check_structure_and_tools()
         # 抽取后端启动预检（ADR-0005）：api 缺配置立刻报错，不跑完一轮才发现；
@@ -1138,6 +1139,7 @@ def main(argv=None):
         result = {
             "ok": True,
             "phase": "done",
+            "release_id": args.release_id,
             "task_name": task_name,
             "target": args.target,
             "reset": args.reset,
@@ -1167,7 +1169,14 @@ def main(argv=None):
                 write_json_atomic(ledger_path, ledger)
             except OSError:
                 pass
-        out = {"ok": False, "error": {"kind": e.kind, "message": e.message, "hints": e.hints}}
+        out = {
+            "ok": False,
+            "release_id": args.release_id,
+            "target": args.target,
+            "error": {"kind": e.kind, "message": e.message, "hints": e.hints},
+        }
+        if task_name is not None:
+            out["task_name"] = task_name
         if backend is not None:
             out["extract_backend"] = backend
         if args.reset != "none":

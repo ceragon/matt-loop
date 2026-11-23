@@ -71,7 +71,7 @@ python3 scripts/dispatch.py \
 stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.result.json`（成功与 error 都写，逐字一致，是**最终交付**）。成功（退出码 0）：
 
 ```json
-{"ok": true, "target": "t7", "reset": "none", "turn": 3, "status": "idle",
+{"ok": true, "release_id": "<放行id>", "task_name": "loop-…", "target": "t7", "reset": "none", "turn": 3, "status": "idle",
  "complete": true, "complete_reason": [], "anchor_found": true, "elapsed_s": 690.5, "chars": 1834,
  "run_record": "$TMPDIR/loop/runs/<放行id>.md", "raw_record": "$TMPDIR/loop/runs/<放行id>.raw.md",
  "prompt_sha256": "…", "rewritten": {}, "extract_backend": "api", "webhook": "off",
@@ -85,7 +85,7 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `webhook_error_detail`：仅失败时出现，与 stderr 同一份脱敏诊断。字段：`type`（外层异常类名）、`reason_type`（`URLError.reason` 是异常时的类名）、`errno`/`errno_name`（可用时，如 `61`/`ECONNREFUSED`；DNS 给 `EAI_*`）、`is_timeout`（布尔）、`ssl_verify_code`（`SSLCertVerificationError.verify_code`，可用时）、`http_status`（仅 HTTPError）、`proxy`（`{"configured": "yes|no|unknown", "matches": "yes|no|unknown", "source": "env|system|bypass|none|unknown"}`：是否配置代理、本请求是否命中、代理来自环境变量还是系统配置）。不含 URL、密钥、主机名、请求头或字符串形式的 reason；判断不了就标 `unknown`。
 - **三个选段只摘原文片段、不保证覆盖全文**；要不要批准、要不要改接口的判断，必须回看 `run_record`，不能只凭 JSON 选段。
 
-拿到结果整理成**选项卡**交给用户，原文不直接转给用户。失败（退出码 1；参数错误 2）返回 `{"ok": false, "error": {"kind", "message", "hints"}}`；kind 含义与调用方动作见 `REFERENCE.md`。监听只读随时可；仅报错时可直推（仍须放行）。
+拿到结果整理成**选项卡**交给用户，原文不直接转给用户。失败（退出码 1；参数错误 2）返回 `{"ok": false, "release_id": "<放行id>", "target": "<终端地址>", "error": {"kind", "message", "hints"}}`（已算出 `task_name` 时一并带上）；kind 含义与调用方动作见 `REFERENCE.md`。监听只读随时可；仅报错时可直推（仍须放行）。
 
 ## 本地记录（默认 `$TMPDIR/loop`，随 OS 临时清理）
 

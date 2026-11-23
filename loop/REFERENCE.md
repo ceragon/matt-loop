@@ -7,10 +7,10 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 失败退出码 1；参数/配置类错误退出码 2（argparse 报错无 JSON；`reset_required`、`api_not_configured`、`bad_extract_backend`、`bad_api_max_tokens` 是预检拒发，退出码 2、有 JSON）。stdout 一行、同一字符串写 `.result.json`：
 
 ```json
-{"ok": false, "error": {"kind": "…", "message": "…", "hints": ["…"]}}
+{"ok": false, "release_id": "…", "target": "…", "error": {"kind": "…", "message": "…", "hints": ["…"]}}
 ```
 
-发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout——没有可安全落盘的文件名。
+`release_id` 与 `target` 必带；在放行 id 校验后算出 `task_name` 的，也一并带顶层 `task_name`（含发给 webhook 的同一份 JSON）。发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout（及配置了时的 webhook）——没有可安全落盘的文件名。
 
 ## error kind 表
 

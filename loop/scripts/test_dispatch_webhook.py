@@ -4,18 +4,20 @@
 跑法：python3.12 loop/scripts/test_dispatch_webhook.py
 覆盖：
   1 默认关：未配 env，webhook=off，不 POST，无 webhook_error。
-  2 配 env＋POST 成功：webhook=sent，Authorization: Bearer、无 X-Loop-Secret、密钥不进 stdout。
+  2 配 env＋POST 成功：webhook=sent，Authorization: Bearer、无 X-Loop-Secret、带 release_id/target/task_name、无 expect_proc、密钥不进 stdout。
   3 配 env＋POST 失败（OSError）：webhook=failed＋webhook_error 类名，整轮仍 ok。
-  4 error 路径也发 webhook、带 webhook 字段。
+  4 error 路径也发 webhook、带 webhook 与 release_id/target/task_name（无 prompt_sha256/expect_proc）。
   5 只配 URL 或只配密钥：仍 off。
   6 HTTP 401：webhook=failed＋webhook_error="HTTP 401"，密钥/URL 不进 stdout/结果/stderr。
   7 URLError：webhook_error="URLError"（只记类名，不记 str(e)）。
+  8 早停 error（bad_release_id，未算 task_name）：仍带 release_id/target，且即使传 --expect-proc 也不进载荷。
 """
 import contextlib
 import io
 import json
 import os
 import sys
+import tempfile
 import urllib.error
 from pathlib import Path
 
@@ -86,6 +88,9 @@ def main():
         assert req.get_header("X-loop-secret") is None, req.headers  # 旧头不再发送
         body = json.loads(req.data.decode("utf-8"))
         assert body["ok"] is True and body["target"] == "t99", body
+        assert body["release_id"] == "wh-sent-1" and res["release_id"] == "wh-sent-1", body
+        assert body["task_name"] == dispatch.generate_short_task_name("wh-sent-1"), body
+        assert "expect_proc" not in body and "expect_proc" not in res, body
         assert "webhook" not in body  # POST 发生在记 webhook 字段之前
         assert SECRET not in json.dumps(res, ensure_ascii=False)  # 密钥不进 stdout
         assert "webhook_error" not in res, res
@@ -115,7 +120,10 @@ def main():
         assert len(posted) == 1
         body = json.loads(posted[0][0].data.decode("utf-8"))
         assert body["ok"] is False, body
-        print("4 error path also notifies webhook ok")
+        assert body["release_id"] == "wh-err-1" and body["target"] == "t99", body
+        assert body["task_name"] == dispatch.generate_short_task_name("wh-err-1"), body
+        assert "prompt_sha256" not in body and "expect_proc" not in body, body
+        print("4 error path also notifies webhook with release_id/target/task_name ok")
 
         # 5 只配一半：仍 off
         for tag, u, s in (("url", URL, None), ("secret", None, SECRET)):
@@ -162,6 +170,31 @@ def main():
         assert "reason-with-host-detail" not in json.dumps(res, ensure_ascii=False)
         assert "reason-with-host-detail" not in errbuf.getvalue()
         print("7 URLError: webhook_error='URLError', str(e) never logged ok")
+
+        # 8 早停 error（bad_release_id，未算 task_name）：带 release_id/target，不带 task_name/expect_proc
+        set_env(URL, SECRET)
+        posted.clear()
+        use(ok_urlopen)
+        with tempfile.TemporaryDirectory() as td:
+            pf = Path(td) / "prompt.md"
+            pf.write_text("hi\n", encoding="utf-8")
+            dispatch.check_structure_and_tools = lambda: None
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = dispatch.main([
+                    "--target", "t99", "--release-id", "_bad-id",
+                    "--prompt-file", str(pf), "--loop-dir", td,
+                    "--expect-proc", "claude",
+                ])
+        res = json.loads(buf.getvalue().strip())
+        assert rc == 1 and not res["ok"] and res["error"]["kind"] == "bad_release_id", res
+        assert len(posted) == 1, posted
+        body = json.loads(posted[0][0].data.decode("utf-8"))
+        assert body["release_id"] == "_bad-id" and body["target"] == "t99", body
+        assert "task_name" not in body and "expect_proc" not in body, body
+        assert res["release_id"] == "_bad-id" and res["target"] == "t99", res
+        assert "task_name" not in res and "expect_proc" not in res, res
+        print("8 early error (bad_release_id): release_id/target present, no task_name/expect_proc ok")
     finally:
         dispatch.webhook_open = real_open
         set_env(None, None)
