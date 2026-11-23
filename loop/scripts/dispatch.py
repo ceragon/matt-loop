@@ -50,7 +50,8 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
     重启（放行 id 每次唯一）。PATH 由 find_tool 兜底，不需手写包装脚本。
   - 抽取字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
     全部搜不到则 error(extraction_rewritten)。reply 干净全文先整体、再逐行校验，
-    未过逐字校验的行标 rewritten["reply"]。
+    未过逐字校验的行标 rewritten["reply"]。next_command 是推测字段（ADR-0008）：
+    下一轮该发的完整斜杠指令，豁免逐字校验，缺失/非字符串按 ""，不整轮报错。
   - 抽取后端（ADR-0005）：LOOP_EXTRACT_BACKEND=api|pi，默认 api。api 走 OpenAI 兼容
     chat completions（LOOP_API_BASE/KEY/MODEL 全必填无默认，启动预检缺失即
     api_not_configured）；temp 0、max_tokens 默认 32768（LOOP_API_MAX_TOKENS 可覆盖）、
@@ -194,7 +195,9 @@ WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
 
 # summary 已移除（原文才是重点）：pi 若仍多给 summary，投影时直接丢弃，
 # 不算坏行、不进 rewritten。
-EXTRACT_FIELDS = ("needs_user", "questions", "conclusion", "blocked", "reply")
+# next_command（ADR-0008）是唯一推测字段：下一轮该发的完整斜杠指令，
+# 缺失/非字符串按 "" 投影，不整轮报错；不参与逐字校验。
+EXTRACT_FIELDS = ("needs_user", "questions", "conclusion", "blocked", "reply", "next_command")
 
 # 会话起始 skill（ADR-0004）：新会话必须以其中之一开场，调用时目标会话必须先重置。
 # 清单出自 /ask-matt 工作流（默认调用方已装 Matt 全套 skill）；中途 skill
@@ -608,7 +611,8 @@ def closest_fragment(value, text):
 def verify_extraction(ext, screen, raw_path):
     """裁定 C：questions/conclusion/blocked 全部逐字摘原文。
     对每个非空字段值做子串校验；搜不到的标 rewritten 并附最接近片段；
-    全部搜不到则 error。needs_user 是唯一的布尔判断字段，不参与校验。"""
+    全部搜不到则 error。needs_user 是布尔判断字段、next_command 是推测字段
+    （ADR-0008），均不参与校验。"""
     checks = [("conclusion", ext["conclusion"]), ("blocked", ext["blocked"])]
     checks += [(f"questions[{i}]", q) for i, q in enumerate(ext["questions"])]
     rewritten = {}
@@ -986,7 +990,12 @@ def parse_extraction(stdout):
             and isinstance(obj.get("conclusion"), str)
             and isinstance(obj.get("reply"), str)
         ):
-            return {k: obj[k] for k in EXTRACT_FIELDS}
+            ext = {k: obj[k] for k in EXTRACT_FIELDS if k != "next_command"}
+            # next_command 是推测字段（ADR-0008）：缺失或非字符串按 ""，
+            # 建议性字段不连累整轮（与 webhook 失败不连累同哲学）。
+            nc = obj.get("next_command")
+            ext["next_command"] = nc if isinstance(nc, str) else ""
+            return ext
     raise DispatchError(
         "extraction_invalid",
         "抽取输出中找不到符合固定形状的 JSON",
@@ -1000,7 +1009,7 @@ def extract_via_pi(pi_bin, args, raw_path):
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
     instruction = (
         "整屏原文已随消息附上（@文件）。按系统提示词裁剪并抽取，"
-        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked 五个字段。"
+        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_command 六个字段。"
         f'整屏原文落盘路径：{raw_path}'
     )
     argv = [
@@ -1035,7 +1044,7 @@ def extract_via_api(args, raw_path):
     raw_text = Path(raw_path).read_text(encoding="utf-8")
     instruction = (
         "整屏原文已内联在本消息末尾。按系统提示词裁剪并抽取，"
-        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked 五个字段。"
+        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_command 六个字段。"
     )
     body = json.dumps({
         "model": model,

@@ -52,7 +52,9 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 发送门：首发只 `--if idle`；被拒（`status_mismatch`，零字节进入，不算重发）后 `hc get` 复核确认 `done`，补发前再核一次非 working/blocked，才不带 `--if` 补发一次；仍失败即 error。
 
-抽取逐字校验：选段字段逐一做原文子串校验（含去空白折叠），搜不到标 `rewritten` 附最接近片段，全部搜不到则 `error(extraction_rewritten)`；`reply` 干净全文先整体、再逐行校验，未过逐字校验的行标 `rewritten["reply"]`。
+抽取逐字校验：选段字段逐一做原文子串校验（含去空白折叠），搜不到标 `rewritten` 附最接近片段，全部搜不到则 `error(extraction_rewritten)`；`reply` 干净全文先整体、再逐行校验，未过逐字校验的行标 `rewritten["reply"]`。`needs_user`（布尔判断）与 `next_command`（推测，ADR-0008）不参与校验。
+
+下一步预测（ADR-0008）：抽取输出第六字段 `next_command`（字符串）＝调用方下一轮该发的**完整斜杠指令**（含参数，参数取自原文上下文，如 `/implement pop-xxxx.1`）；`""`＝无预测（下一步是用户答复/自由操作/看不出）。候选集为七个打法 skill：wayfinder/grill-with-docs/to-spec/to-tickets/implement/implement-spec/prototype。唯一推测字段：extract.md「只依据原文」规则为它开显式例外，豁免逐字校验、不进 `rewritten`；缺失或非字符串按 `""` 投影，不整轮报错，形状门不检查它。仅成功结果带（error 路径不进抽取）；随同一份 JSON 进台账与 webhook。**建议不是闸**：发送路径零改动、无新 error kind；反向约束落在 SKILL 纪律——判读时呈给用户，同 target 下一轮放行应照用预测指令作开场行（可编辑，偏离明示理由），预测是起始 skill 且 turn>0 时同次放行一并推荐 `--reset`。
 
 可选 webhook：env `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET` 都配才发，成功/报错都 POST 结果 JSON，鉴权走 `Authorization: Bearer <密钥>`，不进日志、不进 stdout，单次 ~10 秒超时；发失败不连累整轮，result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`（HTTP 状态码如 `"HTTP 401"`，或异常类名如 `"URLError"`）与 `webhook_error_detail`（脱敏诊断，stderr 打印同一份），结果文件仍是事实源。
 

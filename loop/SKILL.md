@@ -11,10 +11,10 @@ dispatch 做发送、等待、取回、落盘这些机械活，抽取器（默�
 
 ## 每轮循环（走管道）
 
-1. **讨论定稿**：和用户定出要回复执行者的全文。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
+1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_command` 非空时，本轮放行开场行**应照用该预测指令**（可编辑；偏离须向用户明示理由，ADR-0008）。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
 2. **写放行文件**：全文写成 UTF-8 文件，放 `$TMPDIR/loop/releases/<放行id>.txt`（目录不存在就建），放行后一字未改。完成判据：文件就绪（dispatch 核对 sha256，改动即拒发）。
 3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset`/`--target-model` 时该放行一并授权全部前置＋主任务（重置是枚举里可预知的固定命令，切模型是字面 `/model <名字>`）。
-4. **判读结果**：读 `.result.json`＋`run_record`，整理成选项卡给用户。完成判据：用户看到结果、给出下一轮方向。
+4. **判读结果**：读 `.result.json`＋`run_record`，整理成选项卡给用户；`next_command` 非空时一并呈出（它是预测不是事实，参数可能有错，下一轮放行前用户会审）。完成判据：用户看到结果、给出下一轮方向。
 5. 回到 1，下一轮回复仍走管道。
 
 ## 调用前
@@ -80,11 +80,12 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
  "complete": true, "complete_reason": [], "anchor_found": true, "elapsed_s": 690.5, "chars": 1834,
  "run_record": "$TMPDIR/loop/runs/<放行id>.md", "raw_record": "$TMPDIR/loop/runs/<放行id>.raw.md",
  "prompt_sha256": "…", "rewritten": {}, "extract_backend": "api", "webhook": "off",
- "needs_user": false, "questions": [], "conclusion": "…", "blocked": ""}
+ "needs_user": false, "questions": [], "conclusion": "…", "blocked": "", "next_command": "/to-spec"}
 ```
 
 - `run_record`（`.md`）是抽取器从整屏**裁剪出的干净回复全文**（剔 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏，逐字保留正文），是回看对象；`raw_record`（`.raw.md`）是整屏原料（逐字读回，制表符按终端制表位展开为空格，审计用）。error 时尚无干净全文，`run_record` 退回指整屏原料。
 - `needs_user`（布尔）：回复里是否有需用户决定的事。三个选段字段是抽取器从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批一个元素（问题＋选项＋推荐整块）、`conclusion` 结论段（无则 `""`）、`blocked` 弹框原句（无则 `""`）。干净全文 `reply` 不进本 JSON，落在 `run_record`；要展示回复内容直接用 `run_record` 原文。
+- `next_command`（字符串，ADR-0008）：抽取器**推测**的下一轮完整斜杠指令（七个打法 skill 候选，参数取自原文上下文）；`""`＝无预测。唯一推测字段，豁免逐字校验、缺失按 `""` 不连累整轮。**建议不是闸**：下一轮放行应照它作开场行（可编辑，偏离明示理由）；它是起始 skill 且 turn>0 时，讨放行一并推荐 `--reset`。
 - `rewritten`：脚本对选段字段逐一做原文子串校验，搜不到的在此标出、值为最接近原文片段；`{}` 即全部逐字命中。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `raw_record`。**
 - `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`switch_agent`/`switch_form`：仅传了 `--switch-agent` 才出现（启动命令与终端形态 `shell`/`direct`，error 时也带）；`target_new`：仅 direct 分支换 kind 才出现，新终端地址——**调用方须把 `--target` 更新成它**（`target` 恒为传入的原地址，shell 分支地址不变、无此字段）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性判定，只看折叠标记（成功恒 `complete:true`）；`anchor_found`：提示词回声是否还在当前屏——仅信息，长任务回声滚出屏为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
 - `webhook_error_detail`：仅失败时出现，与 stderr 同一份脱敏诊断。字段：`type`（外层异常类名）、`reason_type`（`URLError.reason` 是异常时的类名）、`errno`/`errno_name`（可用时，如 `61`/`ECONNREFUSED`；DNS 给 `EAI_*`）、`is_timeout`（布尔）、`ssl_verify_code`（`SSLCertVerificationError.verify_code`，可用时）、`http_status`（仅 HTTPError）、`proxy`（`{"configured": "yes|no|unknown", "matches": "yes|no|unknown", "source": "env|system|bypass|none|unknown"}`：是否配置代理、本请求是否命中、代理来自环境变量还是系统配置）、`attempts`（总尝试次数），走过代理全败直连兜底仍失败时另带 `fallback_direct: true` 与 `fallback_error`（直连尝试的类名或 `"HTTP <码>"`；`webhook_error` 与主体字段保留主路由最后一次错误以对齐 `proxy`）。不含 URL、密钥、主机名、请求头或字符串形式的 reason；判断不了就标 `unknown`。
