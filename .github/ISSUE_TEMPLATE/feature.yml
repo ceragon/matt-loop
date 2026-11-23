@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a change to the dispatch loop or its contract
+title: "[feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ⚠️ **Privacy check — this is a public repository.**
+        Do **not** paste real API keys or tokens, webhook URLs with token
+        paths, machine-specific absolute paths (`/Users/…`, `/home/…`),
+        usernames, hostnames, or internal IP addresses. Use placeholders
+        such as `<USER>`, `<HOST>`, `<KEY>`, `https://example.invalid`.
+
+        Note the project's minimal-form philosophy: one skill directory plus
+        one Python script; mechanics in the script, workflow decisions in the
+        caller's prompts. Proposals that add wrappers, tripwires, audit logs,
+        or outer polling are likely to be declined.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The concrete loop scenario that is painful or impossible today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Flag, result field, or contract change. Keep it literal and mechanical where possible.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered (optional)
+      description: Including "caller-side prompt discipline instead of script support".

@@ -2,6 +2,18 @@
 
 Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
+## Privacy redlines (public repo)
+
+This repo is **public**. Every issue body, comment, PR body, and commit must stay free of:
+
+- Real secrets or tokens of any kind (API keys, gateway keys, webhook secrets), and webhook URLs whose path contains a token.
+- Machine-specific absolute paths (`/Users/<name>`, `/home/<name>`), usernames, hostnames, or SSH aliases pointing at private machines.
+- Internal/private IP addresses.
+
+Use placeholders instead: `<USER>`, `<HOST>`, `<KEY>`, `https://example.invalid`. Redact logs and result excerpts before pasting them anywhere in the tracker. These redlines apply to `gh issue create`/`comment` exactly as they do to the web templates.
+
+`.loop/` runtime ledgers and `webhook.env` are gitignored and must never be committed; only `webhook.env.example` is tracked. CI (`.github/workflows/ci.yml`) runs a whole-repo hygiene scan on every PR; it reports file/line/category only, never matched content. If something sensitive lands anyway: **rotate the credential first**, then ask the maintainer about history cleanup — a follow-up commit deleting the file does not remove it from history.
+
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
