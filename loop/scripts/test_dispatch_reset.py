@@ -75,7 +75,7 @@ class FakeApp:
     def __init__(self, hc=None, panes=("t99",), spaces=None, closed=False,
                  keep_error=False, keep_no_pane=False, space_new_error=False,
                  tab_close_error=False, rename_error=False, rename_noop=False,
-                 strip_tab_id=False):
+                 strip_tab_id=False, pane_delay=0):
         self.hc = hc
         self.calls = []
         self.panes = set(panes)
@@ -96,6 +96,10 @@ class FakeApp:
         self.strip_tab_id = strip_tab_id
         self.gifted = None       # space.new 赠送的 shell 终端地址
         self._keep_n = 0
+        # #40 竞态旋钮：pane_delay=N → keep 后第 N 次 ls 才把 pane 落地（模拟后台异步落地）。
+        self.pane_delay = pane_delay
+        self._pending_pane = None
+        self._pane_countdown = 0
 
     def _ls(self):
         spaces = []
@@ -120,6 +124,11 @@ class FakeApp:
         if args[0] == "status":
             return {"space": self.spaces[0]["id"] if self.spaces else None}
         if args[0] == "ls":
+            if self._pending_pane is not None:
+                self._pane_countdown -= 1
+                if self._pane_countdown <= 0:
+                    self.panes.add(self._pending_pane)
+                    self._pending_pane = None
             return self._ls()
         if args[0] == "do":
             name, payload = args[1], json.loads(args[2])
@@ -129,7 +138,11 @@ class FakeApp:
                                               {"error": "keep failed"})
                 addr = payload["terminal"]
                 if not self.keep_no_pane:
-                    self.panes.add(addr)
+                    if self.pane_delay > 0:
+                        self._pending_pane = addr
+                        self._pane_countdown = self.pane_delay
+                    else:
+                        self.panes.add(addr)
                 self._keep_n += 1
                 if self.spaces:
                     self.spaces[0]["tabs"].append(

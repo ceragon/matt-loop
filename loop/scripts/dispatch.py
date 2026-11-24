@@ -213,6 +213,9 @@ READ_LINES = 0
 # 前置落定用短轮询而非 hc wait：/clear 是本地命令、可能不进 working，
 # hc wait 会空等一个 check-in。working 时每 RESET_POLL_S 秒 hc get 查一次。
 RESET_POLL_S = 2.0
+# 领养复核轮询（#40）：keep 后台异步落地，单次 ls 会跑在落地前误判 no_pane，带超时轮询等落地。
+ADOPT_TIMEOUT_S = 30.0
+ADOPT_POLL_S = 2.0
 # 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
 WEBHOOK_TIMEOUT_S = 10.0
 # webhook 主出口重试退避（共 3 次：首发 + 2 次重试）；全败且用了代理时再直连兜底 1 次。
@@ -1105,9 +1108,10 @@ def apply_display_name(app_bin, address, display_name, ledger, ledger_path, ctx)
     write_json_atomic(ledger_path, ledger)
 
 
-def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx, precheck):
+def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx, precheck,
+          adopt_timeout=ADOPT_TIMEOUT_S, adopt_poll=ADOPT_POLL_S):
     """领养（ADR-0009 恒可见不变量）：status 探测→只读 ls 核 pane→缺则（本机无 space
-    先 space.new focus:false）→terminal.keep→ls 复核 pane 落地→无 space 分支清理赠送
+    先 space.new focus:false）→terminal.keep→带超时轮询 ls 复核 pane 落地（#40）→无 space 分支清理赠送
     shell（tab.close confirmed:true＋hc rm）。任一步失败抛 adopt_failed，ctx 记部分状态
     （workspace:"failed"＋adopt_reason＋space_created/pane_adopted 如实报）。
     precheck=True（既有路径补领养）：写台账前，失败零发送、id 不消耗、同 id 重试；
@@ -1157,12 +1161,19 @@ def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx,
     except DispatchError as e:
         fail("keep_error", f"terminal.keep 失败：{e.message}", retry)
     # keep 后台完成、失败弹 toast：命令成功不算数，必须只读 ls 复核 pane 落地。
-    try:
-        ls2 = app_json(app_bin, ["ls"], QUERY_GUARD_S)
-    except DispatchError as e:
-        fail("app_closed", f"keep 后 herdr-app ls 失败：{e.message}", retry)
-    if not find_pane(ls2, address):
-        fail("no_pane", "keep 后复核仍无 pane（后台落地失败）", retry)
+    # 落地是异步的（#40）：单次 ls 可能跑在落地之前而误判 no_pane，改带超时轮询——
+    # 窗口内反复只读 ls，pane 出现即成功；窗口耗尽仍无 pane 才报 no_pane（keep 真失败如实报）。
+    deadline = time.monotonic() + adopt_timeout
+    while True:
+        try:
+            ls2 = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+        except DispatchError as e:
+            fail("app_closed", f"keep 后 herdr-app ls 失败：{e.message}", retry)
+        if find_pane(ls2, address):
+            break
+        if time.monotonic() >= deadline:
+            fail("no_pane", "keep 后轮询窗口耗尽仍无 pane（后台落地失败）", retry)
+        time.sleep(adopt_poll)
     if no_space:
         ctx["pane_adopted"] = True
         # 清理赠送 shell：找本终端所在 space（刚建、只有赠送 tab＋keep tab），
@@ -1373,6 +1384,10 @@ def parse_args(argv=None):
                     help="落定复核每次静置秒数（默认 10）")
     ap.add_argument("--settle-checks", type=positive_int, default=2,
                     help="落定复核次数（默认 2）")
+    ap.add_argument("--adopt-timeout", type=positive_float, default=ADOPT_TIMEOUT_S,
+                    help="领养复核轮询窗口秒数（#40，keep 后等 pane 落地，默认 30）")
+    ap.add_argument("--adopt-poll", type=positive_float, default=ADOPT_POLL_S,
+                    help="领养复核轮询间隔秒数（默认 2）")
     ap.add_argument("--extract-timeout", type=positive_float, default=1200.0,
                     help="pi 抽取子进程护栏秒数（默认 1200）")
     return ap.parse_args(argv)
@@ -1557,14 +1572,16 @@ def main(argv=None):
                 # 启动机械本身不 run、不重写标签（Decision 5）。
                 adopt(hc_bin, find_app_bin(), ctx["target_address"],
                       g.get("name") or args.target, g.get("cwd") or ".",
-                      None, None, ctx, precheck=True)
+                      None, None, ctx, precheck=True,
+                      adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
         else:
             # 身份已在分流核过（identity_ok）。恒可见（ADR-0009）：既有路径每轮预检
             # （写台账前）核 pane，缺则补领养（park 等造成的可见性漂移自愈）；补不成→
             # adopt_failed，零发送、id 不消耗、同 id 重试。app 没开时所有轮次停摆（已接受的代价）。
             adopt(hc_bin, find_app_bin(), g.get("address") or args.target,
                   g.get("name") or args.target, g.get("cwd") or ".",
-                  None, None, ctx, precheck=True)
+                  None, None, ctx, precheck=True,
+                  adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
             state = status_state(g)
             if state not in ("idle", "done"):
                 raise DispatchError(
@@ -1652,7 +1669,8 @@ def main(argv=None):
                 write_json_atomic(ledger_path, ledger)
             do_create(hc_bin, args, ledger, ledger_path, ctx)
             adopt(hc_bin, find_app_bin(), ctx["target_address"], args.target, args.cwd,
-                  ledger, ledger_path, ctx, precheck=False)
+                  ledger, ledger_path, ctx, precheck=False,
+                  adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
         elif branch == "revive":
             # 复活（ADR-0009）：不 run、不重写标签；原地重发启动命令→等 agent 就绪→核身份。
             # 名字/cwd/终端级历史不动，会话是空的。
