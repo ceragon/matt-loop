@@ -193,7 +193,8 @@ def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
     argv = ["--target", target, "--release-id", rid,
             "--prompt-file", str(pf), "--loop-dir", str(ld),
             "--wall-clock", wall_clock, "--check-in", "1",
-            "--settle-seconds", "0.01", "--settle-checks", "2"]
+            "--settle-seconds", "0.01", "--settle-checks", "2",
+            "--adopt-timeout", "0.05", "--adopt-poll", "0.001"]
     if launch is not None:
         argv += ["--launch", launch]
     if cwd is not None:
@@ -298,6 +299,32 @@ def main():
     assert led["launch"] == LAUNCH and led["cwd"] == "/proj"
     assert led["phase"] == "done"
     print("2 create happy path: run->label->shell->launch->agent->adopt->main, result fields ok")
+
+    # 2c #40 领养复核轮询：keep 后 pane 延迟落地（pane_delay=3）→ 轮询等到→adopted。
+    #    单次 ls（旧行为）会跑在落地前误判 no_pane；轮询须反复 ls 直到 pane 出现。
+    fake = NamedFakeHc()
+    app = FakeApp(hc=fake, pane_delay=3)
+    rc, res, led, td = run_case(fake, app, "adopt-delay-1",
+                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    assert rc == 0 and res["ok"], res
+    assert res["workspace"] == "adopted" and led["phase"] == "done", res
+    keep_idx = next(i for i, c in enumerate(app.calls)
+                    if c[:2] == ["do", "terminal.keep"])
+    post_keep_ls = [c for c in app.calls[keep_idx + 1:] if c[0] == "ls"]
+    assert len(post_keep_ls) >= 3, app.calls
+    print("2c #40 adopt poll: delayed pane (pane_delay=3) -> adopted via polling ok")
+
+    # 2d #40 窗口耗尽：keep 真失败（keep_no_pane，pane 永不落地）→ 轮询窗口耗尽→
+    #    adopt_failed/no_pane，部分状态不变（终端已建 launched、workspace failed）。
+    fake = NamedFakeHc()
+    app = FakeApp(hc=fake, keep_no_pane=True)
+    rc, res, led, td = run_case(fake, app, "adopt-no-pane-1",
+                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    assert rc == 1 and res["error"]["kind"] == "adopt_failed", res
+    assert res["adopt_reason"] == "no_pane", res
+    assert res["workspace"] == "failed" and res["launched"] is True, res
+    assert led["phase"] == "error:adopt_failed"
+    print("2d #40 adopt poll: keep no_pane -> window exhausted -> adopt_failed/no_pane ok")
 
     # 2b 创建＋新鲜豁免：--reset clear 被跳过（reset_skipped）、切模型照跑、起始 skill 豁免
     fake = NamedFakeHc()
