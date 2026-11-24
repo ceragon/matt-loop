@@ -56,8 +56,10 @@ class NamedFakeHc:
         self.label_calls = []    # (addr, [k=v...])
         self.kills = []
         self.rms = []
+        self.gets = []           # get 调用地址日志（#46：断言赠送清理轮询）
+        self.rm_error = False    # True＝rm 命令失败（即便 finished）
         self.launch_text = launch_text
-        self.launch_effect = "agent"   # agent | stuck_shell | wrong_agent | die
+        self.launch_effect = "agent"   # agent | stuck_shell | wrong_agent | die | dialog
         self.run_error = None          # 如 "name_taken"
         self.launch_send_error = False
         self.label_error = False
@@ -104,10 +106,17 @@ class NamedFakeHc:
     def __call__(self, hc_bin, args, timeout_s):
         cmd = args[0]
         if cmd == "get":
+            self.gets.append(args[1])
             d = self.resolve(args[1])
             if d is None:
                 raise dispatch.HcFailure("not_found", "no terminal %s" % args[1],
                                          [], 3, {"error": {"kind": "not_found"}})
+            # #46 Bug2 旋钮：tab.close 异步结束终端——延迟 N 次查询才 finished
+            if d.get("finish_countdown"):
+                d["finish_countdown"] -= 1
+                if d["finish_countdown"] <= 0:
+                    d.pop("finish_countdown")
+                    d["state"] = "finished"
             return self._get_json(d)
         if cmd == "run":
             self.runs.append(list(args))
@@ -147,6 +156,11 @@ class NamedFakeHc:
                     d["status"] = {"app": "grok", "state": "idle"}
                 elif self.launch_effect == "die":
                     d["state"] = "finished"
+                elif self.launch_effect == "dialog":
+                    # #46 Bug3 旋钮：agent 起来了但卡登录/授权弹框（blocked），等就绪必失败
+                    d["foreground"] = {"name": "2.1.325", "argv": ["claude", ""]}
+                    d["status"] = {"app": "claude-code", "state": "blocked",
+                                   "kind": "login", "msg": "等待登录授权"}
                 # stuck_shell：前台保持 zsh、status 保持 None
                 return {"turn": d["turn"]}
             self.sends.append((d["address"], text, "--if" in args))
@@ -164,6 +178,14 @@ class NamedFakeHc:
             return {"address": d["address"], "state": "finished"}
         if cmd == "rm":
             self.rms.append(args[1])
+            d = self.terminals.get(args[1])
+            if self.rm_error or (d is not None and d["state"] == "live"):
+                # 真实 hc 语义（#46 Bug2）：rm live 终端退出码 1
+                raise dispatch.HcFailure("not_finished", "rm refused: terminal live",
+                                         [], 1, {"error": {"kind": "not_finished"}})
+            if d is None:
+                raise dispatch.HcFailure("not_found", "no terminal %s" % args[1],
+                                         [], 3, {"error": {"kind": "not_found"}})
             self.terminals.pop(args[1], None)
             return {"address": args[1]}
         if cmd == "read":
@@ -280,6 +302,7 @@ def main():
     assert len(fake.runs) == 1, fake.runs
     run_args = fake.runs[0]
     assert run_args[0] == "run" and "--bg" in run_args and "--keep" in run_args
+    assert "--no-parent" in run_args, "命名会话独立于调用方终端（#46 Bug1）"
     assert run_args[run_args.index("--name") + 1] == NAME
     assert run_args[run_args.index("--cwd") + 1] == "/proj"
     assert run_args[-3:] == ["--", "zsh", "-l"], run_args

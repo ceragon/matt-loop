@@ -78,6 +78,10 @@ _Avoid_: agent 名、kind、终端号
 以会话名标识的 herdr 终端；死后同名重建，名字恒解析到最新的 live 终端。
 _Avoid_: 窗口、标签页
 
+**会话持久**（Session Persistence）:
+命名会话独立于创建它的调用方终端（--no-parent 无父链）；调用方背景终端退出或被杀不连带杀会话，跨轮复用。
+_Avoid_: 父终端、随调用方死
+
 **显示名**（Display Name）:
 命名会话标签页上给人看的名字，`<bot 族>_<任务描述>`、可中文，代表当前任务；与会话名（地址）分层，互不替代。
 _Avoid_: summary、终端 title、会话名
@@ -99,7 +103,7 @@ _Avoid_: 重启、重建
 _Avoid_: 重置、覆盖
 
 **领养**（Adoption）:
-给无 pane 的 loop 终端在 herdr-app 工作区一个可见 pane；命名会话恒可见是硬不变量，进不了即整轮报错。
+给无 pane 的 loop 终端在 herdr-app 工作区一个可见 pane；命名会话恒可见是硬不变量，进不了即整轮报错。创建路径领养先于等 agent 就绪——卡弹框也先可见，就绪失败另报状态、不影响可见性。
 _Avoid_: keep（hc 的恢复语义）、挂载
 
 **空间定位**（Space targeting）:
@@ -116,6 +120,10 @@ _Avoid_: 按 cwd 猜
 
 **space_restore_warning**:
 领养后还原原选中空间失败的降级告警；pane 已落地、恒可见满足，不丢放行。
+_Avoid_: 领养失败
+
+**gift_cleanup_warning**:
+建空间后赠送 shell 清理失败的降级告警（关 tab／等 finished 超时／rm 失败）；真终端 pane 已落地、恒可见满足，整轮仍 adopted，不丢放行。
 _Avoid_: 领养失败
 
 ### 探路

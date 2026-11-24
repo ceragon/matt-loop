@@ -69,11 +69,21 @@ issue #43 实证：命名会话领养（ADR-0009）后，终端 pane 落进 herd
    `--space` 解析；建空间 name=**目录名**；赠送 shell 清理改绑 `space_created`
    （不再绑「本机无 space」）。建后复核 shown：零空间时新空间即被显示，
    目标==shown 不 select。
+   **赠送 shell 清理（#46 修订）**：`tab.close confirmed:true` 后**带超时
+   轮询 `hc get` 等赠送终端 finished**（复用 `--adopt-timeout`/`--adopt-poll`）
+   再 `hc rm`——tab.close 异步结束终端，单次 rm 撞 live 被拒（退出码 1，
+   与 #40 同类竞态：单次动作应改轮询）。清理失败（tab.close 失败／窗口耗尽
+   仍 live／rm 失败）降级 `gift_cleanup_warning`，**不丢已成功的领养**——
+   真终端 `pane_adopted` 则整轮仍 adopted、照发主任务（原「清理任一步失败
+   adopt_failed」把已可见的整轮误判 failed）。
 6. **result/台账**：`space`（请求值回显，传了就带，成功与 error 都带）、
    `space_selected`（解析出的目标 id）、`space_landed`（实际落点 id）、
    `space_target_warning`（落错告警）、`space_restore`（restored/
    user_switched/not_needed/failed）、`space_restore_warning`、
-   `space_created`/`pane_adopted`（建空间与清理部分状态）。
+   `space_created`/`pane_adopted`（建空间与 pane 落地部分状态；#46 起
+   `pane_adopted` 在 keep 落地复核通过即报，不限于建空间分支）、
+   `gift_cleanup_warning`（赠送清理降级告警，#46：reason `tab_close_error`/
+   `finish_timeout`/`finish_poll_error`/`rm_error`）。
 
 本 ADR **supersede**：ADR-0009 决定 8「本机无 space：space.new{name:会话名,
 folder:cwd}」与「不指定空间（keep 无 space 参数），落点随 herdr-app 规则、

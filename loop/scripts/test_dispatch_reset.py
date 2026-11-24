@@ -77,7 +77,8 @@ class FakeApp:
                  tab_close_error=False, rename_error=False, rename_noop=False,
                  strip_tab_id=False, pane_delay=0, select_error=False,
                  select_noop=False, restore_error=False, restore_noop=False,
-                 user_switch=False, land_elsewhere=False, select_flaky=False):
+                 user_switch=False, land_elsewhere=False, select_flaky=False,
+                 gift_finish_delay=0, gift_vanish=False):
         self.hc = hc
         self.calls = []
         self.panes = set(panes)
@@ -114,6 +115,11 @@ class FakeApp:
         self.rename_noop = rename_noop
         self.strip_tab_id = strip_tab_id
         self.gifted = None       # space.new 赠送的 shell 终端地址
+        # #46 Bug2 竞态旋钮：gift_finish_delay=N → 赠送终端 tab.close 后延迟 N 次
+        # hc get 查询才 finished（tab.close 异步结束终端，rm live 会被拒）。
+        self.gift_finish_delay = gift_finish_delay
+        # gift_vanish＝tab.close 时赠送终端条目直接被收走（get/rm 均 not_found）
+        self.gift_vanish = gift_vanish
         self._keep_n = 0
         # #40 竞态旋钮：pane_delay=N → keep 后第 N 次 ls 才把 pane 落地（模拟后台异步落地）。
         self.pane_delay = pane_delay
@@ -222,7 +228,14 @@ class FakeApp:
                         if tb["id"] == payload["id"]:
                             for t in tb["terminals"]:
                                 if self.hc and t["terminal"] in self.hc.terminals:
-                                    self.hc.terminals[t["terminal"]]["state"] = "finished"
+                                    if self.gift_vanish and t["terminal"] == self.gifted:
+                                        self.hc.terminals.pop(t["terminal"])
+                                    elif (self.gift_finish_delay
+                                            and t["terminal"] == self.gifted):
+                                        self.hc.terminals[t["terminal"]]["finish_countdown"] = \
+                                            self.gift_finish_delay
+                                    else:
+                                        self.hc.terminals[t["terminal"]]["state"] = "finished"
                                 self.panes.discard(t["terminal"])
                             sp["tabs"].remove(tb)
                 return {}

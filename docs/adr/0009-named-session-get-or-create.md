@@ -49,8 +49,11 @@ hc 0.1.22、herdr-app 0.1.17，未碰生产会话）：
    即创建信号，同一次调用内创建→等就绪→核身份→发主任务。需创建/复活而无
    `--launch` → `launch_required`（退出码 2、零发送、放行 id 不消耗、补参同 id
    重试，与 `reset_required` 同构）。
-3. **单形态 shell 包装**（Q3=A、Q9=B）：`hc run --bg --keep --name <名字>
-   --cwd <目录> -- zsh -l` → send 启动命令。`--launch` 永远只收 shell 命令
+3. **单形态 shell 包装**（Q3=A、Q9=B）：`hc run --bg --keep --no-parent
+   --name <名字> --cwd <目录> -- zsh -l` → send 启动命令。
+   （`--no-parent` 为 **#46 修订**：命名会话无父链、独立于调用方终端——
+   调用方背景终端退出/被杀不连带杀会话，跨轮持久；原缺省 `die_with_parent`
+   让会话随调用方终端死、活不过一轮，违背跨轮复用意图。）`--launch` 永远只收 shell 命令
    字符串；herdr 模板退居持久配置仓库，调用方抄命令字面传，loop 不感知模板，
    无 `--launch-template`、无双形态。复活：live＋空闲 shell（前台是 shell＋
    status null）＋loop 标签相符 → 重发启动命令。
@@ -73,7 +76,12 @@ hc 0.1.22、herdr-app 0.1.17，未碰生产会话）：
    豁免视同 turn 0、**不看终端 turn**；跳过重置时切模型前置照跑（平移
    ADR-0006「turn 0 豁免时切模型照跑」纪律）。启动命令不抽取、不落 run_record。
 8. **恒可见不变量**（Q12=强制、Q14/15/16=A）：
-   - 创建路径：终端就绪后 `herdr-app do terminal.keep` → 只读 ls 复核 pane；
+   - 创建路径：启动命令发出后**先领养、再等 agent 就绪**（**#46 修订**：
+     `herdr-app do terminal.keep` → 只读 ls 复核 pane → 等 agent 就绪 →
+     核身份。原「就绪后领养」在卡登录/授权/网络弹框时等就绪失败→不领养→
+     会话不可见，违背恒可见；修订后卡弹框也先可见，用户能到屏幕前手动处理，
+     就绪失败另报状态（如 `dialog_blocked`）不影响可见性，result
+     `workspace:"adopted"`＋`pane_adopted:true`，主任务不发、id 消耗）。
      app 没开/keep 失败/无 pane → `adopt_failed`（原因 app_closed/keep_error/
      no_pane），**保留已建终端**，result 带 `launched:true`/`target_address`/
      `workspace:"failed"`，台账停 `adopt_failed`；launch 已发→放行 id 消耗，
@@ -86,7 +94,9 @@ hc 0.1.22、herdr-app 0.1.17，未碰生产会话）：
      → keep → 复核 → `tab.close confirmed:true`＋`hc rm` 赠送 shell 终端；
      任一步失败 `adopt_failed` 带部分状态（空间可能已建，如实报）。
      （**此条款 superseded by ADR-0011**：废零空间特殊分支，统一走 `--space`
-     三态解析；建空间 name=目录名，赠送 shell 清理绑 `space_created`。）
+     三态解析；建空间 name=目录名，赠送 shell 清理绑 `space_created`。
+     「任一步失败 adopt_failed」亦经 #46 修订：清理失败降级
+     `gift_cleanup_warning` 不丢放行，见 ADR-0011 决定 5。）
    - app 探测用 `herdr-app status` 退出码/活 socket，绝不用裸 `herdr-app`。
      不指定空间（keep 无 space 参数），落点随 herdr-app 规则、不可控，已接受。
      （**此条款 superseded by ADR-0011**：#43 实证落点随当前选中空间；
