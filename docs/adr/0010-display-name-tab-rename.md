@@ -65,6 +65,8 @@ summary 逐字一致（`<bot 族>_<任务描述>` 式、可中文）；另有 bo
    补参同 id 重试，与 launch_required/reset_required 同构）；校验非空、
    1–64 字符、禁换行控制字符，非法 bad_args；撞名坑写 SKILL 警示、不进
    脚本校验。space.new 的 name 维持会话名（空间是容器不是任务）。
+   （**此句 superseded by ADR-0011**：#43 定稿建空间 name=目录名，
+   统一走 `--space` 路径解析。）
 
 ## Considered Options
 

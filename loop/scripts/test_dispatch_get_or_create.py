@@ -177,10 +177,12 @@ class NamedFakeHc:
 
 def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
              expect_proc=None, reset=None, model=None, prompt=PROMPT,
-             pre_ledger=False, wall_clock="5", td=None, display_name="auto"):
+             pre_ledger=False, wall_clock="5", td=None, display_name="auto",
+             space="main"):
     """跑一轮 dispatch；返回 (rc, result, ledger, tmpdir)。td 可传入复用（同 id 重试）。
     display_name="auto"：带 --launch（新鲜路径）时自动补 DISPLAY（ADR-0010 必传），
-    既有路径不补；传 None 显式不带（测缺参），传字符串显式指定。"""
+    既有路径不补；传 None 显式不带（测缺参），传字符串显式指定。
+    space 默认 "main"（--space 必传，#43；FakeApp 默认空间名），传 None 显式不带（测 argparse 拒）。"""
     own_td = td is None
     if own_td:
         td = tempfile.mkdtemp()
@@ -211,6 +213,8 @@ def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
         argv += ["--reset", reset]
     if model is not None:
         argv += ["--target-model", model]
+    if space is not None:
+        argv += ["--space", space]
     dispatch.hc_json = fake
     dispatch.app_json = app
     dispatch.extract = lambda pi_bin, args, raw_path: dict(EXT)
@@ -232,7 +236,7 @@ def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
 
 def main():
     # 1 CLI 静态契约
-    base = ["--target", NAME, "--release-id", "r1", "--prompt-file", "p.txt"]
+    base = ["--target", NAME, "--release-id", "r1", "--prompt-file", "p.txt", "--space", "main"]
     a = dispatch.parse_args(base + ["--launch", LAUNCH, "--cwd", "/proj", "--rebuild"])
     assert a.launch == LAUNCH and a.cwd == "/proj" and a.rebuild is True
     for removed in (("--switch-agent", LAUNCH), ("--exit-command", "/exit"),
@@ -252,7 +256,7 @@ def main():
             pf.write_text(PROMPT, encoding="utf-8")
             argv = ["--target", NAME, "--release-id", "static-pair",
                     "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
-                    *extra]
+                    "--space", "main", *extra]
             dispatch.hc_json = fake
             dispatch.app_json = app
             dispatch.check_structure_and_tools = lambda: None

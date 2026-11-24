@@ -79,7 +79,7 @@ def main():
     print("3 uv 探不到 -> python_too_old OK")
 
     # 4) --expect-title 已从 parse_args 移除（传它报未知参数）
-    base = ["--target", "t7", "--release-id", "r1", "--prompt-file", "p.txt"]
+    base = ["--target", "t7", "--release-id", "r1", "--prompt-file", "p.txt", "--space", "main"]
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             dispatch.parse_args(base + ["--expect-title", "x"])

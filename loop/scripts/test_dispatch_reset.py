@@ -75,7 +75,9 @@ class FakeApp:
     def __init__(self, hc=None, panes=("t99",), spaces=None, closed=False,
                  keep_error=False, keep_no_pane=False, space_new_error=False,
                  tab_close_error=False, rename_error=False, rename_noop=False,
-                 strip_tab_id=False, pane_delay=0):
+                 strip_tab_id=False, pane_delay=0, select_error=False,
+                 select_noop=False, restore_error=False, restore_noop=False,
+                 user_switch=False, land_elsewhere=False, select_flaky=False):
         self.hc = hc
         self.calls = []
         self.panes = set(panes)
@@ -84,6 +86,23 @@ class FakeApp:
                        "tabs": [{"id": "tb1", "terminals": [{"terminal": a} for a in sorted(self.panes)]}]
                                if self.panes else []}]
         self.spaces = spaces
+        # 当前选中空间（#43）：status 报它，keep 落进它；space.select 改它。
+        self.selected = spaces[0]["id"] if spaces else None
+        self._select_n = 0
+        # 空间定位失败/竞态旋钮（#43）：select_error＝space.select 命令失败；
+        # select_noop＝首次 select 成功但选中不变（复核不符）；restore_error/restore_noop
+        # ＝还原（第二次起）select 失败/不落地；user_switch＝keep 后用户切走选中（接管）。
+        self.select_error = select_error
+        self.select_noop = select_noop
+        self.restore_error = restore_error
+        self.restore_noop = restore_noop
+        self.user_switch = user_switch
+        # land_elsewhere＝keep 的 pane 落进非选中空间（模拟异步落地前选中被切走）；
+        # select_flaky＝首次 select 已生效但紧接的一次 status 报旧选中（复核抖动）。
+        self.land_elsewhere = land_elsewhere
+        self.select_flaky = select_flaky
+        self._flaky_status = 0
+        self._stale_space = None
         self.closed = closed
         self.keep_error = keep_error
         self.keep_no_pane = keep_no_pane
@@ -122,7 +141,10 @@ class FakeApp:
             raise dispatch.AppFailure("app_closed", "herdr-app 窗口没开", [], 1,
                                       {"error": "not running"})
         if args[0] == "status":
-            return {"space": self.spaces[0]["id"] if self.spaces else None}
+            if self._flaky_status > 0:
+                self._flaky_status -= 1
+                return {"space": self._stale_space}
+            return {"space": self.selected}
         if args[0] == "ls":
             if self._pending_pane is not None:
                 self._pane_countdown -= 1
@@ -145,9 +167,38 @@ class FakeApp:
                         self.panes.add(addr)
                 self._keep_n += 1
                 if self.spaces:
-                    self.spaces[0]["tabs"].append(
+                    # keep 落进当前选中空间（#43 实证语义），不是恒第一个。
+                    if self.land_elsewhere:
+                        cur = next((sp for sp in self.spaces if sp["id"] != self.selected),
+                                   self.spaces[0])
+                    else:
+                        cur = next((sp for sp in self.spaces if sp["id"] == self.selected),
+                                   self.spaces[0])
+                    cur["tabs"].append(
                         {"id": "tb-keep%d" % self._keep_n, "terminals": [{"terminal": addr}]})
+                    if self.user_switch:
+                        # 落地窗口内用户切走选中（还原竞态护栏的触发条件）。
+                        other = next((sp for sp in self.spaces if sp["id"] != self.selected), None)
+                        if other:
+                            self.selected = other["id"]
                 return {"pane": "p-kept", "terminal": addr}
+            if name == "space.select":
+                self._select_n += 1
+                restore = self._select_n > 1
+                if self.select_error or (restore and self.restore_error):
+                    raise dispatch.AppFailure("select_error", "space.select failed", [], 1,
+                                              {"error": "space.select failed"})
+                sp = next((s for s in self.spaces if s["id"] == payload["id"]), None)
+                if sp is None:
+                    raise dispatch.AppFailure("select_error", "no space %s" % payload["id"],
+                                              [], 1, {"error": "unknown space"})
+                noop = self.restore_noop if restore else self.select_noop
+                if not noop:
+                    if self.select_flaky and not restore:
+                        self._stale_space = self.selected
+                        self._flaky_status = 1
+                    self.selected = sp["id"]
+                return {}
             if name == "space.new":
                 if self.space_new_error:
                     raise dispatch.AppFailure("space_new_error", "space.new failed", [], 1,
@@ -159,6 +210,8 @@ class FakeApp:
                       "tabs": [{"id": "tb-gift", "terminals": [{"terminal": self.gifted}]}]}
                 self.spaces.append(sp)
                 self.panes.add(self.gifted)
+                if self.selected is None:
+                    self.selected = sp["id"]   # 无选中空间时新空间被显示（真实 app 语义）
                 return {"space": sp["id"], "tab": "tb-gift", "terminal": self.gifted}
             if name == "tab.close":
                 if self.tab_close_error:
@@ -193,6 +246,7 @@ def run_case(reset_arg, fake, rid):
         ld = Path(td) / ".loop"
         argv = ["--target", "t99", "--release-id", rid,
                 "--prompt-file", str(pf), "--loop-dir", str(ld),
+                "--space", "main",
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
         if reset_arg is not None:

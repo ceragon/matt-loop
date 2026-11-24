@@ -81,6 +81,7 @@ def run_case(reset_arg, model_arg, fake, rid, prompt=PROMPT, pre_ledger=False):
             (ld / "runs" / (rid + ".json")).write_text("{}", encoding="utf-8")
         argv = ["--target", "t99", "--release-id", rid,
                 "--prompt-file", str(pf), "--loop-dir", str(ld),
+                "--space", "main",
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
         if reset_arg is not None:

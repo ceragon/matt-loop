@@ -102,6 +102,22 @@ _Avoid_: 重置、覆盖
 给无 pane 的 loop 终端在 herdr-app 工作区一个可见 pane；命名会话恒可见是硬不变量，进不了即整轮报错。
 _Avoid_: keep（hc 的恢复语义）、挂载
 
+**空间定位**（Space targeting）:
+调用方经必传的 --space 显式指定领养落点进哪个工作区空间；落点不再随用户当前视图漂。
+_Avoid_: 自动路由、静默 cwd 猜
+
+**目标空间**（Target space）:
+--space 解析出的、领养 pane 应落进的工作区空间；或是复用的既有空间，或是按目录名新建的空间。
+_Avoid_: 活动空间、当前空间
+
+**--space 解析**:
+--space 值的三态解析：路径（按 folder 匹配，唯一复用／零个新建／多个歧义）、id（sp 前缀直配）、名（唯一匹配）。
+_Avoid_: 按 cwd 猜
+
+**space_restore_warning**:
+领养后还原原选中空间失败的降级告警；pane 已落地、恒可见满足，不丢放行。
+_Avoid_: 领养失败
+
 ### 探路
 
 **地图**（Map）:

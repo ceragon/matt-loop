@@ -1,6 +1,6 @@
 ---
 name: loop
-description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（裁剪＋抽取成 JSON，默认直连 API、pi 备选）；监听只读随时可，仅报错时可直推（仍须放行）。命名会话 get-or-create（ADR-0009）：--target 推荐传会话名，目标缺失/已死/空闲 shell 时同一放行内创建或复活（--launch shell 启动命令＋--cwd 成对必填，--display-name 新鲜路径必传，缺参 launch_required/display_name_required 补参同 id 重试）；名字被占呈报 session_occupied，--rebuild 经用户显式授权只杀 idle/done 占位者；命名会话恒可见于 herdr-app 工作区（领养失败 adopt_failed 停轮，herdr-app 必须常开）；换 kind 换 --target 到另一命名会话。可选 --reset 先发 /new /clear /compact；可选 --target-model 先发 /model <名字> 切目标模型（独立于 --reset，顺序 重置→切模型→主任务）；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）时，全新空会话（turn == 0）或刚创建/复活的新鲜会话自动豁免，复用旧会话（turn > 0）必须带 --reset。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
+description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（裁剪＋抽取成 JSON，默认直连 API、pi 备选）；监听只读随时可，仅报错时可直推（仍须放行）。命名会话 get-or-create（ADR-0009）：--target 推荐传会话名，目标缺失/已死/空闲 shell 时同一放行内创建或复活（--launch shell 启动命令＋--cwd 成对必填，--display-name 新鲜路径必传，缺参 launch_required/display_name_required 补参同 id 重试）；名字被占呈报 session_occupied，--rebuild 经用户显式授权只杀 idle/done 占位者；命名会话恒可见于 herdr-app 工作区（领养失败 adopt_failed 停轮，herdr-app 必须常开），--space 必传指定领养落点空间（名/id/路径三态解析，ADR-0011）；换 kind 换 --target 到另一命名会话。可选 --reset 先发 /new /clear /compact；可选 --target-model 先发 /model <名字> 切目标模型（独立于 --reset，顺序 重置→切模型→主任务）；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）时，全新空会话（turn == 0）或刚创建/复活的新鲜会话自动豁免，复用旧会话（turn > 0）必须带 --reset。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
 ---
 
 # loop：走管道
@@ -11,7 +11,7 @@ dispatch 做发送、等待、取回、落盘这些机械活，抽取器（默�
 
 ## 每轮循环（走管道）
 
-1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_command` 非空时，本轮放行开场行**应照用该预测指令**（可编辑；偏离须向用户明示理由，ADR-0008）。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd、显示名）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
+1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_command` 非空时，本轮放行开场行**应照用该预测指令**（可编辑；偏离须向用户明示理由，ADR-0008）。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd、显示名）与目标空间（`--space`，每轮必传）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
 2. **写放行文件**：全文写成 UTF-8 文件，放 `$TMPDIR/loop/releases/<放行id>.txt`（目录不存在就建），放行后一字未改。完成判据：文件就绪（dispatch 核对 sha256，改动即拒发）。
 3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset`/`--target-model` 时该放行一并授权全部前置＋主任务（重置是枚举里可预知的固定命令，切模型是字面 `/model <名字>`）。
 4. **判读结果**：读 `.result.json`＋`run_record`，整理成选项卡给用户；`next_command` 非空时一并呈出（它是预测不是事实，参数可能有错，下一轮放行前用户会审）。完成判据：用户看到结果、给出下一轮方向。
@@ -26,6 +26,7 @@ dispatch 做发送、等待、取回、落盘这些机械活，抽取器（默�
 ```bash
 python3 scripts/dispatch.py \
   --target <会话名（推荐）或t号> --release-id <放行id> --prompt-file <提示词文件> \
+  --space <目标空间：名/id/路径> \
   --expect-proc <前台进程子串> \
   --launch "<shell 启动命令>" --cwd <工作目录>   # 首轮/目标可能缺失时带，get-or-create 兜底
 ```
@@ -41,6 +42,7 @@ python3 scripts/dispatch.py \
   - 需创建/复活却没传 `--launch` → `launch_required`（退出码 2、零发送、放行 id 不消耗），补参后**同 id 重试**即可。启动命令**字面透传**（如 `--launch "claude --dangerously-skip-permissions"`），脚本不映射 kind→命令、不感知 herdr 模板；启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽。
   - **新鲜豁免**：刚创建/复活的会话自动跳过重置发送（result 记 `reset_skipped:"fresh_launch"`），会话起始 skill 豁免视同 turn 0、**不看终端 turn**（turn 是终端级累计，复活会话 turn>0 但会话空）；切模型前置照跑。
   - **恒可见（领养）**：自动创建的终端无条件进 herdr-app 工作区——`herdr-app status` 探测（绝不用裸 `herdr-app`，它会开窗）→ 只读 `ls` 核 pane → 缺则 `do terminal.keep` → `ls` 复核落地；本机无 space 先 `space.new`（focus:false 不抢视图）再清赠送 shell。进不了即 `adopt_failed` 整轮报错、不降级 headless：创建路径保留已建终端、放行 id 消耗（开 app 后**新 id** 重试走既有路径修复）；既有路径每轮预检核 pane、缺则补领养，失败零发送、**同 id** 重试。**herdr-app 必须常开**（app 没开时所有轮次停摆，已接受的代价）；关 tab＝杀终端，走 finished→重建。
+- `--space <名/id/路径>`（**必传**，所有调用，ADR-0011，#43 grill 定稿）：**空间定位**——领养 keep 的落点空间。keep 无空间定位参数（`place` 只管相对焦点 pane 的位置），无 pane 终端一律落进 herdr-app **当前选中的空间**；落点意图必须每轮显式给出，讨放行时随参数一并贴出。**三态解析**：`/` 或 `~` 开头→**路径**（按 `space.folder` 匹配：唯一→复用；零个→自动建空间 `name=目录名`，属显式 opt-in；多个→`space_ambiguous`，改传 id 或唯一名；路径须已存在目录否则 `bad_args`）；`sp` 前缀→**id** 直配；其余→**名**（`ls` 唯一匹配；重名→`bad_args`；不存在→`space_not_found`，名不自动建）。与 `--cwd` 独立（空间 folder 未必等于终端 cwd）。**不传参静默按 cwd 猜仍禁止**（多空间可共享同一 folder，静默路由会拆散既有组织）。只在需要 keep（pane 缺）时生效：目标≠当前 shown 才 `space.select`→keep→复核→还原选中（短暂抢焦点，基本仅创建时 1–2s；窗口内用户接管选中即让位，不抢回）；目标==shown 不 select；pane 已在提前返回不抢。落地复核 pane 所在空间：落进非目标空间（落地窗口内选中被切走）→ `space_target_warning` 如实告警；还原失败降级 `space_restore_warning`——两者都不丢放行。result 带 `space`（请求值）/`space_selected`/`space_landed`/`space_restore`。已落错存量终端不移动（无跨空间挪 pane API），手动挪或 kill 重建。
 - `--display-name <显示名>`（ADR-0010）：命名会话标签页上给人看的名字。**创建/复活/重建三条新鲜路径必传**（缺则 `display_name_required`，退出码 2、零发送、id 不消耗、补参同 id 重试，与 `launch_required` 同构）；复用轮可选——传了就更新 tab 名、不传保持旧值。机械校验：非空、1–64 字符、禁换行与控制字符（非法 `bad_args`）；**不校验式样**。落地：领养复核 pane 落地后、主任务发送前 `tab.rename`＋`ls` 复核名；**失败不丢放行**，result 记 `display_name_warning`，选项卡如实呈报。**传了就覆盖**（放行已授权名字本身）；复用轮传显示名前，调用方若知用户手工改过名，先向用户确认。
 - `--rebuild`（默认不传，ADR-0009）：**强制重建**，仅用户明示授权 kill 重建后传，只在 `session_occupied` 占位分支生效（其余分流误传 `bad_args`）。只杀 idle/done 占位者，working/blocked/未自报 → `rebuild_busy` 拒杀；kill 后同名新建，result `rebuilt:true`＋旧 t 号，kill 后创建失败也带部分状态可审计。放行必贴「将 kill <名字>（占位者摘要）并重建」。
 - **换 kind＝换 `--target`** 到另一命名会话（get-or-create 兜底），旧会话保留可切回；`--expect-proc` 同步改新 kind。`--switch-agent`/`--exit-command`/`--exit-keys` 已整条移除（ADR-0007 superseded by ADR-0009）。
@@ -98,7 +100,7 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `next_command`（字符串，ADR-0008）：抽取器**推测**的下一轮完整斜杠指令（七个打法 skill 候选，参数取自原文上下文）；`""`＝无预测。唯一推测字段，豁免逐字校验、缺失按 `""` 不连累整轮。**建议不是闸**：下一轮放行应照它作开场行（可编辑，偏离明示理由）；它是起始 skill 且 turn>0 时，讨放行一并推荐 `--reset`。
 - `rewritten`：脚本对选段字段逐一做原文子串校验，搜不到的在此标出、值为最接近原文片段；`{}` 即全部逐字命中。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `raw_record`。**
 - `target` 恒为**传入地址**（会话名或 t 号，寻址稳定）；`target_address`：解析出的 **t 号**（审计定位，名字恒解析到最新 live）；`turn` 是**终端级累计计数**（复活会话 turn>0 但会话是空的，ADR-0009）。
-- `launched`：仅本轮 `hc run` 创建了终端才出现（`true`，创建/重建路径，error 时也带）；`rebuilt`/`rebuilt_old_target`：仅强制重建才出现（`true`＋被 kill 占位者的旧 t 号）；`workspace`：领养状态（`adopted`/`failed`，创建与既有路径都报）；`reset_skipped:"fresh_launch"`：新鲜会话跳过了重置发送（传了 `--reset` 但创建/复活/重建时）。这些字段成功与 error 都带适用项，部分状态（终端已建/启动已发/旧会话已死/空间已建）如实报。
+- `launched`：仅本轮 `hc run` 创建了终端才出现（`true`，创建/重建路径，error 时也带）；`rebuilt`/`rebuilt_old_target`：仅强制重建才出现（`true`＋被 kill 占位者的旧 t 号）；`workspace`：领养状态（`adopted`/`failed`，创建与既有路径都报）；`reset_skipped:"fresh_launch"`：新鲜会话跳过了重置发送（传了 `--reset` 但创建/复活/重建时）；`space`：`--space` 请求值回显（必传，成功与 error 都带，ADR-0011），`space_selected`：解析出的目标空间 id（解析成功才带），`space_landed`：pane 实际落进的空间 id，`space_target_warning`：pane 落进非目标空间告警（`landed_elsewhere`），`space_restore`：还原选中结果（`restored`/`user_switched`＝用户接管跳过/`not_needed`/`failed`），`space_restore_warning`：还原失败告警（两种告警都不丢放行）。这些字段成功与 error 都带适用项，部分状态（终端已建/启动已发/旧会话已死/空间已建/选中已还原）如实报。
 - `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性判定，只看折叠标记（成功恒 `complete:true`）；`anchor_found`：提示词回声是否还在当前屏——仅信息，长任务回声滚出屏为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
 - `webhook_error_detail`：仅失败时出现，与 stderr 同一份脱敏诊断。字段：`type`（外层异常类名）、`reason_type`（`URLError.reason` 是异常时的类名）、`errno`/`errno_name`（可用时，如 `61`/`ECONNREFUSED`；DNS 给 `EAI_*`）、`is_timeout`（布尔）、`ssl_verify_code`（`SSLCertVerificationError.verify_code`，可用时）、`http_status`（仅 HTTPError）、`proxy`（`{"configured": "yes|no|unknown", "matches": "yes|no|unknown", "source": "env|system|bypass|none|unknown"}`：是否配置代理、本请求是否命中、代理来自环境变量还是系统配置）、`attempts`（总尝试次数），走过代理全败直连兜底仍失败时另带 `fallback_direct: true` 与 `fallback_error`（直连尝试的类名或 `"HTTP <码>"`；`webhook_error` 与主体字段保留主路由最后一次错误以对齐 `proxy`）。不含 URL、密钥、主机名、请求头或字符串形式的 reason；判断不了就标 `unknown`。
 - **三个选段只摘原文片段、不保证覆盖全文**；要不要批准、要不要改接口的判断，必须回看 `run_record`，不能只凭 JSON 选段。
@@ -117,4 +119,4 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 
 ## 护栏
 
-调用方要守的三条：**先放行，后调用**；**复用旧会话（`turn > 0`）调会话起始 skill 必须 `--reset`**（见「会话起始 skill」，`turn == 0` 全新空会话与刚创建/复活的新鲜会话自动豁免，其余由脚本对行首调用机械兜底）；**创建参数（会话名、启动命令、cwd、显示名）与强制重建意图随放行一并贴出、一并授权**——kill 永远是用户的显式授权，不是脚本的自主动作。其余机械保证由脚本兜底，细节见 `REFERENCE.md`。
+调用方要守的四条：**先放行，后调用**；**每轮必传 `--space`**（目标空间名/id/路径，三态解析见「调用」；落点意图是显式契约，不静默按 cwd 猜）；**复用旧会话（`turn > 0`）调会话起始 skill 必须 `--reset`**（见「会话起始 skill」，`turn == 0` 全新空会话与刚创建/复活的新鲜会话自动豁免，其余由脚本对行首调用机械兜底）；**创建参数（会话名、启动命令、cwd、显示名）、目标空间（`--space`）与强制重建意图随放行一并贴出、一并授权**——kill 永远是用户的显式授权，不是脚本的自主动作。其余机械保证由脚本兜底，细节见 `REFERENCE.md`。

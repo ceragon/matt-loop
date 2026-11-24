@@ -85,6 +85,7 @@ def run_case(rid, opener):
         ld = Path(td) / ".loop"
         argv = ["--target", "t99", "--release-id", rid,
                 "--prompt-file", str(pf), "--loop-dir", str(ld),
+                "--space", "main",
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
         dispatch.hc_json = FakeHc()

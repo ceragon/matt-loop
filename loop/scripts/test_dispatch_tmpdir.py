@@ -14,7 +14,7 @@ spec = importlib.util.spec_from_file_location("dispatch", HERE / "dispatch.py")
 dispatch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dispatch)
 
-BASE = ["--target", "t7", "--release-id", "r1", "--prompt-file", "p.txt"]
+BASE = ["--target", "t7", "--release-id", "r1", "--prompt-file", "p.txt", "--space", "main"]
 
 
 def main():
