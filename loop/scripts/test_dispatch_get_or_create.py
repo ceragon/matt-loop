@@ -177,7 +177,8 @@ class NamedFakeHc:
 
 def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
              expect_proc=None, reset=None, model=None, prompt=PROMPT,
-             pre_ledger=False, wall_clock="5", td=None, display_name="auto"):
+             pre_ledger=False, wall_clock="5", td=None, display_name="auto",
+             space=None):
     """跑一轮 dispatch；返回 (rc, result, ledger, tmpdir)。td 可传入复用（同 id 重试）。
     display_name="auto"：带 --launch（新鲜路径）时自动补 DISPLAY（ADR-0010 必传），
     既有路径不补；传 None 显式不带（测缺参），传字符串显式指定。"""
@@ -211,6 +212,8 @@ def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
         argv += ["--reset", reset]
     if model is not None:
         argv += ["--target-model", model]
+    if space is not None:
+        argv += ["--space", space]
     dispatch.hc_json = fake
     dispatch.app_json = app
     dispatch.extract = lambda pi_bin, args, raw_path: dict(EXT)

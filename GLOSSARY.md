@@ -102,6 +102,10 @@ _Avoid_: 重置、覆盖
 给无 pane 的 loop 终端在 herdr-app 工作区一个可见 pane；命名会话恒可见是硬不变量，进不了即整轮报错。
 _Avoid_: keep（hc 的恢复语义）、挂载
 
+**空间定位**（Space targeting）:
+调用方显式指定领养落点进哪个工作区空间（名或 id）；不指定时落点随 herdr-app 当前选中的空间。
+_Avoid_: 自动路由、cwd 匹配
+
 ### 探路
 
 **地图**（Map）:

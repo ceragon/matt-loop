@@ -87,6 +87,8 @@ hc 0.1.22、herdr-app 0.1.17，未碰生产会话）：
      任一步失败 `adopt_failed` 带部分状态（空间可能已建，如实报）。
    - app 探测用 `herdr-app status` 退出码/活 socket，绝不用裸 `herdr-app`。
      不指定空间（keep 无 space 参数），落点随 herdr-app 规则、不可控，已接受。
+     （**此条款 superseded by ADR-0011**：#43 实证落点随当前选中空间；
+     `--space` 显式 targeting，不传维持现状。）
 9. **switch-agent 移除**（Q5=B）：`--switch-agent`/`--exit-command`/
    `--exit-keys` 代码＋测试＋文档整条删除；换 kind＝换 `--target` 到另一命名
    会话（get-or-create 兜底），旧会话保留可切回；既有未命名终端下次换 kind
