@@ -135,7 +135,8 @@ def main():
     assert res["workspace"] == "adopted"
     print("6 zero-space via --space path: space.new(dirname,focus:false)->keep->tab.close+rm ok")
 
-    # 6b 建空间中途失败：space.new 失败（空间未建）／tab.close 失败（pane 已落地、空间已建）
+    # 6b 建空间中途失败：space.new 失败（空间未建，adopt_failed）／tab.close 失败
+    #    （pane 已落地、空间已建 → #46 Bug2 降级 gift_cleanup_warning，不丢放行）
     path = tempfile.mkdtemp()
     fake = NamedFakeHc()
     app = FakeApp(hc=fake, spaces=[], space_new_error=True)
@@ -150,11 +151,13 @@ def main():
     app = FakeApp(hc=fake, spaces=[], tab_close_error=True)
     rc, res, led, td = run_case(fake, app, "adopt-nospace-taberr",
                                 launch=LAUNCH, cwd="/proj", expect_proc="claude", space=path)
-    assert rc == 1 and res["error"]["kind"] == "adopt_failed", res
-    assert res["adopt_reason"] == "keep_error"
+    assert rc == 0 and res["ok"], res
+    assert res["workspace"] == "adopted", "真终端已可见，整轮不判 failed（#46 Bug2）"
     assert res["space_created"] is True and res["pane_adopted"] is True, res
+    assert res["gift_cleanup_warning"]["reason"] == "tab_close_error", res
     assert fake.rms == [], "tab.close 失败不应 rm"
-    print("6b space-create mid-failure: partial state (space_created/pane_adopted) reported ok")
+    assert fake.sends[-1] == (res["target_address"], PROMPT, True), "主任务照发"
+    print("6b space-create mid-failure: space.new error fails; tab.close error degrades to warning ok")
 
     # 6c 既有路径补领养遇零空间：同一套舞，预检失败仍 id 不消耗
     path = tempfile.mkdtemp()

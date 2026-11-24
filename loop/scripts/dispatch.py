@@ -21,19 +21,23 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
     字面命令 /model <名字>，等落定再发主任务；名字原样透传、不核实生效、不预读跳过、
     不按 agent 映射，与 --reset 独立可单独带；target_model 是请求值非验证值。
   - 命名会话 get-or-create（ADR-0009）：--target 推荐传会话名（一名一 live 终端，名字恒解析
-    到最新 live）。预检 hc get 分流：not_found/finished→创建（hc run --bg --keep --name --cwd
-    -- zsh -l 单形态 shell 包装→打 loop=1/loop-agent 标签→等 shell 就绪→裸 send --launch
-    启动命令→等 agent 就绪→核身份）；live＋空闲 shell＋loop 标签符→复活（原地重发启动命令，
+    到最新 live）。预检 hc get 分流：not_found/finished→创建（hc run --bg --keep --no-parent
+    --name --cwd -- zsh -l 单形态 shell 包装，--no-parent 无父链、独立于调用方终端（#46，
+    调用方背景终端退出不连带杀）→打 loop=1/loop-agent 标签→等 shell 就绪→裸 send --launch
+    启动命令→领养（先于等就绪，#46）→等 agent 就绪→核身份）；live＋空闲 shell＋loop 标签符→复活（原地重发启动命令，
     名字/cwd/终端级历史不动）；live＋别的 agent/程序或无 loop 标签→session_occupied 停轮呈报，
     --rebuild 经用户显式授权只杀 idle/done 占位者后同名重建。--launch 字面透传 shell 命令、
     --cwd 显式给目录（二者成对必填、无默认、脚本零映射）；需创建/复活却没传→launch_required
     （退出码 2、零发送、id 不消耗、补参同 id 重试）。启动命令是命令不是提示词：不抽取、不落
     run_record，占前置发送槽。换 kind＝换 --target 到另一命名会话（--switch-agent 已移除）。
-  - 恒可见（领养，ADR-0009）：命名会话恒有 herdr-app pane。创建路径就绪后、既有/复活路径每轮
-    预检（写台账前）经单一 app_json 咽喉：herdr-app status 探测（绝不用裸 herdr-app，它会开窗）
-    →只读 ls 核 pane→缺则按 --space 三态解析目标空间（路径零匹配 space.new{name:目录名,
-    folder:路径,focus:false}）→do terminal.keep→ls 复核落地→space_created 时 tab.close
-    confirmed:true＋hc rm 清赠送 shell。进不了即 adopt_failed 整轮报错、不降级 headless：
+  - 恒可见（领养，ADR-0009）：命名会话恒有 herdr-app pane。创建路径启动命令发出即领养
+    （先于等 agent 就绪，#46：卡登录/授权/网络弹框也先可见，就绪失败另报状态不影响可见性）、
+    既有/复活路径每轮预检（写台账前）经单一 app_json 咽喉：herdr-app status 探测（绝不用裸
+    herdr-app，它会开窗）→只读 ls 核 pane→缺则按 --space 三态解析目标空间（路径零匹配
+    space.new{name:目录名,folder:路径,focus:false}）→do terminal.keep→ls 复核落地→
+    space_created 时 tab.close confirmed:true→轮询等赠送终端 finished→hc rm 清赠送 shell
+    （#46：tab.close 异步结束终端，单次 rm 撞 live 被拒；清理失败降级 gift_cleanup_warning
+    不丢已成功的领养）。进不了即 adopt_failed 整轮报错、不降级 headless：
     创建路径保留已建终端、id 消耗；预检路径零发送、id 不消耗。app 没开时所有轮次停摆
     （已接受的代价）。
   - 空间定位（--space 必传，ADR-0011，#43 grill 定稿）：keep 无空间定位参数（place 只管
@@ -994,9 +998,10 @@ def wait_for_agent_ready(hc_bin, args, deadline):
         time.sleep(RESET_POLL_S)
 
 
-def send_launch(hc_bin, args, ledger, ledger_path, ctx):
+def send_launch_command(hc_bin, args, ledger, ledger_path, ctx):
     """启动前置发送（创建/复活共用）：shell 不是 agent、不报 idle，用裸 send（不带 --if）。
-    启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽。"""
+    启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽。
+    只管发送不等就绪（#46 Bug3）：创建路径在发送与等就绪之间插领养（恒可见）。"""
     ledger.update(phase="launch_sending")
     write_json_atomic(ledger_path, ledger)
     try:
@@ -1007,6 +1012,13 @@ def send_launch(hc_bin, args, ledger, ledger_path, ctx):
     ctx["launch_sent"] = True
     ledger.update(launch_sent=True, launch_send=send, phase="launch_waiting_agent")
     write_json_atomic(ledger_path, ledger)
+
+
+def wait_launch_agent(hc_bin, args, ledger, ledger_path):
+    """等 agent 就绪＋核身份（创建/复活共用）。创建路径在领养之后跑（#46 Bug3）：
+    卡弹框/超时失败时会话已领养可见，就绪失败另报状态、不影响可见性。"""
+    ledger.update(phase="launch_waiting_agent")
+    write_json_atomic(ledger_path, ledger)
     g = wait_for_agent_ready(hc_bin, args, time.monotonic() + args.wall_clock)
     check_identity(g, args)
     ledger.update(phase="launch_done", launch_done_at=now_iso())
@@ -1015,14 +1027,17 @@ def send_launch(hc_bin, args, ledger, ledger_path, ctx):
 
 
 def do_create(hc_bin, args, ledger, ledger_path, ctx):
-    """创建前置（ADR-0009，单形态 shell 包装）：hc run --bg --keep --name --cwd -- zsh -l
-    →打 loop=1＋loop-agent=<expect-proc> 标签→等 shell 就绪→send 启动命令→等 agent 就绪
-    →核身份。名字唯一性由 herdr 仲裁（name_taken 竞态映射 launch_failed）。
+    """创建前置（ADR-0009，单形态 shell 包装）：hc run --bg --keep --no-parent --name
+    --cwd -- zsh -l→打 loop=1＋loop-agent=<expect-proc> 标签→等 shell 就绪→send 启动命令。
+    等 agent 就绪＋核身份拆在 wait_launch_agent（#46 Bug3：主流程在两者之间插领养，
+    卡弹框也先可见）。名字唯一性由 herdr 仲裁（name_taken 竞态映射 launch_failed）。
     任一步失败整轮 launch_failed，ctx/台账带部分状态（终端已建/启动已发如实报）。"""
     ledger.update(phase="launch_running")
     write_json_atomic(ledger_path, ledger)
     try:
-        r = hc_json(hc_bin, ["run", "--bg", "--keep", "--name", args.target,
+        # --no-parent（#46 Bug1）：命名会话无父链、独立于调用方终端——调用方背景
+        # 终端退出/被杀不连带杀会话（die_with_parent 默认 true 会让会话活不过一轮），跨轮持久。
+        r = hc_json(hc_bin, ["run", "--bg", "--keep", "--no-parent", "--name", args.target,
                              "--cwd", args.cwd, "--", "zsh", "-l"], SEND_GUARD_S)
     except HcFailure as e:
         raise DispatchError("launch_failed", f"hc run 创建命名会话失败（{e.kind}）：{e.message}",
@@ -1046,7 +1061,7 @@ def do_create(hc_bin, args, ledger, ledger_path, ctx):
     ledger.update(phase="launch_waiting_shell")
     write_json_atomic(ledger_path, ledger)
     wait_for_shell_ready(hc_bin, args.target, time.monotonic() + args.wall_clock)
-    return send_launch(hc_bin, args, ledger, ledger_path, ctx)
+    send_launch_command(hc_bin, args, ledger, ledger_path, ctx)
 
 
 def find_pane(ls_data, address):
@@ -1183,7 +1198,8 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
     """领养（ADR-0009 恒可见不变量）：status 探测→只读 ls 核 pane→缺则按 --space
     三态解析目标空间→（路径零匹配 space.new focus:false）→terminal.keep→带超时轮询
     ls 复核 pane 落地（#40）→space_created 时清理赠送 shell（tab.close confirmed:true
-    ＋hc rm）。任一步失败抛 adopt_failed，ctx 记部分状态（workspace:"failed"＋
+    →轮询等终端 finished→hc rm，#46 Bug2；清理失败降级 gift_cleanup_warning 不丢放行）。
+    领养任一步失败抛 adopt_failed，ctx 记部分状态（workspace:"failed"＋
     adopt_reason＋space_created/pane_adopted 如实报）。
     空间定位（#43 grill 定稿，ADR-0011，space 必传）：只在需要 keep 时解析——
     / 或 ~ 开头→路径（folder 匹配：唯一复用／零个 space.new{name:目录名,folder:路径,
@@ -1200,6 +1216,14 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
         if ledger is not None:
             ledger.update(workspace="failed", adopt_reason=reason)
         raise DispatchError("adopt_failed", message, hints)
+
+    def gift_warning(reason, detail):
+        # 赠送清理失败降级告警（#46 Bug2）：pane 已落地、恒可见满足，不丢已成功的领养。
+        w = {"reason": reason, "detail": detail}
+        ctx["gift_cleanup_warning"] = w
+        if ledger is not None:
+            ledger.update(gift_cleanup_warning=w)
+            write_json_atomic(ledger_path, ledger)
 
     retry = (["打开 herdr-app 后用同一放行 id 重试（零发送、id 未消耗）"] if precheck
              else ["已建终端保留；打开 herdr-app 后用新放行 id 重试，走既有路径补领养修复"])
@@ -1321,6 +1345,11 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
             except DispatchError as e:
                 fail("app_closed", f"keep 后 herdr-app ls 失败：{e.message}", retry)
             if find_pane(ls2, address):
+                # pane 已经本轮 keep 落地即如实报（#46：后续任一步失败——清理/等就绪——
+                # 都不再掩盖「已可见」这一部分状态）。
+                ctx["pane_adopted"] = True
+                if ledger is not None:
+                    ledger.update(pane_adopted=True)
                 # 落地复核所在空间（#43）：pane 存在还不够，须在目标空间。keep 异步
                 # 落地，窗口内选中被切走时 pane 会落进别的空间——如实告警不静默；
                 # pane 已落地恒可见满足，不丢放行（多半是用户自己切走所致）。
@@ -1345,7 +1374,6 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
         if selection_switched:
             restore_space(app_bin, original_space, space_target, ledger, ledger_path, ctx)
     if ctx.get("space_created"):
-        ctx["pane_adopted"] = True
         # 清理赠送 shell（绑 space_created，#43 定稿）：找本终端所在 space（刚建、只有赠送 tab＋keep tab），
         # 其余 tab 即赠送 shell——tab.close 结束终端，再 hc rm 清 finished 条目。
         my_space = next((sp for sp in ls2.get("spaces") or []
@@ -1360,14 +1388,38 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
                 app_json(app_bin, ["do", "tab.close", json.dumps(
                     {"id": tb["id"], "confirmed": True})], QUERY_GUARD_S)
             except DispatchError as e:
-                fail("keep_error", f"清理赠送 shell tab 失败：{e.message}",
-                    retry + ["pane 已落地、空间已建；赠送 shell 残留，如实报"])
+                gift_warning("tab_close_error", f"关闭赠送 shell tab 失败：{e.message}")
+                continue
             for a in addrs:
+                # tab.close 异步结束终端（#46 Bug2，与 #40 同类竞态）：单次 rm 会撞
+                # live 被拒（退出码 1）。带超时轮询 hc get 等 finished（复用
+                # --adopt-timeout/--adopt-poll）再 rm；清理失败降级告警不丢放行。
+                deadline = time.monotonic() + adopt_timeout
+                outcome = "finished"
+                while True:
+                    try:
+                        g = hc_json(hc_bin, ["get", a], QUERY_GUARD_S)
+                    except HcFailure as e:
+                        if e.kind == "not_found":
+                            outcome = "gone"
+                            break
+                        g = None    # 瞬时错误：窗口内继续轮询，耗尽才报
+                    if g is not None and g.get("state") == "finished":
+                        break
+                    if time.monotonic() >= deadline:
+                        outcome = "poll_error" if g is None else "timeout"
+                        break
+                    time.sleep(adopt_poll)
+                if outcome == "gone":
+                    continue    # 条目已不在，无需 rm
                 try:
                     hc_json(hc_bin, ["rm", a], QUERY_GUARD_S)
                 except DispatchError as e:
-                    fail("keep_error", f"hc rm 赠送 shell 终端失败：{e.message}",
-                        retry + ["赠送 tab 已关、终端 finished 未 rm，如实报"])
+                    if e.kind == "not_found":
+                        continue    # get 与 rm 之间条目被收走，视同清理完成
+                    reason = {"timeout": "finish_timeout",
+                              "poll_error": "finish_poll_error"}.get(outcome, "rm_error")
+                    gift_warning(reason, f"hc rm 赠送 shell 终端失败：{e.message}")
     ctx["workspace"] = "adopted"
     if ledger is not None:
         ledger.update(phase="adopt_done", workspace="adopted")
@@ -1837,8 +1889,10 @@ def main(argv=None):
         write_json_atomic(ledger_path, ledger)
 
         # 2.4) 创建前置（ADR-0009）：not_found/finished 分流且带 --launch 时，同一放行内
-        #      建命名会话（单形态 shell 包装）→打标签→等 shell→send 启动命令→等 agent→核身份
-        #      →领养（恒可见）。放行一并授权创建＋主任务；启动命令不抽取、不落 run_record。
+        #      建命名会话（单形态 shell 包装）→打标签→等 shell→send 启动命令→领养（恒可见）
+        #      →等 agent 就绪→核身份（#46 Bug3：领养先于等就绪——卡登录/授权/网络弹框时
+        #      会话也已可见，用户能到屏幕前手动处理；就绪失败另报状态，不影响可见性）。
+        #      放行一并授权创建＋主任务；启动命令不抽取、不落 run_record。
         #      领养在写台账后：失败保留已建终端、放行 id 消耗（新 id 重试走既有路径修复）。
         if branch in ("create", "rebuild"):
             if branch == "rebuild":
@@ -1860,10 +1914,12 @@ def main(argv=None):
             adopt(hc_bin, find_app_bin(), ctx["target_address"],
                   ledger, ledger_path, ctx, False, args.space,
                   adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
+            wait_launch_agent(hc_bin, args, ledger, ledger_path)
         elif branch == "revive":
-            # 复活（ADR-0009）：不 run、不重写标签；原地重发启动命令→等 agent 就绪→核身份。
-            # 名字/cwd/终端级历史不动，会话是空的。
-            send_launch(hc_bin, args, ledger, ledger_path, ctx)
+            # 复活（ADR-0009）：不 run、不重写标签；原地重发启动命令→等 agent 就绪→核身份
+            # （领养已在预检做过）。名字/cwd/终端级历史不动，会话是空的。
+            send_launch_command(hc_bin, args, ledger, ledger_path, ctx)
+            wait_launch_agent(hc_bin, args, ledger, ledger_path)
 
         # 2.45) 显示名落地（ADR-0010）：领养复核 pane 落地后、前置/主任务发送前。
         #       创建/重建在领养成功之后、复活在启动命令发出 agent 就绪之后（上面各分支已就绪）；
@@ -1998,8 +2054,8 @@ def main(argv=None):
         # t 号（审计定位）；launched/rebuilt/workspace/reset_skipped 等适用字段随 ctx 带出。
         # turn 是终端级累计计数（复活会话 turn>0 但会话是空的）。
         for k in ("target_address", "launched", "rebuilt", "rebuilt_old_target",
-                  "workspace", "space_created", "pane_adopted", "reset_skipped",
-                  "display_name", "display_name_warning",
+                  "workspace", "space_created", "pane_adopted", "gift_cleanup_warning",
+                  "reset_skipped", "display_name", "display_name_warning",
                   "space", "space_selected", "space_landed", "space_target_warning",
                   "space_restore", "space_restore_warning"):
             if k in ctx:
@@ -2035,8 +2091,8 @@ def main(argv=None):
         # 命名会话部分状态（ADR-0009）：终端已建/启动已发/旧会话已死/领养失败原因等如实报。
         for k in ("target_address", "launched", "launch_sent", "rebuilt",
                   "rebuilt_old_target", "workspace", "adopt_reason",
-                  "space_created", "pane_adopted", "reset_skipped",
-                  "display_name", "display_name_warning",
+                  "space_created", "pane_adopted", "gift_cleanup_warning",
+                  "reset_skipped", "display_name", "display_name_warning",
                   "space", "space_selected", "space_landed", "space_target_warning",
                   "space_restore", "space_restore_warning"):
             if k in ctx:
