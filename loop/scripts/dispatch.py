@@ -31,17 +31,20 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
     run_record，占前置发送槽。换 kind＝换 --target 到另一命名会话（--switch-agent 已移除）。
   - 恒可见（领养，ADR-0009）：命名会话恒有 herdr-app pane。创建路径就绪后、既有/复活路径每轮
     预检（写台账前）经单一 app_json 咽喉：herdr-app status 探测（绝不用裸 herdr-app，它会开窗）
-    →只读 ls 核 pane→缺则 do terminal.keep→ls 复核落地；本机无 space 先 space.new(focus:false)
-    →keep→复核→tab.close confirmed:true＋hc rm 清赠送 shell。进不了即 adopt_failed 整轮报错、
-    不降级 headless：创建路径保留已建终端、id 消耗；预检路径零发送、id 不消耗。app 没开时所有
-    轮次停摆（已接受的代价）。
-  - 空间定位（--space，ADR-0011，#43）：keep 无空间定位（place 只管相对焦点 pane 位置），
-    无 pane 终端落进当前选中空间。可选 --space <名/id> 显式指定落点：只在需要 keep 时生效，
-    对着 ls 解析（id 优先、找不到 space_not_found、重名 space_ambiguous，不自动建、不按 cwd 猜）
-    →space.select→status 复核（不符先走还原护栏再 select_error，keep 不发）→keep→复核
-    pane 及其所在空间（落进非目标空间→space_target_warning 告警不丢放行）→还原选中。
-    还原护栏：用户接管选中即跳过（user_switched）；keep 失败路径也还原；还原失败降级
-    space_restore_warning 不丢放行。不传维持现状。
+    →只读 ls 核 pane→缺则按 --space 三态解析目标空间（路径零匹配 space.new{name:目录名,
+    folder:路径,focus:false}）→do terminal.keep→ls 复核落地→space_created 时 tab.close
+    confirmed:true＋hc rm 清赠送 shell。进不了即 adopt_failed 整轮报错、不降级 headless：
+    创建路径保留已建终端、id 消耗；预检路径零发送、id 不消耗。app 没开时所有轮次停摆
+    （已接受的代价）。
+  - 空间定位（--space 必传，ADR-0011，#43 grill 定稿）：keep 无空间定位参数（place 只管
+    相对焦点 pane 位置），无 pane 终端落进当前选中空间。--space 三态解析：/ 或 ~ 开头→路径
+    （按 space.folder 匹配：唯一复用／零个 space.new{name:目录名,folder,focus:false}／多个
+    space_ambiguous；路径须已存在目录否则 bad_args）；sp 前缀→id 直配；其余→名（ls 唯一匹配，
+    重名 bad_args，不存在 space_not_found）。与 --cwd 独立。只在需要 keep 时生效：目标≠当前
+    shown 才 space.select→status 复核（不符先走还原护栏再 select_error，keep 不发）；
+    目标==shown 不 select。keep→复核 pane 及其所在空间（落进非目标空间→space_target_warning
+    告警不丢放行）→还原选中。还原护栏：用户接管选中即跳过（user_switched）；keep 失败路径
+    也还原；还原失败降级 space_restore_warning 不丢放行。pane 已在提前返回不抢。
   - 显示名层（ADR-0010）：--display-name 调用方显式传完整字符串，脚本不派生、不拼接、不理解、
     不校验式样，只机械校验（非空、1–64 字符、禁换行控制字符，非法 bad_args）＋落地。新鲜路径
     （创建/复活/重建）必传，缺则 display_name_required（与 launch_required 同构：退出码 2、
@@ -51,7 +54,7 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
     rename 失败/复核不符/无 tab→display_name_warning（rename_error/rename_mismatch/no_tab），
     主流程继续；pane 落地仍是硬闸（adopt_failed 不变）。result display_name 回显本轮传入值
     （落地步骤一跑就带，含 no_tab/ls 失败等降级情形，成功与 error 都带）。不写 summary 标签
-    （机器可读靠自动跟随 tab 名的 where 标签）；space.new 的 name 维持会话名。
+    （机器可读靠自动跟随 tab 名的 where 标签）；space.new 的 name 按 ADR-0011 为目录名。
   - 一个放行至多发送成功三次（重置或启动前置＋切模型前置＋主任务，各一次；刚创建/复活的
     新鲜会话自动跳过重置，result 记 reset_skipped:"fresh_launch"，切模型前置照跑）：先写台账
     $TMPDIR/loop/runs/<放行id>.json 再发送；台账存在即拒绝。
@@ -1175,17 +1178,20 @@ def restore_space(app_bin, original, target, ledger, ledger_path, ctx):
         write_json_atomic(ledger_path, ledger)
 
 
-def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx, precheck,
-          adopt_timeout=ADOPT_TIMEOUT_S, adopt_poll=ADOPT_POLL_S, space=None):
-    """领养（ADR-0009 恒可见不变量）：status 探测→只读 ls 核 pane→缺则（本机无 space
-    先 space.new focus:false）→terminal.keep→带超时轮询 ls 复核 pane 落地（#40）→无 space 分支清理赠送
-    shell（tab.close confirmed:true＋hc rm）。任一步失败抛 adopt_failed，ctx 记部分状态
-    （workspace:"failed"＋adopt_reason＋space_created/pane_adopted 如实报）。
-    显式空间定位（#43，ADR-0011）：传 space（名/id）且需要 keep 时，先对着 ls
-    解析（id 优先、名重名报 space_ambiguous、找不到报 space_not_found，不自动建、
-    不按 cwd 猜）→space.select→status 复核选中（不符先走还原护栏再 select_error，
-    keep 不发）→keep→复核 pane 及其所在空间（落错空间→space_target_warning 告警
-    不丢放行）→还原选中（restore_space 护栏，keep 失败路径也还原）。pane 已在则无操作。
+def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
+          adopt_timeout=ADOPT_TIMEOUT_S, adopt_poll=ADOPT_POLL_S):
+    """领养（ADR-0009 恒可见不变量）：status 探测→只读 ls 核 pane→缺则按 --space
+    三态解析目标空间→（路径零匹配 space.new focus:false）→terminal.keep→带超时轮询
+    ls 复核 pane 落地（#40）→space_created 时清理赠送 shell（tab.close confirmed:true
+    ＋hc rm）。任一步失败抛 adopt_failed，ctx 记部分状态（workspace:"failed"＋
+    adopt_reason＋space_created/pane_adopted 如实报）。
+    空间定位（#43 grill 定稿，ADR-0011，space 必传）：只在需要 keep 时解析——
+    / 或 ~ 开头→路径（folder 匹配：唯一复用／零个 space.new{name:目录名,folder:路径,
+    focus:false}／多个 space_ambiguous）；sp 前缀→id 直配；其余→名（唯一匹配，
+    重名 bad_args，不存在 space_not_found）。目标≠当前 shown 才 space.select→status
+    复核（不符先走还原护栏再 select_error，keep 不发）；目标==shown 不 select。
+    keep→复核 pane 及其所在空间（落错空间→space_target_warning 告警不丢放行）→
+    还原选中（restore_space 护栏，keep 失败路径也还原）。pane 已在则提前返回不抢。
     precheck=True（既有路径补领养）：写台账前，失败零发送、id 不消耗、同 id 重试；
     precheck=False（创建路径）：写台账后，失败保留已建终端、id 消耗、新 id 重试修复。"""
     def fail(reason, message, hints):
@@ -1214,43 +1220,74 @@ def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx,
             ledger.update(phase="adopt_done", workspace="adopted")
             write_json_atomic(ledger_path, ledger)
         return
-    # 显式空间定位（#43，ADR-0011）：只在需要 keep 时解析（pane 已在上面已返回）。
-    # id 精确匹配优先，再按名；找不到/重名即 adopt_failed，不自动建空间、不按 cwd 猜
-    # （多空间可共享同一 folder，纯 cwd 路由会拆散既有组织——issue #43 关键约束）。
+    # 空间定位三态解析（#43 grill 定稿，ADR-0011）：只在需要 keep 时解析（pane 已在
+    # 上面已返回）。/ 或 ~ 开头→路径（folder 匹配）；sp 前缀→id 直配；其余→名。
+    # 显式传路径 opt-in 自动建（零匹配时）；--space 必传，无「不传参静默按 cwd 猜」分支
+    # （多空间可共享同一 folder，静默 cwd 路由会拆散既有组织——issue #43 关键约束）。
+    spaces = ls.get("spaces") or []
     space_target = None
-    if space is not None:
-        spaces = ls.get("spaces") or []
-        matches = [sp for sp in spaces if sp.get("id") == space]
-        if not matches:
-            matches = [sp for sp in spaces if sp.get("name") == space]
-        if not matches:
-            fail("space_not_found", f"--space {space} 在 ls 里找不到（id/名都不符）",
-                 retry + ["空间定位 不自动建空间；核对目标空间名/id，或去掉 --space 维持现状"])
+    space_new = None
+    if space.startswith(("/", "~")):
+        path = os.path.normpath(str(Path(space).expanduser()))
+        matches = [sp for sp in spaces if sp.get("folder") == path]
         if len(matches) > 1:
-            fail("space_ambiguous", f"--space {space} 重名命中 {len(matches)} 个空间，无法定夺",
-                 retry + ["改传空间 id（herdr-app ls 的 sp… 地址）消除歧义"])
+            fail("space_ambiguous",
+                 f"--space 路径 {path} 按 folder 命中 {len(matches)} 个空间，无法定夺",
+                 retry + ["改传空间 id（sp…）或唯一名消除歧义"])
+        if matches:
+            space_target = matches[0].get("id")
+            if not space_target:
+                fail("space_not_found", f"--space 路径 {path} 命中的空间缺 id，无法定位", retry)
+        else:
+            space_new = {"name": os.path.basename(path), "folder": path, "focus": False}
+    elif space.startswith("sp"):
+        if not any(sp.get("id") == space for sp in spaces):
+            fail("space_not_found", f"--space id {space} 在 ls 里找不到", retry)
+        space_target = space
+    else:
+        matches = [sp for sp in spaces if sp.get("name") == space]
+        if not matches:
+            fail("space_not_found", f"--space 名 {space} 在 ls 里找不到",
+                 retry + ["核对目标空间名/id/路径；名不自动建空间，传路径零匹配才建"])
+        if len(matches) > 1:
+            raise DispatchError(
+                "bad_args", f"--space {space} 重名命中 {len(matches)} 个空间，无法定夺",
+                ["改传空间 id（sp…）或路径；改正后用同一放行 id 重试（零发送、id 不消耗）"],
+                returncode=2)
         space_target = matches[0].get("id")
         if not space_target:
             fail("space_not_found", f"--space {space} 命中的空间缺 id，无法定位", retry)
-    no_space = not (ls.get("spaces") or [])
-    if no_space:
-        # 本机无 space：keep 无处落。建空间（focus:false 不抢用户当前视图），赠送 shell 稍后清。
+    # 路径零匹配→建空间（统一分支，废旧「零空间自动 space.new{name:会话名}」）：
+    # name=目录名、folder=路径、focus:false 不抢视图；赠送 shell 清理绑 space_created。
+    if space_new is not None:
         try:
-            app_json(app_bin, ["do", "space.new", json.dumps(
-                {"name": session_name, "folder": cwd, "focus": False},
-                ensure_ascii=False)], QUERY_GUARD_S)
+            r = app_json(app_bin, ["do", "space.new",
+                                   json.dumps(space_new, ensure_ascii=False)], QUERY_GUARD_S)
         except DispatchError as e:
-            fail("keep_error", f"本机无 space，space.new 失败：{e.message}", retry)
+            fail("keep_error", f"space.new 失败：{e.message}", retry)
         ctx["space_created"] = True
         if ledger is not None:
             ledger.update(space_created=True)
             write_json_atomic(ledger_path, ledger)
-    # 显式空间定位：select 目标空间＋status 复核选中（命令成功不算数），不符即
-    # select_error 停轮（keep 不发，落点不会漂）。复核不符也先走还原护栏——select
-    # 可能已生效只是复核抖动，焦点不被留在目标空间。选中成功后 keep/复核包在 try 里，
-    # 失败路径也经 finally 还原选中（不抢用户的视图）。
+        space_target = r.get("space")
+        if not space_target:
+            fail("keep_error", "space.new 未返回新空间 id", retry)
+        # 建后复核当前 shown：零空间时新空间即被显示（真实 app 语义），有空间时
+        # focus:false 保持原 shown——目标==shown 则下面不 select。
+        try:
+            original_space = app_json(app_bin, ["status"], QUERY_GUARD_S).get("space")
+        except DispatchError as e:
+            fail("keep_error", f"space.new 后 status 复核失败：{e.message}", retry)
+    # select 目标空间＋status 复核选中（命令成功不算数），不符即 select_error 停轮
+    # （keep 不发，落点不会漂）。复核不符也先走还原护栏——select 可能已生效只是
+    # 复核抖动，焦点不被留在目标空间。目标==当前 shown 不 select（不抢视图）。
+    # 选中成功后 keep/复核包在 try 里，失败路径也经 finally 还原选中。
+    ctx["space_selected"] = space_target
+    if ledger is not None:
+        ledger.update(space_selected=space_target)
+        write_json_atomic(ledger_path, ledger)
     selection_switched = False
-    if space_target is not None:
+    if space_target != original_space:
         if ledger is not None:
             ledger.update(phase="space_selecting")
             write_json_atomic(ledger_path, ledger)
@@ -1263,9 +1300,10 @@ def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx,
             fail("select_error",
                  f"space.select 复核选中={cur!r} ≠ 目标 {space_target!r}，keep 未发", retry)
         selection_switched = True
-        ctx["space_selected"] = space_target
+    else:
+        ctx["space_restore"] = "not_needed"
         if ledger is not None:
-            ledger.update(space_selected=space_target)
+            ledger.update(space_restore="not_needed")
             write_json_atomic(ledger_path, ledger)
     try:
         try:
@@ -1306,9 +1344,9 @@ def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx,
     finally:
         if selection_switched:
             restore_space(app_bin, original_space, space_target, ledger, ledger_path, ctx)
-    if no_space:
+    if ctx.get("space_created"):
         ctx["pane_adopted"] = True
-        # 清理赠送 shell：找本终端所在 space（刚建、只有赠送 tab＋keep tab），
+        # 清理赠送 shell（绑 space_created，#43 定稿）：找本终端所在 space（刚建、只有赠送 tab＋keep tab），
         # 其余 tab 即赠送 shell——tab.close 结束终端，再 hc rm 清 finished 条目。
         my_space = next((sp for sp in ls2.get("spaces") or []
                          if any(t.get("terminal") == address
@@ -1498,11 +1536,14 @@ def parse_args(argv=None):
                     "同构：退出码 2、零发送、id 不消耗、补参同 id 重试）；复用轮可选——传了就覆盖 "
                     "tab 名、不传保持旧值。机械校验：非空、1–64 字符、禁换行与控制字符（非法 bad_args）。"
                     "落地 tab.rename＋ls 复核，失败降级 display_name_warning 不丢放行")
-    ap.add_argument("--space", help="显式空间定位（#43，ADR-0011）：领养 keep 的落点空间，"
-                    "传空间名或 id（先按 id 精确匹配、再按名；找不到 space_not_found、重名 "
-                    "space_ambiguous）。只在需要 keep（pane 缺）时生效：space.select→keep→复核"
-                    "→还原选中（用户接管即跳过）；pane 已在或本机无 space 不建不挪。不传维持现状"
-                    "（落点随 herdr-app 当前选中空间）")
+    ap.add_argument("--space", required=True,
+                    help="空间定位（#43 grill 定稿，ADR-0011，必传）：领养 keep 的落点空间。"
+                    "三态解析：/ 或 ~ 开头→路径（按 space.folder 匹配：唯一复用／零个 "
+                    "space.new{name:目录名,folder:路径,focus:false}／多个 space_ambiguous；"
+                    "路径须已存在目录否则 bad_args）；sp 前缀→id 直配；其余→名（ls 唯一匹配，"
+                    "重名 bad_args，不存在 space_not_found）。与 --cwd 独立（空间 folder 未必"
+                    "等于终端 cwd）。只在需要 keep（pane 缺）时生效：目标≠当前 shown 才 "
+                    "space.select→keep→复核→还原选中（用户接管即跳过）；pane 已在提前返回不抢")
     ap.add_argument("--rebuild", action="store_true",
                     help="强制重建（ADR-0009）：仅用户明示授权 kill 重建后传；只在 session_occupied 占位分支生效"
                     "（其余分流误传 bad_args），只杀 idle/done 占位者（working/blocked 报 rebuild_busy），"
@@ -1561,14 +1602,18 @@ def main(argv=None):
                     "bad_args", "--display-name 非法（须非空、1–64 字符、禁换行与控制字符）",
                     ["改正显示名后用同一放行 id 重试（零发送、id 不消耗）"],
                     returncode=2)
-        # --space 机械校验（#43）：空/纯空白 → bad_args（退出码 2、零发送、id 不消耗）。
-        # 名/id 是否存在是数据问题，领养时对着 ls 解析（space_not_found/space_ambiguous）。
-        if args.space is not None:
-            ctx["space"] = args.space   # 请求值回显（传了就带，成功与 error 都带，同 target_model 哲学）
-            if not args.space.strip():
-                raise DispatchError("bad_args", "--space 非法（须非空）",
-                                    ["传目标空间名或 id，或去掉 --space 维持现状"],
-                                    returncode=2)
+        # --space 机械校验（#43 grill 定稿）：必传（argparse required）；空/纯空白 →
+        # bad_args；路径形态（/ 或 ~ 开头）须是已存在目录，否则 bad_args（退出码 2、
+        # 零发送、id 不消耗）。名/id/路径匹配是数据问题，领养时对着 ls 三态解析。
+        ctx["space"] = args.space   # 请求值回显（传了就带，成功与 error 都带，同 target_model 哲学）
+        if not args.space.strip():
+            raise DispatchError("bad_args", "--space 非法（须非空）",
+                                ["传目标空间名/id/路径"], returncode=2)
+        if args.space.startswith(("/", "~")):
+            if not Path(args.space).expanduser().is_dir():
+                raise DispatchError("bad_args",
+                                    f"--space 路径不是已存在目录：{args.space}",
+                                    ["传已存在的目录路径，或改传空间名/id"], returncode=2)
         check_structure_and_tools()
         # 抽取后端启动预检（ADR-0005）：api 缺配置立刻报错，不跑完一轮才发现；
         # pi 备选才需要 find_tool(pi)，api 路径不依赖 node/pi。
@@ -1716,19 +1761,15 @@ def main(argv=None):
                 # 复活同样过预检 pane 闸（US26：app 没开时所有轮次停摆，无隐性例外）；
                 # 启动机械本身不 run、不重写标签（Decision 5）。
                 adopt(hc_bin, find_app_bin(), ctx["target_address"],
-                      g.get("name") or args.target, g.get("cwd") or ".",
-                      None, None, ctx, precheck=True,
-                      adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll,
-                      space=args.space)
+                      None, None, ctx, True, args.space,
+                      adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
         else:
             # 身份已在分流核过（identity_ok）。恒可见（ADR-0009）：既有路径每轮预检
             # （写台账前）核 pane，缺则补领养（park 等造成的可见性漂移自愈）；补不成→
             # adopt_failed，零发送、id 不消耗、同 id 重试。app 没开时所有轮次停摆（已接受的代价）。
             adopt(hc_bin, find_app_bin(), g.get("address") or args.target,
-                  g.get("name") or args.target, g.get("cwd") or ".",
-                  None, None, ctx, precheck=True,
-                  adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll,
-                  space=args.space)
+                  None, None, ctx, True, args.space,
+                  adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
             state = status_state(g)
             if state not in ("idle", "done"):
                 raise DispatchError(
@@ -1816,10 +1857,9 @@ def main(argv=None):
                 ledger.update(rebuilt=True, rebuilt_old_target=ctx["rebuilt_old_target"])
                 write_json_atomic(ledger_path, ledger)
             do_create(hc_bin, args, ledger, ledger_path, ctx)
-            adopt(hc_bin, find_app_bin(), ctx["target_address"], args.target, args.cwd,
-                  ledger, ledger_path, ctx, precheck=False,
-                  adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll,
-                  space=args.space)
+            adopt(hc_bin, find_app_bin(), ctx["target_address"],
+                  ledger, ledger_path, ctx, False, args.space,
+                  adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
         elif branch == "revive":
             # 复活（ADR-0009）：不 run、不重写标签；原地重发启动命令→等 agent 就绪→核身份。
             # 名字/cwd/终端级历史不动，会话是空的。
@@ -1958,7 +1998,8 @@ def main(argv=None):
         # t 号（审计定位）；launched/rebuilt/workspace/reset_skipped 等适用字段随 ctx 带出。
         # turn 是终端级累计计数（复活会话 turn>0 但会话是空的）。
         for k in ("target_address", "launched", "rebuilt", "rebuilt_old_target",
-                  "workspace", "reset_skipped", "display_name", "display_name_warning",
+                  "workspace", "space_created", "pane_adopted", "reset_skipped",
+                  "display_name", "display_name_warning",
                   "space", "space_selected", "space_landed", "space_target_warning",
                   "space_restore", "space_restore_warning"):
             if k in ctx:

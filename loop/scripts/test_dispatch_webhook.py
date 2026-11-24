@@ -202,7 +202,7 @@ def main():
                 rc = dispatch.main([
                     "--target", "t99", "--release-id", "_bad-id",
                     "--prompt-file", str(pf), "--loop-dir", td,
-                    "--expect-proc", "claude",
+                    "--space", "main", "--expect-proc", "claude",
                 ])
         res = json.loads(buf.getvalue().strip())
         assert rc == 1 and not res["ok"] and res["error"]["kind"] == "bad_release_id", res

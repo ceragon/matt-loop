@@ -89,7 +89,7 @@ class FakeApp:
         # 当前选中空间（#43）：status 报它，keep 落进它；space.select 改它。
         self.selected = spaces[0]["id"] if spaces else None
         self._select_n = 0
-        # 空间定位 失败/竞态旋钮（#43）：select_error＝space.select 命令失败；
+        # 空间定位失败/竞态旋钮（#43）：select_error＝space.select 命令失败；
         # select_noop＝首次 select 成功但选中不变（复核不符）；restore_error/restore_noop
         # ＝还原（第二次起）select 失败/不落地；user_switch＝keep 后用户切走选中（接管）。
         self.select_error = select_error
@@ -246,6 +246,7 @@ def run_case(reset_arg, fake, rid):
         ld = Path(td) / ".loop"
         argv = ["--target", "t99", "--release-id", rid,
                 "--prompt-file", str(pf), "--loop-dir", str(ld),
+                "--space", "main",
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
         if reset_arg is not None:

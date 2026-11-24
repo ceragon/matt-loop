@@ -12,8 +12,9 @@
   5 创建路径领养失败三原因：保留已建终端（launched:true/target_address）、
     workspace=failed＋adopt_reason、台账停 error:adopt_failed（id 消耗）；
     开 app 后新 id 重试走既有路径补领养修复。
-  6 本机无 space 清理舞：space.new(focus:false)→keep→复核→tab.close confirmed:true
-    ＋hc rm 赠送 shell；成功与中途失败部分状态（空间已建/pane 已落地如实报）。
+  6 零空间统一走 --space 路径（#43 定稿）：space.new{name:目录名,folder,focus:false}
+    →keep→复核→tab.close confirmed:true＋hc rm 赠送 shell（绑 space_created）；
+    成功与中途失败部分状态（空间已建/pane 已落地如实报）。
   7 预检顺序：身份核对（分流）先于核 pane；核 pane 先于 idle 核对。
   8 app 探测绝不用裸 herdr-app（所有调用带子命令）。
   9 复活也过预检 pane 闸：app 没开停轮（id 不消耗、同 id 重试）；pane 缺补领养后才启动。
@@ -113,53 +114,59 @@ def main():
         assert fake.sends[-1] == (new_addr, PROMPT, True), fake.sends
     print("5 create-path adopt failures: terminal kept, id consumed, new-id retry repairs ok")
 
-    # 6 本机无 space 清理舞（创建路径）：space.new→keep→复核→tab.close＋hc rm
+    # 6 零空间统一走 --space 路径（#43 定稿）：space.new(name=目录名)→keep→复核→tab.close＋hc rm
+    path = tempfile.mkdtemp()
     fake = NamedFakeHc()
     app = FakeApp(hc=fake, spaces=[])
     rc, res, led, td = run_case(fake, app, "adopt-nospace-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+                                launch=LAUNCH, cwd="/proj", expect_proc="claude", space=path)
     assert rc == 0 and res["ok"], res
     kinds = [(c[0], c[1] if c[0] == "do" else None) for c in app.calls]
+    # 建后 status 复核 shown（零空间新空间即显示，目标==shown 不 select）；
     # 清理舞后接显示名落地（ADR-0010，harness 自动注入 DISPLAY）：ls→tab.rename→ls
-    assert kinds == [("status", None), ("ls", None), ("do", "space.new"),
+    assert kinds == [("status", None), ("ls", None), ("do", "space.new"), ("status", None),
                      ("do", "terminal.keep"), ("ls", None), ("do", "tab.close"),
                      ("ls", None), ("do", "tab.rename"), ("ls", None)], kinds
     sp_new = json.loads(app.calls[2][2])
-    assert sp_new == {"name": NAME, "folder": "/proj", "focus": False}, sp_new
-    tab_close = json.loads(app.calls[5][2])
+    assert sp_new == {"name": Path(path).name, "folder": path, "focus": False}, sp_new
+    tab_close = json.loads(app.calls[6][2])
     assert tab_close == {"id": "tb-gift", "confirmed": True}, tab_close
     assert fake.rms == [app.gifted], fake.rms
     assert res["workspace"] == "adopted"
-    print("6 no-space cleanup dance: space.new(focus:false)->keep->recheck->tab.close+rm ok")
+    print("6 zero-space via --space path: space.new(dirname,focus:false)->keep->tab.close+rm ok")
 
-    # 6b 无 space 中途失败：space.new 失败（空间未建）／tab.close 失败（pane 已落地、空间已建）
+    # 6b 建空间中途失败：space.new 失败（空间未建）／tab.close 失败（pane 已落地、空间已建）
+    path = tempfile.mkdtemp()
     fake = NamedFakeHc()
     app = FakeApp(hc=fake, spaces=[], space_new_error=True)
     rc, res, led, td = run_case(fake, app, "adopt-nospace-sperr",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+                                launch=LAUNCH, cwd="/proj", expect_proc="claude", space=path)
     assert rc == 1 and res["error"]["kind"] == "adopt_failed", res
     assert res["adopt_reason"] == "keep_error" and res["workspace"] == "failed"
     assert "space_created" not in res, "空间未建如实报"
     assert res["launched"] is True
+    path = tempfile.mkdtemp()
     fake = NamedFakeHc()
     app = FakeApp(hc=fake, spaces=[], tab_close_error=True)
     rc, res, led, td = run_case(fake, app, "adopt-nospace-taberr",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+                                launch=LAUNCH, cwd="/proj", expect_proc="claude", space=path)
     assert rc == 1 and res["error"]["kind"] == "adopt_failed", res
     assert res["adopt_reason"] == "keep_error"
     assert res["space_created"] is True and res["pane_adopted"] is True, res
     assert fake.rms == [], "tab.close 失败不应 rm"
-    print("6b no-space mid-failure: partial state (space_created/pane_adopted) reported ok")
+    print("6b space-create mid-failure: partial state (space_created/pane_adopted) reported ok")
 
-    # 6c 既有路径补领养遇无 space：同一套舞，预检失败仍 id 不消耗
+    # 6c 既有路径补领养遇零空间：同一套舞，预检失败仍 id 不消耗
+    path = tempfile.mkdtemp()
     fake = NamedFakeHc()
     existing_terminal(fake)
     app = FakeApp(hc=fake, spaces=[], keep_error=True)
-    rc, res, led, td = run_case(fake, app, "adopt-nospace-existing", expect_proc="claude")
+    rc, res, led, td = run_case(fake, app, "adopt-nospace-existing", expect_proc="claude",
+                                space=path)
     assert rc == 1 and res["error"]["kind"] == "adopt_failed", res
     assert res["space_created"] is True and led is None
     assert fake.sends == []
-    print("6c existing-path no-space re-adopt failure: space created reported, id unconsumed ok")
+    print("6c existing-path zero-space re-adopt failure: space created reported, id unconsumed ok")
 
     # 7 预检顺序：身份核对（分流）先于核 pane（标签符但前台身份不符＋app 没开 →
     #   session_occupied，不探 app）；核 pane 先于 idle 核对（working＋app 没开 → adopt_failed）
