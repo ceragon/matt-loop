@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0009
 ---
 
 # 换 agent kind＝按终端形态分流的混合前置步

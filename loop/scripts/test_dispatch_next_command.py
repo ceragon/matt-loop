@@ -26,6 +26,7 @@ import dispatch  # noqa: E402
 from test_dispatch_api_extract import (  # noqa: E402
     PROMPT, SCREEN, EXT, FakeHc, FakeResp, api_env, env,
 )
+from test_dispatch_reset import FakeApp  # noqa: E402
 
 BASE_EXT = dict(EXT)  # 五字段旧形状（conclusion=""、reply=SCREEN）
 
@@ -44,6 +45,7 @@ def run_round(td, rid, ext_obj, backend):
             "--wall-clock", "5", "--check-in", "1",
             "--settle-seconds", "0.01", "--settle-checks", "2"]
     dispatch.hc_json = FakeHc()
+    dispatch.app_json = FakeApp()
     dispatch.check_structure_and_tools = lambda: None
     dispatch.shutil.which = lambda name: "/fake/" + name
     dispatch.time.sleep = lambda s: None

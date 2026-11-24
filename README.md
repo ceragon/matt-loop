@@ -23,9 +23,9 @@ tripwires, no audit logs, no outer polling.
 ## One round
 
 ```
-release id + prompt file + target terminal
-  → prechecks (terminal identity, idle state, session discipline)
-  → optional presteps: --reset / --target-model / --switch-agent
+release id + prompt file + target session (name recommended)
+  → prechecks (get-or-create triage, identity, visibility, idle state, session discipline)
+  → optional presteps: --launch (create/revive) / --reset / --target-model
   → send prompt (never forced)
   → wait for settle → capture screen → extract → result JSON
   → ledger entry + optional webhook notification
@@ -36,7 +36,12 @@ Safety contract highlights:
 - A prompt is sent only with a unique, explicit **release id**; one release
   runs exactly one round.
 - Session-start skills (wayfinder, grilling, implement, …) require a fresh
-  (`turn == 0`) or explicitly reset session; otherwise the round is refused.
+  (`turn == 0`, or freshly created/revived) or explicitly reset session;
+  otherwise the round is refused.
+- Named sessions are always visible in the herdr-app workspace (adoption is a
+  hard invariant; the app must stay open). Occupied names are reported, never
+  silently taken over; `--rebuild` kills only idle occupants, only with the
+  user's explicit authorization.
 - `blocked` states stop the round and surface to the caller — never swallowed.
 - Secrets never appear in stdout, result files, or stderr.
 
@@ -51,8 +56,9 @@ GLOSSARY.md      domain vocabulary (in Chinese)
 
 ## Quick start
 
-Requirements: Python 3.12+, `herdr` (`hc`) managing the executor terminal, an
-executor agent (e.g. `claude`, `pi`, `codex`), and an OpenAI-compatible
+Requirements: Python 3.12+, `herdr` (`hc`) managing the executor terminal,
+`herdr-app` (the desktop window, kept open — visibility is a hard invariant),
+an executor agent (e.g. `claude`, `pi`, `codex`), and an OpenAI-compatible
 endpoint for extraction.
 
 1. Copy `loop/webhook.env.example`, fill in your own values, and keep it
@@ -61,7 +67,7 @@ endpoint for extraction.
 
    ```sh
    python3 loop/scripts/dispatch.py \
-     --target <terminal> \
+     --target <session-name-or-terminal> \
      --release-id <unique-id> \
      --prompt-file <path-to-released-prompt.md> \
      --expect-proc <executor-agent-name>

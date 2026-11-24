@@ -28,6 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch  # noqa: E402
+from test_dispatch_reset import FakeApp  # noqa: E402
 
 PROMPT = "请实现某个功能\n第二行说明"
 ANCHOR = PROMPT.splitlines()[0][:24]
@@ -70,8 +71,10 @@ class FakeHc:
         cmd = args[0]
         if cmd == "get":
             return {"state": "live", "turn": self.turn, "title": "claude-test",
+                    "address": "t99", "name": "claude-test",
+                    "labels": {"loop": "1"},
                     "status": {"state": "idle", "title": "claude-test"},
-                    "foreground": {"name": "claude"}}
+                    "foreground": {"name": "claude", "argv": ["claude"]}}
         if cmd == "send":
             self.sends.append((args[-1], "--if" in args))
             baseline = self.turn
@@ -111,6 +114,7 @@ def run_main(td, fake, rid, extra_argv=(), which_pi=True):
             "--wall-clock", "5", "--check-in", "1",
             "--settle-seconds", "0.01", "--settle-checks", "2", *extra_argv]
     dispatch.hc_json = fake
+    dispatch.app_json = FakeApp()
     dispatch.check_structure_and_tools = lambda: None
     dispatch.shutil.which = lambda name: ("/fake/" + name) if (name != "pi" or which_pi) else None
     dispatch.time.sleep = lambda s: None
