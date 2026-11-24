@@ -4,13 +4,13 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 ## error 返回契约
 
-失败退出码 1；参数/配置类错误退出码 2（argparse 报错无 JSON；`reset_required`、`launch_required`、`bad_args`、`api_not_configured`、`bad_extract_backend`、`bad_api_max_tokens` 是预检拒发，退出码 2、有 JSON）。stdout 一行、同一字符串写 `.result.json`：
+失败退出码 1；参数/配置类错误退出码 2（argparse 报错无 JSON；`reset_required`、`launch_required`、`display_name_required`、`bad_args`、`api_not_configured`、`bad_extract_backend`、`bad_api_max_tokens` 是预检拒发，退出码 2、有 JSON）。stdout 一行、同一字符串写 `.result.json`：
 
 ```json
 {"ok": false, "release_id": "…", "target": "…", "error": {"kind": "…", "message": "…", "hints": ["…"]}}
 ```
 
-`release_id` 与 `target` 必带；在放行 id 校验后算出 `task_name` 的，也一并带顶层 `task_name`（含发给 webhook 的同一份 JSON）。发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）；用了 `--target-model` 的 error 另带 `target_model`（请求值非验证值）与 `error.model_sent`（切模型前置是否已发出）；两个前置都用时 `reset_sent`/`model_sent` 一起标明部分状态。命名会话部分状态（ADR-0009）适用即带：`target_address`（解析 t 号）、`launched`（本轮已建终端）、`launch_sent`（启动命令已发）、`rebuilt`/`rebuilt_old_target`（已 kill 占位者＋旧 t 号）、`workspace`（`adopted`/`failed`）、`adopt_reason`（`app_closed`/`keep_error`/`no_pane`）、`space_created`/`pane_adopted`（无 space 清理舞中途失败时如实报）、`reset_skipped`。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout（及配置了时的 webhook）——没有可安全落盘的文件名。
+`release_id` 与 `target` 必带；在放行 id 校验后算出 `task_name` 的，也一并带顶层 `task_name`（含发给 webhook 的同一份 JSON）。发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）；用了 `--target-model` 的 error 另带 `target_model`（请求值非验证值）与 `error.model_sent`（切模型前置是否已发出）；两个前置都用时 `reset_sent`/`model_sent` 一起标明部分状态。命名会话部分状态（ADR-0009）适用即带：`target_address`（解析 t 号）、`launched`（本轮已建终端）、`launch_sent`（启动命令已发）、`rebuilt`/`rebuilt_old_target`（已 kill 占位者＋旧 t 号）、`workspace`（`adopted`/`failed`）、`adopt_reason`（`app_closed`/`keep_error`/`no_pane`）、`space_created`/`pane_adopted`（无 space 清理舞中途失败时如实报）、`reset_skipped`；显示名（ADR-0010）适用即带：`display_name`（本轮传入显示名，尝试过 rename 就带、成功与 error 都带）、`display_name_warning`（rename 失败告警，reason：`rename_error`/`rename_mismatch`/`no_tab`）。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout（及配置了时的 webhook）——没有可安全落盘的文件名。
 
 ## error kind 表
 
@@ -19,8 +19,9 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 | `python_too_old` | 解释器低于 3.10 且 uv 自举失败（uv 探不到或重 exec 失败） | 装 3.10+ 解释器，或装 uv（脚本自动经 `uv run --no-python-downloads` 重跑） |
 | `duplicate_release` | 该放行 id 已有台账/落盘 | 查台账；重发须用户重新放行、新 id |
 | `reset_required` | 提示词行首调用会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）、`--reset=none` 且目标 `turn != 0`（或缺失）；在 `hc get`＋身份检查之后、写台账前拒发，零发送（ADR-0004） | 补 `--reset new/clear/compact`（agy/pi 认 `new`，claude 认 `clear`，codex 认 `new`/`clear`）用**同一放行 id** 重试（id 不消耗）；清单与边界见 SKILL.md「会话起始 skill」 |
-| `bad_args` | 静态旗标错误（ADR-0009）：`--launch`/`--cwd` 单传（须成对）；`--rebuild` 在非占位分流误传；创建时 `--target` 不是合法会话名（1–32 位 a-z0-9-_，t 号保留）。写台账前拒发（退出码 2，id 不消耗） | 改正旗标用同一放行 id 重试；`--target` 推荐传会话名（`<kind>-<repo>` 或 bot slug） |
+| `bad_args` | 静态旗标错误（ADR-0009）：`--launch`/`--cwd` 单传（须成对）；`--rebuild` 在非占位分流误传；创建时 `--target` 不是合法会话名（1–32 位 a-z0-9-_，t 号保留）；`--display-name` 非法（空、超 64 字符、含换行或控制字符，ADR-0010）。写台账前拒发（退出码 2，id 不消耗） | 改正旗标用同一放行 id 重试；`--target` 推荐传会话名（`<kind>-<repo>` 或 bot slug） |
 | `launch_required` | 目标 not_found/finished/空闲 shell，需创建/复活却没传 `--launch`（＋`--cwd`）；写台账前拒发，零发送（退出码 2，id 不消耗，与 `reset_required` 同构，ADR-0009） | 补 `--launch <shell 启动命令> --cwd <目录>` 用**同一放行 id** 重试；创建参数须随放行一并贴出（SKILL.md） |
+| `display_name_required` | 创建/复活/重建新鲜路径缺 `--display-name`；写台账前拒发，零发送（退出码 2，id 不消耗，与 `launch_required` 同构，ADR-0010） | 补 `--display-name <显示名>` 用**同一放行 id** 重试；显示名须随放行一并贴出（SKILL.md） |
 | `session_occupied` | 同名 live 终端被别的 agent/程序占用或无 loop 标签（ADR-0009）；message 呈报占位者地址/前台/turn/状态，不建不 kill、零发送、id 不消耗 | 呈报占位者给用户；确需重建经用户显式授权后带 `--rebuild`，或换 `--target` 到另一命名会话 |
 | `rebuild_busy` | `--rebuild` 但占位者状态是 working/blocked/未自报，不是 idle/done，拒杀（ADR-0009）；零 kill、id 不消耗 | 等占位者落定或请用户到屏幕前处理；在跑的工作与等人决定的弹框绝不被杀 |
 | `adopt_failed` | 领养失败，恒可见不变量破缺（ADR-0009）：`adopt_reason` 为 `app_closed`（herdr-app 没开/不可达）/`keep_error`（space.new/keep/清理写步失败）/`no_pane`（keep 后复核仍无 pane）。**创建路径**：保留已建终端、`launched:true`/`target_address`/`workspace:"failed"`、放行 id 消耗；**既有路径预检**：零发送、id 不消耗 | 创建路径：开 app 后**新放行 id** 重试走既有路径补领养修复；预检路径：开 app 后**同 id** 重试。部分状态（空间已建/pane 已落地）如实报 |
@@ -49,7 +50,9 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 恒可见／领养（ADR-0009）：命名会话恒有 herdr-app pane，进不了即整轮 `adopt_failed` 报错、不降级 headless。所有 herdr-app 调用经单一 `app_json` 函数（镜像 `hc_json` 形状：子进程＋JSON＋超时＋错误映射，可注入桩点）；app 存活探测用 `herdr-app status` 退出码，**绝不用裸 `herdr-app`**（会打开窗口）。序列：status 探测 → 只读 `ls` 核 pane → 缺则 `do terminal.keep`（参数仅 terminal，无 space 参数，落点随 herdr-app 规则、不可控，已接受）→ `ls` 复核 pane 落地（keep 后台完成、失败弹 toast，命令成功不算数）。本机无 space：`space.new {"name":<会话名>,"folder":<cwd>,"focus":false}` → keep → 复核 → `tab.close confirmed:true` 关赠送 shell 标签＋`hc rm` 该 shell 终端；任一步失败 `adopt_failed` 带部分状态（空间可能已建、pane 可能已落地，如实报）。**创建路径**领养在写台账后：失败保留已建终端、`launched:true`/`target_address`/`workspace:"failed"`＋原因、放行 id 消耗，开 app 后新 id 重试走既有路径修复；**既有路径**每轮预检（写台账前）核 pane、缺则补领养（park 等漂移自愈），失败零发送、id 不消耗、同 id 重试（与 `not_idle` 同级）。app 没开时所有轮次停摆（已接受的代价）；关 tab＝杀终端，走 finished→重建。
 
-预检顺序：`duplicate_release` → 分流（`hc get`，含身份核对）→ `launch_required` → 核 pane/补领养（既有/复活路径，写台账前）→ 会话起始 skill 纪律（创建/复活/重建视同 turn 0 豁免）→ 写台账 → 前置 → 主任务。新鲜豁免：刚创建/复活/重建的会话自动跳过重置发送（result `reset_skipped:"fresh_launch"`），切模型前置照跑（ADR-0006 纪律平移）；启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽，一轮至多发送成功三次不变。台账新增 launch/adopt/rebuild 各 phase（等 shell、发启动、等 agent、领养中、重建各步），失败 error 带部分状态。
+显示名层（ADR-0010）：`--display-name` 调用方显式传参，脚本不派生、不拼接、不理解，只机械校验（非空、1–64 字符、禁换行控制字符，非法 `bad_args`）＋落地。新鲜路径（创建/复活/重建）必传，缺则 `display_name_required`；复用轮可选，传了就覆盖更新、不传不动（无记账比对，放行授权名字本身）。落地时序：领养复核 pane 落地后、前置/主任务发送前，`find_tab_id` 拿 tab id → `tab.rename` → `ls` 复核 `tab.name == 显示名`（命令成功不算数）；台账 `naming` phase。**失败降级告警不丢放行**：rename 失败/复核不符/无 tab → result `display_name_warning`（reason：`rename_error`/`rename_mismatch`/`no_tab`），主流程继续，选项卡如实呈报；pane 落地仍是硬闸（`adopt_failed` 不变）。result `display_name` 回显本轮传入值（成功与 error 都带，未传则无）。**不写 summary 标签**：机器可读靠自动跟随 tab 名的 `where` 标签；`space.new` 的 name 维持会话名。
+
+预检顺序：`duplicate_release` → 分流（`hc get`，含身份核对）→ `launch_required` → `display_name_required` → 核 pane/补领养（既有/复活路径，写台账前）→ 会话起始 skill 纪律（创建/复活/重建视同 turn 0 豁免）→ 写台账 → 前置 → 主任务。新鲜豁免：刚创建/复活/重建的会话自动跳过重置发送（result `reset_skipped:"fresh_launch"`），切模型前置照跑（ADR-0006 纪律平移）；启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽，一轮至多发送成功三次不变。台账新增 launch/adopt/rebuild/naming 各 phase（等 shell、发启动、等 agent、领养中、重建、设显示名各步），失败 error 带部分状态。
 
 会话起始 skill 纪律（ADR-0004）：提示词**行首**出现 `/wayfinder`、`/grill-with-docs`、`/implement`、`/implement-spec`、`/prototype` 之一（允许行前空白；命令后须非词字符且非连字符，`/implementing`、`/implement-foo` 不误中，`/wayfinder#7` 算调用；`implement-spec` 优先报长名）且 `--reset=none` 时，在 `hc get`＋身份预检之后、写台账与任何发送之前校验目标 `turn`：`turn == 0`（精确整数 `0`，尚未跑过任何轮次的全新空会话）直接豁免放行；`turn > 0` 或缺失时拒发（`reset_required`，退出码 2，message 带 skill 名、行号与当前 `turn` 值）。分流判定创建/复活/重建的新鲜会话视同 turn 0 豁免、不看终端 turn（turn 是终端级累计，复活会话 turn>0 但会话空，ADR-0009）。行文中提及不触发；放行 id 不消耗，补 `--reset` 同 id 可重试。`new`/`clear`/`compact` 都算重置。「调用独占一行」是 SKILL.md 的文字纪律，机械检查只兜行首这一层；`not_idle`/`identity_mismatch` 先于 `reset_required`。
 

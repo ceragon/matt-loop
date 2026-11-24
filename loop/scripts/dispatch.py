@@ -35,6 +35,16 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
     →keep→复核→tab.close confirmed:true＋hc rm 清赠送 shell。进不了即 adopt_failed 整轮报错、
     不降级 headless：创建路径保留已建终端、id 消耗；预检路径零发送、id 不消耗。app 没开时所有
     轮次停摆（已接受的代价）。
+  - 显示名层（ADR-0010）：--display-name 调用方显式传完整字符串，脚本不派生、不拼接、不理解、
+    不校验式样，只机械校验（非空、1–64 字符、禁换行控制字符，非法 bad_args）＋落地。新鲜路径
+    （创建/复活/重建）必传，缺则 display_name_required（与 launch_required 同构：退出码 2、
+    零发送、id 不消耗、补参同 id 重试；两参同缺 launch_required 先报）；复用轮可选，传了就覆盖、
+    不传不碰。落地时序：领养复核 pane 落地后、前置/主任务发送前，find_tab 定位 tab id→tab.rename
+    →ls 复核 tab.name==显示名（命令成功不算数）；台账 naming phase。失败降级告警不丢放行：
+    rename 失败/复核不符/无 tab→display_name_warning（rename_error/rename_mismatch/no_tab），
+    主流程继续；pane 落地仍是硬闸（adopt_failed 不变）。result display_name 回显本轮传入值
+    （落地步骤一跑就带，含 no_tab/ls 失败等降级情形，成功与 error 都带）。不写 summary 标签
+    （机器可读靠自动跟随 tab 名的 where 标签）；space.new 的 name 维持会话名。
   - 一个放行至多发送成功三次（重置或启动前置＋切模型前置＋主任务，各一次；刚创建/复活的
     新鲜会话自动跳过重置，result 记 reset_skipped:"fresh_launch"，切模型前置照跑）：先写台账
     $TMPDIR/loop/runs/<放行id>.json 再发送；台账存在即拒绝。
@@ -113,6 +123,9 @@ TASK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 RESERVED_ID_RE = re.compile(r"^t\d+$")
 # herdr 会话名规则（hc run --name：1–32 位 a-z 0-9 - _）；t 号是保留地址、不能作名字。
 SESSION_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
+# 显示名机械校验（ADR-0010）：非空、1–64 字符、禁换行与控制字符（C0＋DEL）。不校验式样。
+DISPLAY_NAME_MAX = 64
+DISPLAY_NAME_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 def generate_short_task_name(release_id: str) -> str:
     h = hashlib.sha256(release_id.encode("utf-8")).hexdigest()[:8]
@@ -1033,6 +1046,65 @@ def find_pane(ls_data, address):
     return None
 
 
+def find_tab(ls_data, address):
+    """在 herdr-app ls 结果里找终端所在 tab 条目（显示名落地用，ADR-0010）；
+    定位不到（无 tab 或 tab 无 id）返回 None。"""
+    for sp in ls_data.get("spaces") or []:
+        for tb in sp.get("tabs") or []:
+            if not tb.get("id"):
+                continue
+            for t in tb.get("terminals") or []:
+                if t.get("terminal") == address:
+                    return tb
+    return None
+
+
+def apply_display_name(app_bin, address, display_name, ledger, ledger_path, ctx):
+    """显示名落地（ADR-0010）：ls 定位 tab id → tab.rename → ls 复核 tab.name==显示名
+    （命令成功不算数）。时序在领养复核 pane 落地后、前置/主任务发送前。
+    失败降级告警不丢放行：rename 失败/复核不符/无 tab → ctx/台账记 display_name_warning
+    （reason：rename_error/rename_mismatch/no_tab，带详情），主流程继续；pane 落地仍是
+    硬闸（adopt_failed 语义不变）。result display_name 回显本轮传入值：落地步骤一跑就带
+    （含 no_tab/ls 失败等未真正发出 rename 的降级情形，审计「请求了什么名」），成功与 error 都带。
+    不写 summary 标签：机器可读靠自动跟随 tab 名的 where 标签。"""
+    ctx["display_name"] = display_name
+    ledger.update(phase="naming", display_name=display_name)
+    write_json_atomic(ledger_path, ledger)
+    warning = None
+    tab = None
+    try:
+        ls = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+        tab = find_tab(ls, address)
+    except DispatchError as e:
+        warning = {"reason": "rename_error", "detail": e.message}
+    if warning is None and tab is None:
+        warning = {"reason": "no_tab", "detail": f"ls 里定位不到终端 {address} 所在 tab"}
+    if warning is None:
+        try:
+            app_json(app_bin, ["do", "tab.rename", json.dumps(
+                {"id": tab["id"], "name": display_name}, ensure_ascii=False)], QUERY_GUARD_S)
+        except DispatchError as e:
+            warning = {"reason": "rename_error", "detail": e.message}
+    if warning is None:
+        # 复核：命令成功不算数，必须只读 ls 核 tab.name 真的等于显示名。
+        try:
+            ls2 = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+            tab2 = find_tab(ls2, address)
+            actual = tab2.get("name") if tab2 else None
+        except DispatchError as e:
+            warning = {"reason": "rename_error", "detail": e.message}
+            actual = None
+        if warning is None and actual != display_name:
+            warning = {"reason": "rename_mismatch", "actual": actual,
+                       "detail": f"复核 tab.name={actual!r} ≠ 显示名 {display_name!r}"}
+    if warning is not None:
+        ctx["display_name_warning"] = warning
+        ledger.update(display_name_warning=warning)
+    else:
+        ledger.update(phase="naming_done", naming_done_at=now_iso())
+    write_json_atomic(ledger_path, ledger)
+
+
 def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx, precheck):
     """领养（ADR-0009 恒可见不变量）：status 探测→只读 ls 核 pane→缺则（本机无 space
     先 space.new focus:false）→terminal.keep→ls 复核 pane 落地→无 space 分支清理赠送
@@ -1277,6 +1349,12 @@ def parse_args(argv=None):
                     "启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽")
     ap.add_argument("--cwd", help="创建命名会话的工作目录（与 --launch 同时必填、无默认）；"
                     "复活沿用终端原 cwd，不重写")
+    ap.add_argument("--display-name", help="显示名（ADR-0010）：命名会话标签页上给人看的名字，"
+                    "调用方显式传完整字符串（脚本不派生、不拼接、不理解、不校验式样）。"
+                    "创建/复活/重建三条新鲜路径必传（缺则 display_name_required，与 launch_required "
+                    "同构：退出码 2、零发送、id 不消耗、补参同 id 重试）；复用轮可选——传了就覆盖 "
+                    "tab 名、不传保持旧值。机械校验：非空、1–64 字符、禁换行与控制字符（非法 bad_args）。"
+                    "落地 tab.rename＋ls 复核，失败降级 display_name_warning 不丢放行")
     ap.add_argument("--rebuild", action="store_true",
                     help="强制重建（ADR-0009）：仅用户明示授权 kill 重建后传；只在 session_occupied 占位分支生效"
                     "（其余分流误传 bad_args），只杀 idle/done 占位者（working/blocked 报 rebuild_busy），"
@@ -1322,6 +1400,15 @@ def main(argv=None):
             raise DispatchError("bad_args", "--launch 与 --cwd 须同时传（创建参数成对、无默认）",
                                 ["补 --launch <shell 启动命令> --cwd <目录>，或两个都去掉"],
                                 returncode=2)
+        # 显示名机械校验（ADR-0010）：任何分流都校验。非法（空/超 64/换行/控制字符）→
+        # bad_args（退出码 2、零发送、id 不消耗）。不校验式样（前缀/分隔符归调用方纪律）。
+        if args.display_name is not None:
+            dn = args.display_name
+            if not dn or len(dn) > DISPLAY_NAME_MAX or DISPLAY_NAME_CONTROL_RE.search(dn):
+                raise DispatchError(
+                    "bad_args", "--display-name 非法（须非空、1–64 字符、禁换行与控制字符）",
+                    ["改正显示名后用同一放行 id 重试（零发送、id 不消耗）"],
+                    returncode=2)
         check_structure_and_tools()
         # 抽取后端启动预检（ADR-0005）：api 缺配置立刻报错，不跑完一轮才发现；
         # pi 备选才需要 find_tool(pi)，api 路径不依赖 node/pi。
@@ -1428,15 +1515,25 @@ def main(argv=None):
         if branch in ("create", "revive", "rebuild"):
             # 创建/复活需 --launch（＋--cwd），缺则 launch_required（与 reset_required 同构：
             # 退出码 2、零发送、放行 id 不消耗、补参同 id 重试）。
+            why = {"create": "目标会话不存在或已死，创建",
+                   "revive": "目标是空闲 shell，复活",
+                   "rebuild": "强制重建"}[branch]
             if not args.launch:
-                why = {"create": "目标会话不存在或已死，创建",
-                       "revive": "目标是空闲 shell，复活",
-                       "rebuild": "强制重建"}[branch]
                 raise DispatchError(
                     "launch_required",
                     f"{why}需要 --launch（＋--cwd）",
                     ["补 --launch <shell 启动命令> --cwd <目录> 后用同一放行 id 重试（零发送、id 不消耗）",
-                     "创建参数（会话名、启动命令、cwd）须随放行一并贴出，见 SKILL.md"],
+                     "创建参数（会话名、启动命令、cwd、显示名）须随放行一并贴出，见 SKILL.md"],
+                    returncode=2)
+            # 显示名必传（ADR-0010）：新鲜路径缺 --display-name → display_name_required，
+            # 与 launch_required 完全同构（退出码 2、零发送、id 不消耗、补参同 id 重试）。
+            # 两参同缺时 launch_required 先报（上面已判）。
+            if args.display_name is None:
+                raise DispatchError(
+                    "display_name_required",
+                    f"{why}需要 --display-name",
+                    ["补 --display-name <显示名> 后用同一放行 id 重试（零发送、id 不消耗）",
+                     "显示名须随放行一并贴出，见 SKILL.md"],
                     returncode=2)
             if branch in ("create", "rebuild") and (
                     not SESSION_NAME_RE.match(args.target)
@@ -1517,6 +1614,7 @@ def main(argv=None):
             "target_model": args.target_model,
             "launch": args.launch,
             "cwd": args.cwd,
+            "display_name": args.display_name,
             "rebuild": args.rebuild,
             "target_address": ctx.get("target_address"),
             # 预检领养（既有/复活路径）在写台账前，无 phase 可记；结果随台账留痕。
@@ -1559,6 +1657,14 @@ def main(argv=None):
             # 复活（ADR-0009）：不 run、不重写标签；原地重发启动命令→等 agent 就绪→核身份。
             # 名字/cwd/终端级历史不动，会话是空的。
             send_launch(hc_bin, args, ledger, ledger_path, ctx)
+
+        # 2.45) 显示名落地（ADR-0010）：领养复核 pane 落地后、前置/主任务发送前。
+        #       创建/重建在领养成功之后、复活在启动命令发出 agent 就绪之后（上面各分支已就绪）；
+        #       既有路径仅当传了显示名（复用轮可选，传了就覆盖、不传不碰）。新鲜路径必传（预检已核）。
+        #       失败降级 display_name_warning 不丢放行；pane 落地仍是硬闸。
+        if args.display_name is not None:
+            apply_display_name(find_app_bin(), ctx.get("target_address"),
+                               args.display_name, ledger, ledger_path, ctx)
 
         # 2.5) 重置前置（--reset != none）：同一 target 上先发字面命令 /new /clear /compact，
         #      等落定（idle/done + 屏幕静置）后再发主任务。放行一并授权前置＋主任务：
@@ -1685,7 +1791,7 @@ def main(argv=None):
         # t 号（审计定位）；launched/rebuilt/workspace/reset_skipped 等适用字段随 ctx 带出。
         # turn 是终端级累计计数（复活会话 turn>0 但会话是空的）。
         for k in ("target_address", "launched", "rebuilt", "rebuilt_old_target",
-                  "workspace", "reset_skipped"):
+                  "workspace", "reset_skipped", "display_name", "display_name_warning"):
             if k in ctx:
                 result[k] = ctx[k]
         ledger.update(phase="done", done_at=now_iso())
@@ -1719,7 +1825,8 @@ def main(argv=None):
         # 命名会话部分状态（ADR-0009）：终端已建/启动已发/旧会话已死/领养失败原因等如实报。
         for k in ("target_address", "launched", "launch_sent", "rebuilt",
                   "rebuilt_old_target", "workspace", "adopt_reason",
-                  "space_created", "pane_adopted", "reset_skipped"):
+                  "space_created", "pane_adopted", "reset_skipped",
+                  "display_name", "display_name_warning"):
             if k in ctx:
                 out[k] = ctx[k]
         if started is not None:

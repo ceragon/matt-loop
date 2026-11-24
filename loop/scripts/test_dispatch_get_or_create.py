@@ -41,6 +41,7 @@ EXT = {"needs_user": False, "questions": [],
        "conclusion": "", "blocked": "", "reply": SCREEN}
 LAUNCH = "claude --dangerously-skip-permissions"
 NAME = "claude-matt-loop"
+DISPLAY = "LoopEng_测试任务"
 
 
 class NamedFakeHc:
@@ -176,8 +177,10 @@ class NamedFakeHc:
 
 def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
              expect_proc=None, reset=None, model=None, prompt=PROMPT,
-             pre_ledger=False, wall_clock="5", td=None):
-    """跑一轮 dispatch；返回 (rc, result, ledger, tmpdir)。td 可传入复用（同 id 重试）。"""
+             pre_ledger=False, wall_clock="5", td=None, display_name="auto"):
+    """跑一轮 dispatch；返回 (rc, result, ledger, tmpdir)。td 可传入复用（同 id 重试）。
+    display_name="auto"：带 --launch（新鲜路径）时自动补 DISPLAY（ADR-0010 必传），
+    既有路径不补；传 None 显式不带（测缺参），传字符串显式指定。"""
     own_td = td is None
     if own_td:
         td = tempfile.mkdtemp()
@@ -195,6 +198,10 @@ def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
         argv += ["--launch", launch]
     if cwd is not None:
         argv += ["--cwd", cwd]
+    if display_name == "auto":
+        display_name = DISPLAY if launch is not None else None
+    if display_name is not None:
+        argv += ["--display-name", display_name]
     if rebuild:
         argv += ["--rebuild"]
     if expect_proc is not None:
@@ -278,9 +285,11 @@ def main():
     new_addr = [d["address"] for d in fake.terminals.values() if d["name"] == NAME][0]
     assert fake.sends == [(new_addr, LAUNCH, False), (new_addr, PROMPT, True)], fake.sends
     # 领养：status 探测 → ls 核 pane → keep → ls 复核；绝不用裸 herdr-app
-    assert [c[0] for c in app.calls] == ["status", "ls", "do", "ls"], app.calls
+    # 显示名落地（ADR-0010，harness 自动注入 DISPLAY）：ls 定位 tab → tab.rename → ls 复核名
+    assert [c[0] for c in app.calls] == ["status", "ls", "do", "ls", "ls", "do", "ls"], app.calls
     assert app.calls[2][1] == "terminal.keep"
     assert json.loads(app.calls[2][2]) == {"terminal": new_addr}
+    assert app.calls[5][1] == "tab.rename"
     assert all(c for c in app.calls), "不许裸 herdr-app 探针"
     # result 契约：target 恒传入名字、target_address 解析 t 号、launched、workspace
     assert res["target"] == NAME and res["target_address"] == new_addr, res
