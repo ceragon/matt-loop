@@ -44,8 +44,10 @@ class FakeHc:
         cmd = args[0]
         if cmd == "get":
             return {"state": "live", "turn": self.turn, "title": "claude-test",
+                    "address": "t99", "name": "claude-test",
+                    "labels": {"loop": "1"},
                     "status": {"state": self.state, "title": "claude-test"},
-                    "foreground": {"name": "claude"}}
+                    "foreground": {"name": "claude", "argv": ["claude"]}}
         if cmd == "send":
             self._n += 1
             if self.refuse_nth is not None and self._n == self.refuse_nth:
@@ -63,6 +65,98 @@ class FakeHc:
         raise AssertionError("unexpected hc cmd: " + cmd)
 
 
+class FakeApp:
+    """herdr-app 桩（ADR-0009 第二桩，与 hc_json 同一缝背后；全套件共用这一个）：
+    status/ls/do（terminal.keep、space.new、tab.close）。panes 集合决定 ls 里谁有 pane；
+    spaces 空列表＝本机无 space。默认 t99 有 pane（既有测试的目标）。
+    keep 成功把 terminal 挂进第一个 space 的新 tab；keep_no_pane 模拟后台失败
+    （命令成功但 pane 不落地）。tab.close 结束该 tab 终端（联动 hc 桩置 finished）。"""
+
+    def __init__(self, hc=None, panes=("t99",), spaces=None, closed=False,
+                 keep_error=False, keep_no_pane=False, space_new_error=False,
+                 tab_close_error=False):
+        self.hc = hc
+        self.calls = []
+        self.panes = set(panes)
+        if spaces is None:
+            spaces = [{"id": "sp1", "name": "main",
+                       "tabs": [{"id": "tb1", "terminals": [{"terminal": a} for a in sorted(self.panes)]}]
+                               if self.panes else []}]
+        self.spaces = spaces
+        self.closed = closed
+        self.keep_error = keep_error
+        self.keep_no_pane = keep_no_pane
+        self.space_new_error = space_new_error
+        self.tab_close_error = tab_close_error
+        self.gifted = None       # space.new 赠送的 shell 终端地址
+        self._keep_n = 0
+
+    def _ls(self):
+        spaces = []
+        for sp in self.spaces:
+            tabs = []
+            for tb in sp["tabs"]:
+                tabs.append({"id": tb["id"], "name": tb.get("name"),
+                             "terminals": [{"terminal": t["terminal"],
+                                            "pane": ("p-" + t["terminal"])
+                                            if t["terminal"] in self.panes else None}
+                                           for t in tb["terminals"]]})
+            spaces.append({"id": sp["id"], "name": sp.get("name"),
+                           "folder": sp.get("folder"), "tabs": tabs})
+        return {"spaces": spaces, "recent": []}
+
+    def __call__(self, app_bin, args, timeout_s):
+        self.calls.append(list(args))
+        if self.closed:
+            raise dispatch.AppFailure("app_closed", "herdr-app 窗口没开", [], 1,
+                                      {"error": "not running"})
+        if args[0] == "status":
+            return {"space": self.spaces[0]["id"] if self.spaces else None}
+        if args[0] == "ls":
+            return self._ls()
+        if args[0] == "do":
+            name, payload = args[1], json.loads(args[2])
+            if name == "terminal.keep":
+                if self.keep_error:
+                    raise dispatch.AppFailure("keep_error", "keep failed", [], 1,
+                                              {"error": "keep failed"})
+                addr = payload["terminal"]
+                if not self.keep_no_pane:
+                    self.panes.add(addr)
+                self._keep_n += 1
+                if self.spaces:
+                    self.spaces[0]["tabs"].append(
+                        {"id": "tb-keep%d" % self._keep_n, "terminals": [{"terminal": addr}]})
+                return {"pane": "p-kept", "terminal": addr}
+            if name == "space.new":
+                if self.space_new_error:
+                    raise dispatch.AppFailure("space_new_error", "space.new failed", [], 1,
+                                              {"error": "space.new failed"})
+                gifted = self.hc.add(fg="shell", turn=0) if self.hc else None
+                self.gifted = gifted["address"] if gifted else "t-gift"
+                sp = {"id": "sp-new", "name": payload.get("name"),
+                      "folder": payload.get("folder"),
+                      "tabs": [{"id": "tb-gift", "terminals": [{"terminal": self.gifted}]}]}
+                self.spaces.append(sp)
+                self.panes.add(self.gifted)
+                return {"space": sp["id"], "tab": "tb-gift", "terminal": self.gifted}
+            if name == "tab.close":
+                if self.tab_close_error:
+                    raise dispatch.AppFailure("tab_close_error", "tab.close failed", [], 1,
+                                              {"error": "tab.close failed"})
+                for sp in self.spaces:
+                    for tb in list(sp["tabs"]):
+                        if tb["id"] == payload["id"]:
+                            for t in tb["terminals"]:
+                                if self.hc and t["terminal"] in self.hc.terminals:
+                                    self.hc.terminals[t["terminal"]]["state"] = "finished"
+                                self.panes.discard(t["terminal"])
+                            sp["tabs"].remove(tb)
+                return {}
+            raise AssertionError("unexpected do command: " + name)
+        raise AssertionError("unexpected app cmd: " + repr(args))
+
+
 def run_case(reset_arg, fake, rid):
     with tempfile.TemporaryDirectory() as td:
         pf = Path(td) / "prompt.md"
@@ -75,6 +169,7 @@ def run_case(reset_arg, fake, rid):
         if reset_arg is not None:
             argv += ["--reset", reset_arg]
         dispatch.hc_json = fake
+        dispatch.app_json = FakeApp()
         dispatch.extract = lambda pi_bin, args, raw_path: dict(EXT)
         dispatch.check_structure_and_tools = lambda: None
         dispatch.shutil.which = lambda name: "/fake/" + name

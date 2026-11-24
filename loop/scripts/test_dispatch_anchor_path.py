@@ -22,7 +22,7 @@ import os  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
 
-from test_dispatch_reset import PROMPT, ANCHOR, FakeHc  # noqa: E402
+from test_dispatch_reset import PROMPT, ANCHOR, FakeHc, FakeApp  # noqa: E402
 
 REAL_WHICH = dispatch.shutil.which
 
@@ -40,6 +40,7 @@ def run_round(screen, rid):
         fake = FakeHc()
         fake.screen = screen
         dispatch.hc_json = fake
+        dispatch.app_json = FakeApp()
         dispatch.extract = lambda pi_bin, args, raw_path: {
             "needs_user": False, "questions": [],
             "conclusion": "", "blocked": "", "reply": screen}

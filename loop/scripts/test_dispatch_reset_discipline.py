@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dispatch  # noqa: E402
+from test_dispatch_reset import FakeApp  # noqa: E402
 import os  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
@@ -48,8 +49,10 @@ class FakeHc:
         cmd = args[0]
         if cmd == "get":
             g = {"state": "live", "title": "claude-test",
+                 "address": "t99", "name": "claude-test",
+                 "labels": {"loop": "1"},
                  "status": {"state": self.state, "title": "claude-test"},
-                 "foreground": {"name": "claude"}}
+                 "foreground": {"name": "claude", "argv": ["claude"]}}
             if self.turn is not None:
                 g["turn"] = self.turn
             return g
@@ -78,6 +81,7 @@ def run_case(prompt, reset_arg, rid, td, fake):
     if reset_arg is not None:
         argv += ["--reset", reset_arg]
     dispatch.hc_json = fake
+    dispatch.app_json = FakeApp()
     dispatch.extract = lambda pi_bin, args, raw_path: dict(EXT)
     dispatch.check_structure_and_tools = lambda: None
     dispatch.shutil.which = lambda name: "/fake/" + name

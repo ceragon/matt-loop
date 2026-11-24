@@ -20,25 +20,35 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
   - 切模型前置（--target-model <名字>，ADR-0006）：重置（如有）之后、主任务之前发
     字面命令 /model <名字>，等落定再发主任务；名字原样透传、不核实生效、不预读跳过、
     不按 agent 映射，与 --reset 独立可单独带；target_model 是请求值非验证值。
-  - 换 kind 前置（--switch-agent <启动命令>，ADR-0007）：与 --reset/--target-model 互斥
-    （新会话 turn 0、模型写进启动命令）。按终端形态分流：持久 shell 包装终端（程序是 zsh 等、
-    agent 是子进程）同地址换——调用方字面传的 --exit-command（hc send）/--exit-keys（hc keys）
-    退旧 agent→等回 shell→send 启动命令→等新 agent 就绪→核身份；直接起 agent 的终端显式新地址
-    ——kill＋hc run 新终端、结果回报 target_new。启动命令与退出方式都字面透传、脚本不映射 kind→命令；
-    --expect-proc 须同步改新 kind。shell 分支失败即 blocked、绝不静默换地址；新地址是显式回报。
-    实证基础：keep＋信号恢复对真实 agent 不可行（agent 接 SIGINT/esc、干净退出→finished 不恢复），
-    故同地址靠 shell 包装而非 keep 恢复；hc 按前台进程认 agent/追 turn，shell 包装下照常。
-  - 一个放行至多发送成功三次（重置＋切模型前置＋主任务，各一次；换 kind 与二者互斥，
-    其 shell 分支为退旧＋起新＋主任务）：先写台账
+  - 命名会话 get-or-create（ADR-0009）：--target 推荐传会话名（一名一 live 终端，名字恒解析
+    到最新 live）。预检 hc get 分流：not_found/finished→创建（hc run --bg --keep --name --cwd
+    -- zsh -l 单形态 shell 包装→打 loop=1/loop-agent 标签→等 shell 就绪→裸 send --launch
+    启动命令→等 agent 就绪→核身份）；live＋空闲 shell＋loop 标签符→复活（原地重发启动命令，
+    名字/cwd/终端级历史不动）；live＋别的 agent/程序或无 loop 标签→session_occupied 停轮呈报，
+    --rebuild 经用户显式授权只杀 idle/done 占位者后同名重建。--launch 字面透传 shell 命令、
+    --cwd 显式给目录（二者成对必填、无默认、脚本零映射）；需创建/复活却没传→launch_required
+    （退出码 2、零发送、id 不消耗、补参同 id 重试）。启动命令是命令不是提示词：不抽取、不落
+    run_record，占前置发送槽。换 kind＝换 --target 到另一命名会话（--switch-agent 已移除）。
+  - 恒可见（领养，ADR-0009）：命名会话恒有 herdr-app pane。创建路径就绪后、既有/复活路径每轮
+    预检（写台账前）经单一 app_json 咽喉：herdr-app status 探测（绝不用裸 herdr-app，它会开窗）
+    →只读 ls 核 pane→缺则 do terminal.keep→ls 复核落地；本机无 space 先 space.new(focus:false)
+    →keep→复核→tab.close confirmed:true＋hc rm 清赠送 shell。进不了即 adopt_failed 整轮报错、
+    不降级 headless：创建路径保留已建终端、id 消耗；预检路径零发送、id 不消耗。app 没开时所有
+    轮次停摆（已接受的代价）。
+  - 一个放行至多发送成功三次（重置或启动前置＋切模型前置＋主任务，各一次；刚创建/复活的
+    新鲜会话自动跳过重置，result 记 reset_skipped:"fresh_launch"，切模型前置照跑）：先写台账
     $TMPDIR/loop/runs/<放行id>.json 再发送；台账存在即拒绝。
   - 会话起始 skill 纪律（ADR-0004）：提示词行首出现 /wayfinder、/grill-with-docs、
     /implement、/implement-spec、/prototype 之一且 --reset=none 时，在 hc get ＋
     身份预检之后、写台账前校验：turn == 0（全新空会话）直接豁免放行；turn > 0
     或缺失时拒发（reset_required，退出码 2），放行 id 不消耗，补 --reset 同 id 可重试。
+    分流判定创建/复活/重建的新鲜会话视同 turn 0 豁免、不看终端 turn（turn 是终端级
+    累计计数，复活会话 turn>0 但会话是空的，ADR-0009 修正 ADR-0007）。
   - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
     再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
     永不 --force，不碰 hc keys。
-  - 发送前核对目标身份（--expect-proc，认 foreground.name/argv[0]/status.app，可选但强烈建议传）。
+  - 发送前核对目标身份（--expect-proc，认 foreground.argv[0]/status.app，可选但强烈建议传；
+    foreground.name 不可靠——claude 实测为版本号，不作判据，ADR-0009）。
   - 台账记录实际发出内容的 sha256，成功输出也带 prompt_sha256。
   - 完整性判据：折叠标记（▲▼）命中即 error，不进 pi；原文照常落盘。锚点（提示词
     回声首行前缀）只作信息 anchor_found、不阻断——检查在 turn>基线＋落定之后，
@@ -101,6 +111,8 @@ from pathlib import Path
 # hc 任务名规则
 TASK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
 RESERVED_ID_RE = re.compile(r"^t\d+$")
+# herdr 会话名规则（hc run --name：1–32 位 a-z 0-9 - _）；t 号是保留地址、不能作名字。
+SESSION_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 def generate_short_task_name(release_id: str) -> str:
     h = hashlib.sha256(release_id.encode("utf-8")).hexdigest()[:8]
@@ -335,6 +347,46 @@ def hc_json(hc_bin, args, timeout_s):
         raise DispatchError(
             "hc_output",
             f"hc {' '.join(args)} 的 stdout 不是 JSON 对象",
+            [p.stdout.strip()[:300]],
+        )
+    return data
+
+
+class AppFailure(DispatchError):
+    """herdr-app 命令失败（镜像 HcFailure）。detail 是 app 的 JSON 错误对象（可能为 None）。"""
+
+    def __init__(self, kind, message, hints, returncode, detail):
+        super().__init__(kind, message, hints)
+        self.returncode = returncode
+        self.detail = detail
+
+
+def app_json(app_bin, args, timeout_s):
+    """跑一条 herdr-app 命令并解析 JSON 输出；非零退出抛 AppFailure。
+    所有 herdr-app 调用经此单一咽喉（与 hc_json 同为可注入桩点）。
+    herdr-app 的 ls/status/do 原生输出 JSON，不插 --json；do 的错误形状是
+    {"error": "..."}＋退出码 1。绝不用裸 herdr-app 作探针（它会打开窗口）。"""
+    p = run_cmd([app_bin, *args], timeout_s)
+    if p.returncode != 0:
+        detail = try_json(p.stdout) or try_json(p.stderr)
+        err = None
+        if isinstance(detail, dict):
+            err = detail.get("error")
+            if isinstance(err, dict):
+                err = err.get("kind") or err.get("message")
+        raise AppFailure(
+            "app_failed",
+            f"herdr-app {' '.join(args[:2])} 退出码 {p.returncode}"
+            + (f"：{str(err)[:200]}" if err else ""),
+            [s.strip()[:300] for s in (p.stderr, p.stdout) if s and s.strip()],
+            p.returncode,
+            detail,
+        )
+    data = try_json(p.stdout)
+    if not isinstance(data, dict):
+        raise DispatchError(
+            "app_output",
+            f"herdr-app {' '.join(args[:2])} 的 stdout 不是 JSON 对象",
             [p.stdout.strip()[:300]],
         )
     return data
@@ -644,20 +696,34 @@ def verify_reply(reply, screen):
             if ln.strip() and not verbatim_present(ln, screen)]
 
 
+def identity_ok(terminal, expect_proc):
+    """身份判据（ADR-0009）：只认 foreground.argv[0] 与 status.app（OSC 7501 自报）；
+    foreground.name 不可靠（claude 实测为版本号），不作判据。未传 expect_proc 恒真。"""
+    if not expect_proc:
+        return True
+    fg = terminal.get("foreground") or {}
+    st = terminal.get("status") or {}
+    argv = fg.get("argv") or []
+    first = argv[0] if isinstance(argv, list) and argv else ""
+    return any(expect_proc in c for c in (first, st.get("app") or ""))
+
+
 def check_identity(terminal, args):
-    if args.expect_proc:
-        fg = terminal.get("foreground") or {}
-        st = terminal.get("status") or {}
-        argv = fg.get("argv") or []
-        first = argv[0] if isinstance(argv, list) and argv else ""
-        # claude 等的 foreground.name 可能是版本号；argv[0] 与 status.app 才是可靠信号
-        candidates = [fg.get("name") or "", first, st.get("app") or ""]
-        if not any(args.expect_proc in c for c in candidates):
-            raise DispatchError(
-                "identity_mismatch",
-                "目标前台进程不含预期子串（--expect-proc）",
-                ["核对 hc get 的 foreground.name/argv[0] 与 status.app；不要向身份不符的终端发送"],
-            )
+    if not identity_ok(terminal, args.expect_proc):
+        raise DispatchError(
+            "identity_mismatch",
+            "目标前台进程不含预期子串（--expect-proc）",
+            ["核对 hc get 的 foreground.argv[0] 与 status.app；不要向身份不符的终端发送"],
+        )
+
+
+def find_app_bin():
+    """恒可见不变量要求 herdr-app；探不到即 missing_tool（创建/既有/复活共用）。"""
+    app_bin = find_tool("herdr-app")
+    if not app_bin:
+        raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 herdr-app",
+                            ["恒可见不变量要求 herdr-app；装上后重试"])
+    return app_bin
 
 
 def dialog_error(terminal):
@@ -836,7 +902,7 @@ def wait_for_reset(hc_bin, args, deadline):
         time.sleep(RESET_POLL_S)  # working：短轮询
 
 
-# 换 kind（ADR-0007）：认作持久 shell 包装的进程名（basename、去登录前缀 -）。
+# shell 包装（ADR-0009）：认作持久 shell 的进程名（basename、去登录前缀 -）。
 SHELL_NAMES = {"sh", "bash", "zsh", "nu", "fish", "dash", "ksh", "tcsh", "csh"}
 
 
@@ -851,49 +917,46 @@ def fg_is_shell(fg):
     return _proc_base(fg.get("name")) in SHELL_NAMES or _proc_base(first) in SHELL_NAMES
 
 
-def terminal_form(terminal):
-    """按启动 argv 判终端形态：持久 shell 包装（zsh -l 等，agent 是子进程）→ shell；
-    直接起 agent、或 sh -c 一次性包装 → direct。sh -c 随 agent 退出而死，不是持久包装。"""
-    argv = terminal.get("argv") or []
-    first = argv[0] if isinstance(argv, list) and argv else ""
-    if _proc_base(first) in SHELL_NAMES and "-c" not in argv[1:]:
-        return "shell"
-    return "direct"
-
-
-def wait_for_shell(hc_bin, args, deadline):
-    """shell 包装分支：退旧 agent 后短轮询等前台回到 shell（同地址、state live）。
-    终端变 finished＝地址丢失→switch_recovery_failed（绝不静默换地址，Q4）；超时→switch_timeout。"""
+def wait_for_shell_ready(hc_bin, target, deadline):
+    """创建后等 shell 就绪：短轮询 hc get 至 state live＋前台是 shell。
+    刚 run 完名字可能短暂未解析（not_found 继续等）；终端结束/超时→launch_failed。"""
     while True:
         if time.monotonic() >= deadline:
-            raise DispatchError("switch_timeout", "等旧 agent 退出回 shell 超时",
+            raise DispatchError("launch_failed", "等新终端 shell 就绪超时",
                                 ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
-        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        try:
+            g = hc_json(hc_bin, ["get", target], QUERY_GUARD_S)
+        except HcFailure as e:
+            if e.kind == "not_found":
+                time.sleep(RESET_POLL_S)
+                continue
+            raise DispatchError("launch_failed", f"等 shell 就绪时 hc get 失败：{e.message}", e.hints)
         if g.get("state") != "live":
-            raise DispatchError("switch_recovery_failed",
-                                "退旧 agent 后终端已结束（地址丢失），不静默换地址",
+            raise DispatchError("launch_failed", "新终端 shell 就绪前已结束",
                                 ["hc get 查看 reason；经用户放行后另起一轮"])
-        state = status_state(g)
-        if state == "blocked":
-            raise dialog_error(g)
-        if state == "error":
-            raise DispatchError("target_error", "退旧 agent 期间目标自报 error", [])
         if fg_is_shell(g.get("foreground") or {}):
             return g
         time.sleep(RESET_POLL_S)
 
 
 def wait_for_agent_ready(hc_bin, args, deadline):
-    """等新 agent 就绪：前台不再是 shell 且状态 idle/done。超时→switch_timeout；
-    终端结束→switch_recovery_failed；弹框/error 照常抛。返回就绪时的 hc get。"""
+    """等 agent 就绪：前台不再是 shell 且状态 idle/done。超时/终端结束→launch_failed；
+    弹框/error 照常抛（既有 kind 不动）。返回就绪时的 hc get。"""
     while True:
         if time.monotonic() >= deadline:
-            raise DispatchError("switch_timeout", "等新 agent 就绪超时",
+            raise DispatchError("launch_failed", "等 agent 就绪超时（启动命令已发）",
                                 ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
-        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        try:
+            g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        except HcFailure as e:
+            if e.kind == "not_found":
+                # 名字只解析 live 终端：启动期间终端死亡即名字失解析。
+                raise DispatchError("launch_failed", "agent 启动期间终端已结束（名字失解析）",
+                                    ["hc get 按 t 号查看 reason；经用户放行后另起一轮"])
+            raise DispatchError("launch_failed", f"等 agent 就绪时 hc get 失败：{e.message}", e.hints)
         if g.get("state") != "live":
-            raise DispatchError("switch_recovery_failed", "新 agent 启动期间终端已结束",
-                                ["hc get 查看 reason"])
+            raise DispatchError("launch_failed", "agent 启动期间终端已结束",
+                                ["hc get 查看 reason；经用户放行后另起一轮"])
         state = status_state(g)
         if state == "blocked":
             raise dialog_error(g)
@@ -905,68 +968,157 @@ def wait_for_agent_ready(hc_bin, args, deadline):
         time.sleep(RESET_POLL_S)
 
 
-def do_switch(hc_bin, args, ledger, ledger_path, g):
-    """换 kind 前置（ADR-0007）：按终端形态分流，返回 (target, form, new_target)。
-    shell 包装→同地址：退旧 agent（调用方字面传的 --exit-command/--exit-keys）→等回 shell
-      →send 新启动命令→等新 agent 就绪→核身份（--expect-proc 已是新 kind）。地址不变。
-    直接起 agent→显式新地址：kill 旧终端→hc run 新终端（sh -c 字面透传启动命令）→等就绪
-      →核身份；args.target 改为新地址，new_target 回报调用方更新定位。
-    启动命令与退出方式都由调用方字面提供，脚本不映射 kind→命令。shell 分支任一环节失败
-    即 blocked、绝不静默换地址（Q4）；新地址分支的新地址是显式回报（不违反 Q4）。"""
-    form = terminal_form(g)
-    ledger.update(switch_form=form, phase="switch_start")
+def send_launch(hc_bin, args, ledger, ledger_path, ctx):
+    """启动前置发送（创建/复活共用）：shell 不是 agent、不报 idle，用裸 send（不带 --if）。
+    启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽。"""
+    ledger.update(phase="launch_sending")
     write_json_atomic(ledger_path, ledger)
-    deadline = time.monotonic() + args.wall_clock
-    if form == "shell":
-        fg = g.get("foreground") or {}
-        if not fg_is_shell(fg):
-            # 有 agent 在跑：须调用方传退出方式（pi=ctrl+d 走 keys，claude=/exit 走 send）
-            if not (args.exit_command or args.exit_keys):
-                raise DispatchError(
-                    "switch_exit_required",
-                    "shell 包装终端里有 agent 在跑，换 kind 须传 --exit-command 或 --exit-keys 退旧",
-                    ["按旧 agent 认哪个退出方式挑；退出命令脚本不映射、字面透传"])
-            ledger.update(phase="switch_exit_sending")
+    try:
+        send = hc_json(hc_bin, ["send", "--", args.target, args.launch], SEND_GUARD_S)
+    except HcFailure as e:
+        raise DispatchError("launch_failed", f"启动命令发送失败：{e.message}",
+                            e.hints + ["主任务未发送；台账已记录本次尝试"])
+    ctx["launch_sent"] = True
+    ledger.update(launch_sent=True, launch_send=send, phase="launch_waiting_agent")
+    write_json_atomic(ledger_path, ledger)
+    g = wait_for_agent_ready(hc_bin, args, time.monotonic() + args.wall_clock)
+    check_identity(g, args)
+    ledger.update(phase="launch_done", launch_done_at=now_iso())
+    write_json_atomic(ledger_path, ledger)
+    return g
+
+
+def do_create(hc_bin, args, ledger, ledger_path, ctx):
+    """创建前置（ADR-0009，单形态 shell 包装）：hc run --bg --keep --name --cwd -- zsh -l
+    →打 loop=1＋loop-agent=<expect-proc> 标签→等 shell 就绪→send 启动命令→等 agent 就绪
+    →核身份。名字唯一性由 herdr 仲裁（name_taken 竞态映射 launch_failed）。
+    任一步失败整轮 launch_failed，ctx/台账带部分状态（终端已建/启动已发如实报）。"""
+    ledger.update(phase="launch_running")
+    write_json_atomic(ledger_path, ledger)
+    try:
+        r = hc_json(hc_bin, ["run", "--bg", "--keep", "--name", args.target,
+                             "--cwd", args.cwd, "--", "zsh", "-l"], SEND_GUARD_S)
+    except HcFailure as e:
+        raise DispatchError("launch_failed", f"hc run 创建命名会话失败（{e.kind}）：{e.message}",
+                            e.hints + ["同名 live 终端存在（name_taken）时不建不 kill；"
+                                       "经用户放行后另起一轮或改用既有会话"])
+    addr = r.get("address")
+    if not addr:
+        raise DispatchError("launch_failed", "hc run 未返回新终端地址", [str(r)[:200]])
+    ctx["target_address"] = addr
+    ctx["launched"] = True
+    ledger.update(target_address=addr, launched=True, phase="launch_labeling")
+    write_json_atomic(ledger_path, ledger)
+    labels = ["loop=1"]
+    if args.expect_proc:
+        labels.append("loop-agent=" + args.expect_proc)
+    try:
+        hc_json(hc_bin, ["label", args.target, *labels], QUERY_GUARD_S)
+    except HcFailure as e:
+        raise DispatchError("launch_failed", f"打 loop 标签失败：{e.message}",
+                            e.hints + ["终端已建（launched:true）；无标签终端下轮会被拒收编"])
+    ledger.update(phase="launch_waiting_shell")
+    write_json_atomic(ledger_path, ledger)
+    wait_for_shell_ready(hc_bin, args.target, time.monotonic() + args.wall_clock)
+    return send_launch(hc_bin, args, ledger, ledger_path, ctx)
+
+
+def find_pane(ls_data, address):
+    """在 herdr-app ls 结果里找终端的 pane 条目；无 pane 返回 None。"""
+    for sp in ls_data.get("spaces") or []:
+        for tb in sp.get("tabs") or []:
+            for t in tb.get("terminals") or []:
+                if t.get("terminal") == address and t.get("pane"):
+                    return t
+    return None
+
+
+def adopt(hc_bin, app_bin, address, session_name, cwd, ledger, ledger_path, ctx, precheck):
+    """领养（ADR-0009 恒可见不变量）：status 探测→只读 ls 核 pane→缺则（本机无 space
+    先 space.new focus:false）→terminal.keep→ls 复核 pane 落地→无 space 分支清理赠送
+    shell（tab.close confirmed:true＋hc rm）。任一步失败抛 adopt_failed，ctx 记部分状态
+    （workspace:"failed"＋adopt_reason＋space_created/pane_adopted 如实报）。
+    precheck=True（既有路径补领养）：写台账前，失败零发送、id 不消耗、同 id 重试；
+    precheck=False（创建路径）：写台账后，失败保留已建终端、id 消耗、新 id 重试修复。"""
+    def fail(reason, message, hints):
+        ctx["workspace"] = "failed"
+        ctx["adopt_reason"] = reason
+        if ledger is not None:
+            ledger.update(workspace="failed", adopt_reason=reason)
+        raise DispatchError("adopt_failed", message, hints)
+
+    retry = (["打开 herdr-app 后用同一放行 id 重试（零发送、id 未消耗）"] if precheck
+             else ["已建终端保留；打开 herdr-app 后用新放行 id 重试，走既有路径补领养修复"])
+    if ledger is not None:
+        ledger.update(phase="adopting")
+        write_json_atomic(ledger_path, ledger)
+    try:
+        app_json(app_bin, ["status"], QUERY_GUARD_S)
+    except DispatchError as e:
+        fail("app_closed", f"herdr-app 没开或不可达，领养失败：{e.message}", retry)
+    try:
+        ls = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+    except DispatchError as e:
+        fail("app_closed", f"herdr-app ls 失败，领养失败：{e.message}", retry)
+    if find_pane(ls, address):
+        ctx["workspace"] = "adopted"
+        if ledger is not None:
+            ledger.update(phase="adopt_done", workspace="adopted")
             write_json_atomic(ledger_path, ledger)
-            if args.exit_command:
-                do_send(hc_bin, args, args.exit_command, ledger, ledger_path)
-            else:
-                # 调用方显式授权的退出按键（不是提示词）；提示词发送仍永不碰 hc keys（裁定 6）。
-                hc_json(hc_bin, ["keys", args.target, args.exit_keys], SEND_GUARD_S)
-            ledger.update(phase="switch_waiting_shell")
+        return
+    no_space = not (ls.get("spaces") or [])
+    if no_space:
+        # 本机无 space：keep 无处落。建空间（focus:false 不抢用户当前视图），赠送 shell 稍后清。
+        try:
+            app_json(app_bin, ["do", "space.new", json.dumps(
+                {"name": session_name, "folder": cwd, "focus": False},
+                ensure_ascii=False)], QUERY_GUARD_S)
+        except DispatchError as e:
+            fail("keep_error", f"本机无 space，space.new 失败：{e.message}", retry)
+        ctx["space_created"] = True
+        if ledger is not None:
+            ledger.update(space_created=True)
             write_json_atomic(ledger_path, ledger)
-            wait_for_shell(hc_bin, args, deadline)
-        # 前台已是 shell：send 新启动命令。shell 不是 agent、不报 idle，用裸 send（不带 --if）。
-        ledger.update(phase="switch_launching")
+    try:
+        app_json(app_bin, ["do", "terminal.keep",
+                           json.dumps({"terminal": address})], QUERY_GUARD_S)
+    except DispatchError as e:
+        fail("keep_error", f"terminal.keep 失败：{e.message}", retry)
+    # keep 后台完成、失败弹 toast：命令成功不算数，必须只读 ls 复核 pane 落地。
+    try:
+        ls2 = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+    except DispatchError as e:
+        fail("app_closed", f"keep 后 herdr-app ls 失败：{e.message}", retry)
+    if not find_pane(ls2, address):
+        fail("no_pane", "keep 后复核仍无 pane（后台落地失败）", retry)
+    if no_space:
+        ctx["pane_adopted"] = True
+        # 清理赠送 shell：找本终端所在 space（刚建、只有赠送 tab＋keep tab），
+        # 其余 tab 即赠送 shell——tab.close 结束终端，再 hc rm 清 finished 条目。
+        my_space = next((sp for sp in ls2.get("spaces") or []
+                         if any(t.get("terminal") == address
+                                for tb in sp.get("tabs") or []
+                                for t in tb.get("terminals") or [])), None)
+        for tb in (my_space or {}).get("tabs") or []:
+            addrs = [t.get("terminal") for t in tb.get("terminals") or []]
+            if address in addrs:
+                continue
+            try:
+                app_json(app_bin, ["do", "tab.close", json.dumps(
+                    {"id": tb["id"], "confirmed": True})], QUERY_GUARD_S)
+            except DispatchError as e:
+                fail("keep_error", f"清理赠送 shell tab 失败：{e.message}",
+                    retry + ["pane 已落地、空间已建；赠送 shell 残留，如实报"])
+            for a in addrs:
+                try:
+                    hc_json(hc_bin, ["rm", a], QUERY_GUARD_S)
+                except DispatchError as e:
+                    fail("keep_error", f"hc rm 赠送 shell 终端失败：{e.message}",
+                        retry + ["赠送 tab 已关、终端 finished 未 rm，如实报"])
+    ctx["workspace"] = "adopted"
+    if ledger is not None:
+        ledger.update(phase="adopt_done", workspace="adopted")
         write_json_atomic(ledger_path, ledger)
-        hc_json(hc_bin, ["send", "--", args.target, args.switch_agent], SEND_GUARD_S)
-        ledger.update(phase="switch_waiting_agent")
-        write_json_atomic(ledger_path, ledger)
-        g2 = wait_for_agent_ready(hc_bin, args, deadline)
-        check_identity(g2, args)
-        ledger.update(phase="switch_done", switch_done_at=now_iso())
-        write_json_atomic(ledger_path, ledger)
-        return args.target, form, None
-    # direct：kill 旧终端 → hc run 新终端（新地址）。cwd 沿用旧终端，新 agent 仍在原工程目录。
-    ledger.update(phase="switch_killing")
-    write_json_atomic(ledger_path, ledger)
-    hc_json(hc_bin, ["kill", args.target], SEND_GUARD_S)
-    cwd = g.get("cwd") or "."
-    ledger.update(phase="switch_running")
-    write_json_atomic(ledger_path, ledger)
-    r = hc_json(hc_bin, ["run", "--bg", "--keep", "--cwd", cwd,
-                         "--", "sh", "-c", args.switch_agent], SEND_GUARD_S)
-    new_target = r.get("address")
-    if not new_target:
-        raise DispatchError("switch_failed", "hc run 未返回新终端地址", [str(r)[:200]])
-    args.target = new_target
-    ledger.update(target_new=new_target, phase="switch_waiting_agent")
-    write_json_atomic(ledger_path, ledger)
-    g2 = wait_for_agent_ready(hc_bin, args, deadline)
-    check_identity(g2, args)
-    ledger.update(phase="switch_done", switch_done_at=now_iso())
-    write_json_atomic(ledger_path, ledger)
-    return new_target, form, new_target
 
 
 def parse_extraction(stdout):
@@ -1109,7 +1261,8 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description="loop 分发脚本：发送已放行提示词、等待落定、取回原文落盘、pi 抽取。",
     )
-    ap.add_argument("--target", required=True, help="目标终端地址（hc 的 t7、名字或 machine/t7）")
+    ap.add_argument("--target", required=True, help="目标会话地址：会话名（推荐，一名一 live、"
+                    "恒解析到最新 live 终端）或 t 号/machine/t7；缺失或已死时按会话名 get-or-create")
     ap.add_argument("--release-id", required=True, help="放行 id（唯一；一个放行只跑一轮）")
     ap.add_argument("--prompt-file", required=True, help="已放行的提示词文件路径（原文照发）")
     ap.add_argument("--reset", choices=["none", "new", "clear", "compact"], default="none",
@@ -1118,16 +1271,18 @@ def parse_args(argv=None):
     ap.add_argument("--target-model", help="切模型前置（ADR-0006）：主任务前发字面命令 /model <名字>，"
                     "名字原样透传（脚本不认识模型、不按 agent 映射、不核实生效）；与 --reset 独立，"
                     "同传时顺序 重置→切模型→主任务；默认不传即现状")
-    ap.add_argument("--switch-agent", help="换 kind 前置（ADR-0007）：新 agent 的完整启动命令，字面透传"
-                    "（脚本不映射 kind→命令）。按终端形态分流：持久 shell 包装终端同地址换（退旧 agent→回 shell"
-                    "→send 此命令）；直接起 agent 的终端 kill＋run 新终端、结果回报 target_new。与 --reset/"
-                    "--target-model 互斥（新会话 turn 0、模型写进启动命令）；--expect-proc 须同步改成新 kind")
-    exit_group = ap.add_mutually_exclusive_group()
-    exit_group.add_argument("--exit-command", help="换 kind 时退旧 agent 的文本命令（如 /exit），走 hc send；"
-                    "须配合 --switch-agent，与 --exit-keys 互斥；脚本不映射、字面透传")
-    exit_group.add_argument("--exit-keys", help="换 kind 时退旧 agent 的按键（如 pi 的 ctrl+d），走 hc keys；"
-                    "须配合 --switch-agent，与 --exit-command 互斥；调用方显式授权，非提示词强制")
-    ap.add_argument("--expect-proc", help="身份预检：前台进程应含此子串（认 name/argv[0]/app，如 grok/claude）")
+    ap.add_argument("--launch", help="创建/复活前置（ADR-0009）：shell 启动命令字符串，字面透传"
+                    "（脚本不映射 kind→命令、不感知 herdr 模板；模板退居调用方持久配置仓库，用时抄命令字面传）。"
+                    "目标缺失/已死/空闲 shell 时在同一放行内创建或复活命名会话；与 --cwd 成对必填、无默认。"
+                    "启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽")
+    ap.add_argument("--cwd", help="创建命名会话的工作目录（与 --launch 同时必填、无默认）；"
+                    "复活沿用终端原 cwd，不重写")
+    ap.add_argument("--rebuild", action="store_true",
+                    help="强制重建（ADR-0009）：仅用户明示授权 kill 重建后传；只在 session_occupied 占位分支生效"
+                    "（其余分流误传 bad_args），只杀 idle/done 占位者（working/blocked 报 rebuild_busy），"
+                    "kill 后同名新建；放行必贴「将 kill <名字>（占位者摘要）并重建」")
+    ap.add_argument("--expect-proc", help="身份预检：前台进程应含此子串（认 argv[0]/status.app，如 grok/claude；"
+                    "foreground.name 不可靠——claude 实测为版本号，不作判据）")
     ap.add_argument("--loop-dir", default=str(Path(tempfile.gettempdir()) / "loop"),
                     help="本地记录根目录（默认 $TMPDIR/loop，随 OS 临时清理）")
     ap.add_argument("--pi-model", help="pi --model 透传（仅 LOOP_EXTRACT_BACKEND=pi 时生效；默认用 pi 自身配置的模型）")
@@ -1156,21 +1311,17 @@ def main(argv=None):
     backend = None
     task_name = None
     original_target = args.target
-    switch_new_target = None
+    # ctx 收集本轮部分状态（target_address/launched/launch_sent/rebuilt/workspace/
+    # adopt_reason/space_created/pane_adopted/reset_skipped），成功与 error 都带适用字段。
+    ctx = {}
+    fresh = False
     try:
-        # 换 kind 旗标互斥校验（ADR-0007，Q3）：--switch-agent 与 --reset/--target-model 互斥
-        # （新会话 turn 0 无需重置、模型写进启动命令）；退出旗标须配合 --switch-agent。
+        # 创建参数成对校验（ADR-0009）：--launch 与 --cwd 同时必填、无默认。
         # 静态旗标错误，放行 id 不消耗（退出码 2）。
-        if args.switch_agent:
-            if args.reset != "none":
-                raise DispatchError("bad_args", "--switch-agent 与 --reset 互斥：换 kind 起全新 turn 0 会话，无需重置",
-                                    ["去掉 --reset；新 agent 的配置都在 --switch-agent 启动命令里"], returncode=2)
-            if args.target_model:
-                raise DispatchError("bad_args", "--switch-agent 与 --target-model 互斥：模型写进启动命令",
-                                    ["去掉 --target-model，把模型旗标放进 --switch-agent 启动命令"], returncode=2)
-        if (args.exit_command or args.exit_keys) and not args.switch_agent:
-            raise DispatchError("bad_args", "--exit-command/--exit-keys 须配合 --switch-agent 使用",
-                                ["退出旗标只在换 kind 时有意义"], returncode=2)
+        if bool(args.launch) != bool(args.cwd):
+            raise DispatchError("bad_args", "--launch 与 --cwd 须同时传（创建参数成对、无默认）",
+                                ["补 --launch <shell 启动命令> --cwd <目录>，或两个都去掉"],
+                                returncode=2)
         check_structure_and_tools()
         # 抽取后端启动预检（ADR-0005）：api 缺配置立刻报错，不跑完一轮才发现；
         # pi 备选才需要 find_tool(pi)，api 路径不依赖 node/pi。
@@ -1221,28 +1372,117 @@ def main(argv=None):
                                 ["某些机器非交互 shell 的 PATH 里没有 node；"
                                  "脚本已探 ~/.local/bin、homebrew、nvm node bin 仍未果"])
 
-        # 1) 预检：状态 idle/done + 身份（票面第 2 步；done 时 --if idle 会拒发，
-        #    走下面裁定 6 的复核补发路径）。
-        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
-        if g.get("state") != "live":
+        # 1) 预检分流（ADR-0009）：hc get 一律作分流判据（不用 hc ls 的 agent 派生字段）。
+        #    not_found/finished→创建（finished 同名重建、旧条目按 t 号留审计）；
+        #    live→既有路径（核身份→idle 核对→发送）。
+        try:
+            g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        except HcFailure as e:
+            if e.kind != "not_found":
+                raise
+            g = None
+        if g is None or g.get("state") == "finished":
+            branch = "create"
+        elif g.get("state") != "live":
             raise DispatchError("not_idle", "目标终端已结束，不发送", [])
-        state = status_state(g)
-        if state not in ("idle", "done"):
+        else:
+            if g.get("address"):
+                ctx["target_address"] = g["address"]
+            # 标签绑定（ADR-0009）：loop=1＋loop-agent=<expect-proc> 是收编凭据；
+            # 无 loop 标签或标签符不符的同名 live 终端拒收编→占位。
+            labels = g.get("labels") or {}
+            label_ok = (labels.get("loop") == "1"
+                        and (not args.expect_proc
+                             or labels.get("loop-agent") == args.expect_proc))
+            fg_shell = fg_is_shell(g.get("foreground") or {})
+            if not label_ok:
+                branch = "occupied"
+            elif fg_shell and status_state(g) is None:
+                branch = "revive"      # 空闲 shell＋标签符→原地复活
+            elif not fg_shell and identity_ok(g, args.expect_proc):
+                branch = "existing"    # 前台 agent 身份符＋标签符→既有路径
+            else:
+                branch = "occupied"    # 别的 agent/程序（身份不符），或 shell 异常态
+        if branch == "occupied" and args.rebuild:
+            branch = "rebuild"
+        if args.rebuild and branch != "rebuild":
             raise DispatchError(
-                "not_idle",
-                f"目标状态是 {state or '未自报'}，不是 idle/done，不发送",
-                ["--if idle 只认 idle；等目标落定或请用户处理后再来"],
+                "bad_args", "--rebuild 只在 session_occupied 占位分支生效，其余分流误传",
+                ["去掉 --rebuild；强制重建仅用于用户显式授权 kill 占位者后同名重建"],
+                returncode=2)
+        if branch == "occupied":
+            fg = g.get("foreground") or {}
+            argv = fg.get("argv") or []
+            fg_desc = (argv[0] if isinstance(argv, list) and argv else "") or fg.get("name") or "未知"
+            raise DispatchError(
+                "session_occupied",
+                f"会话名 {args.target} 被占用：{ctx.get('target_address') or args.target} "
+                f"前台={fg_desc} turn={g.get('turn')} 状态={status_state(g) or '未自报'}"
+                + ("（无 loop 标签，拒收编）" if labels.get("loop") != "1"
+                   else "（loop 标签与 --expect-proc 不符）" if not label_ok
+                   else "（前台 shell 但 status 非 null，异常态）" if fg_shell
+                   else "（前台与 --expect-proc 不符）"),
+                ["呈报占位者给用户；确需重建须经用户显式授权后带 --rebuild（只杀 idle/done）",
+                 "或换 --target 到另一命名会话；不建不 kill、零发送、id 不消耗"],
             )
-        # 换 kind 时 --expect-proc 已是新 kind，与旧前台不符，身份核对推迟到换 kind 之后（do_switch 内核）。
-        if not args.switch_agent:
-            check_identity(g, args)
+        if branch in ("create", "revive", "rebuild"):
+            # 创建/复活需 --launch（＋--cwd），缺则 launch_required（与 reset_required 同构：
+            # 退出码 2、零发送、放行 id 不消耗、补参同 id 重试）。
+            if not args.launch:
+                why = {"create": "目标会话不存在或已死，创建",
+                       "revive": "目标是空闲 shell，复活",
+                       "rebuild": "强制重建"}[branch]
+                raise DispatchError(
+                    "launch_required",
+                    f"{why}需要 --launch（＋--cwd）",
+                    ["补 --launch <shell 启动命令> --cwd <目录> 后用同一放行 id 重试（零发送、id 不消耗）",
+                     "创建参数（会话名、启动命令、cwd）须随放行一并贴出，见 SKILL.md"],
+                    returncode=2)
+            if branch in ("create", "rebuild") and (
+                    not SESSION_NAME_RE.match(args.target)
+                    or RESERVED_ID_RE.match(args.target)):
+                raise DispatchError(
+                    "bad_args",
+                    f"--target {args.target} 不是合法会话名（1–32 位 a-z0-9-_），无法创建",
+                    ["--target 推荐传会话名（<kind>-<repo> 或 bot slug）；t 号是保留地址、不能作名字"],
+                    returncode=2)
+            if branch == "rebuild" and status_state(g) not in ("idle", "done"):
+                # 只杀 idle/done 占位者；working/blocked/未自报一律拒杀（在跑的工作与
+                # 等人决定的弹框绝不被杀；未自报无法确认空闲，保守拒）。
+                raise DispatchError(
+                    "rebuild_busy",
+                    f"占位者状态是 {status_state(g) or '未自报'}，不是 idle/done，拒杀",
+                    ["等占位者落定或请用户到屏幕前处理；kill 只在 idle/done 时执行"],
+                )
+            fresh = True
+            if branch == "revive":
+                # 复活同样过预检 pane 闸（US26：app 没开时所有轮次停摆，无隐性例外）；
+                # 启动机械本身不 run、不重写标签（Decision 5）。
+                adopt(hc_bin, find_app_bin(), ctx["target_address"],
+                      g.get("name") or args.target, g.get("cwd") or ".",
+                      None, None, ctx, precheck=True)
+        else:
+            # 身份已在分流核过（identity_ok）。恒可见（ADR-0009）：既有路径每轮预检
+            # （写台账前）核 pane，缺则补领养（park 等造成的可见性漂移自愈）；补不成→
+            # adopt_failed，零发送、id 不消耗、同 id 重试。app 没开时所有轮次停摆（已接受的代价）。
+            adopt(hc_bin, find_app_bin(), g.get("address") or args.target,
+                  g.get("name") or args.target, g.get("cwd") or ".",
+                  None, None, ctx, precheck=True)
+            state = status_state(g)
+            if state not in ("idle", "done"):
+                raise DispatchError(
+                    "not_idle",
+                    f"目标状态是 {state or '未自报'}，不是 idle/done，不发送",
+                    ["--if idle 只认 idle；等目标落定或请用户处理后再来"],
+                )
 
         # 1.2) 工程纪律预检（ADR-0004）：会话起始 skill 须在空会话或重置后运行。
         #      放在 hc get ＋身份预检之后、写台账与任何发送之前：
         #      turn == 0（精确整数 0）代表尚未跑过任何轮次的全新空会话，直接豁免放行；
         #      turn > 0 或 turn 缺失且 --reset=none 时拒发（放行 id 不消耗，补 --reset 同 id 可重试）。
-        #      换 kind 起全新 turn 0 会话，本身即满足纪律，跳过此预检（ADR-0007）。
-        if args.reset == "none" and not args.switch_agent:
+        #      创建/复活/重建的新鲜会话视同 turn 0 豁免、不看终端 turn（turn 是终端级累计，
+        #      复活会话 turn>0 但会话是空的，ADR-0009）。
+        if args.reset == "none" and not fresh:
             hit = find_session_start_trigger(text)
             if hit is not None:
                 turn = g.get("turn")
@@ -1275,9 +1515,12 @@ def main(argv=None):
             "anchor": anchor,
             "reset": args.reset,
             "target_model": args.target_model,
-            "switch_agent": args.switch_agent,
-            "exit_command": args.exit_command,
-            "exit_keys": args.exit_keys,
+            "launch": args.launch,
+            "cwd": args.cwd,
+            "rebuild": args.rebuild,
+            "target_address": ctx.get("target_address"),
+            # 预检领养（既有/复活路径）在写台账前，无 phase 可记；结果随台账留痕。
+            "workspace": ctx.get("workspace"),
             "params": {
                 "wall_clock": args.wall_clock, "check_in": args.check_in,
                 "settle_seconds": args.settle_seconds, "settle_checks": args.settle_checks,
@@ -1289,18 +1532,45 @@ def main(argv=None):
         }
         write_json_atomic(ledger_path, ledger)
 
-        # 2.4) 换 kind 前置（--switch-agent，ADR-0007）：与重置/切模型互斥（上面已校验）。
-        #      按终端形态分流：shell 包装同地址换、直接起 agent 显式新地址（do_switch）。
-        #      换 kind 后 args.target 可能改为新地址（direct 分支），主任务发到新终端；
-        #      新 agent turn 0，主任务免重置。放行一并授权；前置不抽取、不落 run_record。
-        if args.switch_agent:
-            _, _, switch_new_target = do_switch(hc_bin, args, ledger, ledger_path, g)
+        # 2.4) 创建前置（ADR-0009）：not_found/finished 分流且带 --launch 时，同一放行内
+        #      建命名会话（单形态 shell 包装）→打标签→等 shell→send 启动命令→等 agent→核身份
+        #      →领养（恒可见）。放行一并授权创建＋主任务；启动命令不抽取、不落 run_record。
+        #      领养在写台账后：失败保留已建终端、放行 id 消耗（新 id 重试走既有路径修复）。
+        if branch in ("create", "rebuild"):
+            if branch == "rebuild":
+                # 强制重建（ADR-0009，用户显式授权）：只杀 idle/done 占位者（预检已核），
+                # kill 后同名新建；台账/result 记 rebuilt＋旧 t 号，kill 后创建失败也能
+                # 审计「旧会话已死、新会话未成」。
+                ledger.update(phase="rebuild_killing")
+                write_json_atomic(ledger_path, ledger)
+                try:
+                    hc_json(hc_bin, ["kill", args.target], SEND_GUARD_S)
+                except HcFailure as e:
+                    raise DispatchError("launch_failed", f"重建 kill 占位者失败：{e.message}",
+                                        e.hints + ["占位者未死；本轮停止，经用户放行后另起一轮"])
+                ctx["rebuilt"] = True
+                ctx["rebuilt_old_target"] = ctx.get("target_address")
+                ledger.update(rebuilt=True, rebuilt_old_target=ctx["rebuilt_old_target"])
+                write_json_atomic(ledger_path, ledger)
+            do_create(hc_bin, args, ledger, ledger_path, ctx)
+            adopt(hc_bin, find_app_bin(), ctx["target_address"], args.target, args.cwd,
+                  ledger, ledger_path, ctx, precheck=False)
+        elif branch == "revive":
+            # 复活（ADR-0009）：不 run、不重写标签；原地重发启动命令→等 agent 就绪→核身份。
+            # 名字/cwd/终端级历史不动，会话是空的。
+            send_launch(hc_bin, args, ledger, ledger_path, ctx)
 
         # 2.5) 重置前置（--reset != none）：同一 target 上先发字面命令 /new /clear /compact，
         #      等落定（idle/done + 屏幕静置）后再发主任务。放行一并授权前置＋主任务：
         #      前置按枚举校验（argparse choices），主任务仍逐字来自放行文件、校 sha256。
         #      前置不抽取、不落 run_record；任一步发不出即整轮停（台账记部分状态）。
-        if args.reset != "none":
+        #      刚创建/复活的新鲜会话自动跳过重置发送（不在空会话上空等一次重置落定），
+        #      result 记 reset_skipped:"fresh_launch"；切模型前置照跑（ADR-0006 纪律平移）。
+        if args.reset != "none" and fresh:
+            ctx["reset_skipped"] = "fresh_launch"
+            ledger.update(reset_skipped="fresh_launch")
+            write_json_atomic(ledger_path, ledger)
+        elif args.reset != "none":
             reset_cmd = "/" + args.reset
             ledger.update(phase="reset_sending")
             write_json_atomic(ledger_path, ledger)
@@ -1411,13 +1681,13 @@ def main(argv=None):
         # target_model 仅传了才出现：语义是「本轮请求切换到的名字」，非「已验证生效」。
         if args.target_model:
             result["target_model"] = args.target_model
-        # 换 kind（ADR-0007）：target 恒为调用方传入的原地址；direct 分支另报 target_new
-        # （新终端地址，调用方据此更新 --target）；shell 分支地址不变、无 target_new。
-        if args.switch_agent:
-            result["switch_agent"] = args.switch_agent
-            result["switch_form"] = ledger.get("switch_form")
-            if switch_new_target:
-                result["target_new"] = switch_new_target
+        # 命名会话（ADR-0009）：target 恒为传入地址（名字或 t 号），target_address 是解析
+        # t 号（审计定位）；launched/rebuilt/workspace/reset_skipped 等适用字段随 ctx 带出。
+        # turn 是终端级累计计数（复活会话 turn>0 但会话是空的）。
+        for k in ("target_address", "launched", "rebuilt", "rebuilt_old_target",
+                  "workspace", "reset_skipped"):
+            if k in ctx:
+                result[k] = ctx[k]
         ledger.update(phase="done", done_at=now_iso())
         write_json_atomic(ledger_path, ledger)
         emit_result(result, result_path)
@@ -1446,12 +1716,12 @@ def main(argv=None):
         if args.target_model:
             out["target_model"] = args.target_model
             out["error"]["model_sent"] = model_sent
-        if args.switch_agent:
-            out["switch_agent"] = args.switch_agent
-            if ledger is not None and ledger.get("switch_form"):
-                out["switch_form"] = ledger["switch_form"]
-            if switch_new_target:
-                out["target_new"] = switch_new_target
+        # 命名会话部分状态（ADR-0009）：终端已建/启动已发/旧会话已死/领养失败原因等如实报。
+        for k in ("target_address", "launched", "launch_sent", "rebuilt",
+                  "rebuilt_old_target", "workspace", "adopt_reason",
+                  "space_created", "pane_adopted", "reset_skipped"):
+            if k in ctx:
+                out[k] = ctx[k]
         if started is not None:
             out["error"]["elapsed_s"] = round(time.monotonic() - started, 1)
         if ledger is not None and ledger.get("run_record"):

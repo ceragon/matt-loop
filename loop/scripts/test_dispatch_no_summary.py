@@ -24,7 +24,7 @@ import os  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
 
-from test_dispatch_reset import PROMPT, SCREEN, FakeHc  # noqa: E402
+from test_dispatch_reset import PROMPT, SCREEN, FakeHc, FakeApp  # noqa: E402
 
 BASE = {"needs_user": False, "questions": [],
         "conclusion": "已完成该功能。", "blocked": "", "reply": SCREEN}
@@ -88,6 +88,7 @@ def main():
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
         pi_out = json.dumps(dict(BASE, summary="pi 瞎编的概括"), ensure_ascii=False)
         dispatch.hc_json = FakeHc()
+        dispatch.app_json = FakeApp()
         dispatch.run_cmd = lambda argv_, timeout: types.SimpleNamespace(
             returncode=0, stdout=pi_out, stderr="")
         dispatch.check_structure_and_tools = lambda: None

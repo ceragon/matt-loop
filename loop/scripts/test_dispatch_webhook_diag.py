@@ -36,7 +36,7 @@ import dispatch  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
 
-from test_dispatch_reset import EXT, PROMPT, FakeHc  # noqa: E402
+from test_dispatch_reset import EXT, PROMPT, FakeHc, FakeApp  # noqa: E402
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -88,6 +88,7 @@ def run_case(rid, opener):
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
         dispatch.hc_json = FakeHc()
+        dispatch.app_json = FakeApp()
         dispatch.extract = lambda pi_bin, args, raw_path: dict(EXT)
         dispatch.check_structure_and_tools = lambda: None
         dispatch.shutil.which = lambda name: "/fake/" + name
