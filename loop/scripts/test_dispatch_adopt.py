@@ -120,8 +120,10 @@ def main():
                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 0 and res["ok"], res
     kinds = [(c[0], c[1] if c[0] == "do" else None) for c in app.calls]
+    # 清理舞后接显示名落地（ADR-0010，harness 自动注入 DISPLAY）：ls→tab.rename→ls
     assert kinds == [("status", None), ("ls", None), ("do", "space.new"),
-                     ("do", "terminal.keep"), ("ls", None), ("do", "tab.close")], kinds
+                     ("do", "terminal.keep"), ("ls", None), ("do", "tab.close"),
+                     ("ls", None), ("do", "tab.rename"), ("ls", None)], kinds
     sp_new = json.loads(app.calls[2][2])
     assert sp_new == {"name": NAME, "folder": "/proj", "focus": False}, sp_new
     tab_close = json.loads(app.calls[5][2])
@@ -208,7 +210,8 @@ def main():
     rc, res, led, td = run_case(fake2, app3, "adopt-revive-fix", launch=LAUNCH, cwd="/proj",
                                 expect_proc="claude")
     assert rc == 0 and res["ok"], res
-    assert [c[0] for c in app3.calls] == ["status", "ls", "do", "ls"], app3.calls
+    # 预检补领养 [status,ls,do,ls] ＋启动后显示名落地 [ls,tab.rename,ls]（ADR-0010）
+    assert [c[0] for c in app3.calls] == ["status", "ls", "do", "ls", "ls", "do", "ls"], app3.calls
     assert fake2.sends == [("t50", LAUNCH, False), ("t50", PROMPT, True)], fake2.sends
     assert res["workspace"] == "adopted"
     print("9 revive pane gate: app closed stops round (id unconsumed), missing pane repaired ok")

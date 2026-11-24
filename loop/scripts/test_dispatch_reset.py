@@ -67,14 +67,15 @@ class FakeHc:
 
 class FakeApp:
     """herdr-app 桩（ADR-0009 第二桩，与 hc_json 同一缝背后；全套件共用这一个）：
-    status/ls/do（terminal.keep、space.new、tab.close）。panes 集合决定 ls 里谁有 pane；
+    status/ls/do（terminal.keep、space.new、tab.close、tab.rename）。panes 集合决定 ls 里谁有 pane；
     spaces 空列表＝本机无 space。默认 t99 有 pane（既有测试的目标）。
     keep 成功把 terminal 挂进第一个 space 的新 tab；keep_no_pane 模拟后台失败
     （命令成功但 pane 不落地）。tab.close 结束该 tab 终端（联动 hc 桩置 finished）。"""
 
     def __init__(self, hc=None, panes=("t99",), spaces=None, closed=False,
                  keep_error=False, keep_no_pane=False, space_new_error=False,
-                 tab_close_error=False):
+                 tab_close_error=False, rename_error=False, rename_noop=False,
+                 strip_tab_id=False):
         self.hc = hc
         self.calls = []
         self.panes = set(panes)
@@ -88,6 +89,11 @@ class FakeApp:
         self.keep_no_pane = keep_no_pane
         self.space_new_error = space_new_error
         self.tab_close_error = tab_close_error
+        # 显示名层（ADR-0010）失败旋钮：rename_error＝tab.rename 命令失败；
+        # rename_noop＝命令成功但名不落地（复核不符）；strip_tab_id＝ls 不暴露 tab id（定位不到）。
+        self.rename_error = rename_error
+        self.rename_noop = rename_noop
+        self.strip_tab_id = strip_tab_id
         self.gifted = None       # space.new 赠送的 shell 终端地址
         self._keep_n = 0
 
@@ -96,7 +102,8 @@ class FakeApp:
         for sp in self.spaces:
             tabs = []
             for tb in sp["tabs"]:
-                tabs.append({"id": tb["id"], "name": tb.get("name"),
+                tabs.append({"id": None if self.strip_tab_id else tb["id"],
+                             "name": tb.get("name"),
                              "terminals": [{"terminal": t["terminal"],
                                             "pane": ("p-" + t["terminal"])
                                             if t["terminal"] in self.panes else None}
@@ -152,6 +159,15 @@ class FakeApp:
                                     self.hc.terminals[t["terminal"]]["state"] = "finished"
                                 self.panes.discard(t["terminal"])
                             sp["tabs"].remove(tb)
+                return {}
+            if name == "tab.rename":
+                if self.rename_error:
+                    raise dispatch.AppFailure("rename_error", "tab.rename failed", [], 1,
+                                              {"error": "tab.rename failed"})
+                for sp in self.spaces:
+                    for tb in sp["tabs"]:
+                        if tb["id"] == payload["id"] and not self.rename_noop:
+                            tb["name"] = payload["name"]
                 return {}
             raise AssertionError("unexpected do command: " + name)
         raise AssertionError("unexpected app cmd: " + repr(args))
