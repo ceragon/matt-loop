@@ -69,6 +69,9 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
     或缺失时拒发（reset_required，退出码 2），放行 id 不消耗，补 --reset 同 id 可重试。
     分流判定创建/复活/重建的新鲜会话视同 turn 0 豁免、不看终端 turn（turn 是终端级
     累计计数，复活会话 turn>0 但会话是空的，ADR-0009 修正 ADR-0007）。
+    其前另有静态形态闸 split_required（ADR-0017，#61）：命中触发器且归一化 UTF-16
+    码元 >700 或含内部换行（尾部换行不算）时，在工具查找/hc get 之前拒发（退出码 2、
+    零发送零副作用、id 不消耗），先于 reset_required、不分 agent、与 --reset 独立。
   - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
     再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
     永不 --force，不碰 hc keys。

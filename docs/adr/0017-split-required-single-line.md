@@ -70,8 +70,9 @@ hc-core 二进制含 bracketed paste 标记字面量。
    每一轮全文都经用户授权，拆轮不绕过放行纪律。
 7. **文档纪律**：SKILL.md（description／Step 1／「会话起始 skill」节）与 REFERENCE.md
    （退出码清单／错误表／预检顺序／纪律段）同步；ADR-0004 加补记指向本 ADR。
-   GLOSSARY.md 与 CLAUDE.md 不动：闸值/退出码/归一化是机械细节非领域词汇；既有
-   「折叠」词条指回读折叠标记（ADR-0013），与粘贴折叠是两处机械，不新增词条避免混淆。
+   GLOSSARY.md 与 CLAUDE.md 不动：闸值/退出码/归一化是机械细节非领域词汇；GLOSSARY
+   「本轮原料」定义里的折叠判据指回读折叠标记（▲▼，ADR-0013），与粘贴折叠是两处机械，
+   不新增词条避免混淆。
 
 ## Considered Options
 
