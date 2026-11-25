@@ -822,6 +822,7 @@ def fold_hits(turn_text, prompt_text):
     自己发出去的已知文本不是 TUI 渲染证据。.turn.md 本身不动（逐字校验语料维持 ADR-0013）。
     残余（降级吸收）：回声首行带 ❯ 前缀、超宽行软换行碎段无法精确匹配；
     其他 kind 与键位重映射形态可能漏检（ADR-0019 缺口声明）。
+    返回值目前只取真值（是否命中）；行文本保留供人工复核对照，不进 result。
     """
     prompt_lines = {ln.strip() for ln in prompt_text.splitlines() if ln.strip()}
     hits = []

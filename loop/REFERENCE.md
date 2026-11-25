@@ -40,7 +40,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 | `extraction_rewritten` | 抽取字段全部未通过本轮原料逐字校验；message 按实际后端（api/pi）取值 | hints 逐字段给「字段名＋最接近原文整行」（零截断）＋本轮原料＋回读全文路径；可人工重做抽取 |
 | `extraction_failed` / `extraction_invalid` / `tool_timeout` | 抽取失败或子进程超护栏 | 原文已落盘，可人工重做抽取 |
 
-完整性判据（ADR-0019，#79）：**无完整性硬闸**。折叠判据只查**本轮原料**（与提示词行去首尾空白后精确相同的回声行不参与），只认 claude 实证形态、两独立分支：① 去前导空白后行首 `… +N lines`（… 恒 U+2026，允许 `(~K KB)` 等后缀与单数 `+1 line`）；② 行内含 `ctrl+o to expand`（覆盖 `› Message from @X (…)` 与 `⎿ Backgrounded agent (…)` 形态）。命中只标记 `complete:false`＋`complete_reason:["fold_markers"]`，抽取与 result 照常，供人复核；`incomplete_result` 退役。旧轮已折叠内容不误报本轮；锚点找不到而整段使用时，本轮原料就是全部回读，旧轮折叠仍可命中——诚实标记。判据只覆盖 claude code 2.1.331 实证形态，其他 kind（grok「首行 + …」、qwen 等）与键位重映射场景可能漏检，不为未实证形态加猜测性判据（ADR-0019 缺口声明）。锚点（提示词第一个非空行前 24 字符）降级为信息字段 `anchor_found`：完整性检查在 turn>基线＋落定之后，本轮确已被处理，超过 1000 行历史时回声仍可能不可得，故锚点搜不到不再阻断（PAW 实测多次误判后降级，ADR-0013 维持信息字段、不得恢复为硬判据）。hc read 自己的 `complete` 字段只记台账、不作判据。
+完整性标记（ADR-0019，#79）：**无完整性硬闸**。折叠判据（词条见 GLOSSARY）只查**本轮原料**（与提示词行去首尾空白后精确相同的回声行不参与），只认 claude 实证形态、两独立分支：① 去前导空白后行首 `… +N lines`（… 恒 U+2026，允许 `(~K KB)` 等后缀与单数 `+1 line`）；② 行内含 `ctrl+o to expand`（覆盖 `› Message from @X (…)` 与 `⎿ Backgrounded agent (…)` 形态）。命中只标记 `complete:false`＋`complete_reason:["fold_markers"]`，抽取与 result 照常，供人复核；`incomplete_result` 退役。旧轮已折叠内容不误报本轮；锚点找不到而整段使用时，本轮原料就是全部回读，旧轮折叠仍可命中——诚实标记。判据只覆盖 claude code 2.1.331 实证形态，其他 kind（grok「首行 + …」、qwen 等）与键位重映射场景可能漏检，不为未实证形态加猜测性判据（ADR-0019 缺口声明）。锚点（提示词第一个非空行前 24 字符）降级为信息字段 `anchor_found`：完整性检查在 turn>基线＋落定之后，本轮确已被处理，超过 1000 行历史时回声仍可能不可得，故锚点搜不到不再阻断（PAW 实测多次误判后降级，ADR-0013 维持信息字段、不得恢复为硬判据）。hc read 自己的 `complete` 字段只记台账、不作判据。
 
 监听（`hc get`/`hc read` 只读）随时可；直推（绕过 dispatch 主动发）仅在报错时，且内容仍须用户放行。正常回复一律走管道。
 

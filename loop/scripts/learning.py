@@ -381,6 +381,9 @@ class LearningStore:
 
         cross_space = bool(space_id and pred.get("space_id")
                            and space_id != pred.get("space_id"))
+        # 案例入池的排除原因（两处共用同一判定）：跨 space 先于折叠标记。
+        exclusion = "space_changed" if cross_space else (
+            "incomplete_turn" if pred.get("complete") is False else None)
         feedback = {
             "prev_release_id": pred.get("release_id"),
             "predicted_skill": predicted,
@@ -389,10 +392,8 @@ class LearningStore:
             "actual_type": actual_type,
             "verdict": verdict,
         }
-        if cross_space:
-            feedback["learning_excluded"] = "space_changed"
-        elif pred.get("complete") is False:
-            feedback["learning_excluded"] = "incomplete_turn"
+        if exclusion:
+            feedback["learning_excluded"] = exclusion
         # 案例：space id 缺失时不入池（无法确认隔离）；跨 space 或折叠标记轮入池但标 excluded。
         if space_id:
             case = {
@@ -411,10 +412,8 @@ class LearningStore:
                 "sequence": pred.get("sequence", []),
                 "examples_used": pred.get("examples_used", 0),
             }
-            if cross_space:
-                case["learning_excluded"] = "space_changed"
-            elif pred.get("complete") is False:
-                case["learning_excluded"] = "incomplete_turn"
+            if exclusion:
+                case["learning_excluded"] = exclusion
             if not any(c.get("predict_release_id") == case["predict_release_id"]
                        and c.get("actual_release_id") == release_id for c in cases):
                 cases.append(case)
