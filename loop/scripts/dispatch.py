@@ -148,6 +148,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -331,20 +332,21 @@ EXTRACT_BACKENDS = ("api", "pi")
 API_MAX_TOKENS_DEFAULT = 32768
 
 
-def resolve_extract_backend():
+def resolve_extract_backend(env=None):
     """LOOP_EXTRACT_BACKEND=api|pi，默认 api；非法值是参数类错误（退出码 2）。"""
-    v = os.environ.get("LOOP_EXTRACT_BACKEND", "api").strip().lower()
+    v = (env if env is not None else os.environ).get("LOOP_EXTRACT_BACKEND", "api").strip().lower()
     if v not in EXTRACT_BACKENDS:
         raise DispatchError("bad_extract_backend",
                             "LOOP_EXTRACT_BACKEND 值非法（只认 api|pi）", [], returncode=2)
     return v
 
 
-def api_config():
+def api_config(env=None):
     """读 API 三个 env＋可选 max_tokens；缺必填项报 api_not_configured
     （只列变量名，不带值），max_tokens 非法报 bad_api_max_tokens。启动预检用。"""
     names = ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL")
-    vals = {n: os.environ.get(n, "").strip() for n in names}
+    _env = env if env is not None else os.environ
+    vals = {n: _env.get(n, "").strip() for n in names}
     missing = [n for n in names if not vals[n]]
     if missing:
         raise DispatchError(
@@ -354,7 +356,7 @@ def api_config():
              "或设 LOOP_EXTRACT_BACKEND=pi 走 pi 备选"],
             returncode=2)
     try:
-        max_tokens = int(os.environ.get("LOOP_API_MAX_TOKENS", "").strip()
+        max_tokens = int(_env.get("LOOP_API_MAX_TOKENS", "").strip()
                          or API_MAX_TOKENS_DEFAULT)
         if max_tokens <= 0:
             raise ValueError
@@ -658,7 +660,7 @@ def notify_projection(result):
     return result
 
 
-def send_webhook(body):
+def send_webhook(body, deps=None):
     """可选 webhook 完成通知（Grok Bot 等支持 webhook 唤醒的调用方用）。
     env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，默认关。body 是调用方
     预先序列化好的通知投影字节（notify_projection → json.dumps 一次），本函数不再
@@ -672,8 +674,9 @@ def send_webhook(body):
     webhook_error 与 webhook_error_detail 保留主出口最后一次错误（与 detail["proxy"]
     一致），另带 attempts（总尝试次数），走过直连兜底时附 fallback_direct 与
     fallback_error，stderr 打印同一份脱敏诊断，都不含 URL/密钥/主机名/头内容。"""
-    url = os.environ.get("LOOP_WEBHOOK_URL")
-    secret = os.environ.get("LOOP_WEBHOOK_SECRET")
+    deps = deps if deps is not None else Deps()
+    url = deps.env.get("LOOP_WEBHOOK_URL")
+    secret = deps.env.get("LOOP_WEBHOOK_SECRET")
     if not url or not secret:
         return "off", None, None
     headers = {"Content-Type": "application/json",
@@ -687,7 +690,7 @@ def send_webhook(body):
         try:
             # 每次新建 Request：urllib ProxyHandler.proxy_open 会原地改写 req.host，复用会污染直连兜底
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            with webhook_open(req, WEBHOOK_TIMEOUT_S, proxies) as resp:
+            with deps.http_open(req, WEBHOOK_TIMEOUT_S, proxies) as resp:
                 resp.read()
             return "sent", None, None
         except Exception as e:
@@ -695,7 +698,7 @@ def send_webhook(body):
             if not _is_retryable_webhook_error(e):
                 break
             if i < len(WEBHOOK_RETRY_DELAYS):
-                time.sleep(WEBHOOK_RETRY_DELAYS[i])
+                deps.sleep(WEBHOOK_RETRY_DELAYS[i])
     fallback_exc = None
     fallback_direct = False
     if proxies and _is_retryable_webhook_error(primary_exc):
@@ -703,7 +706,7 @@ def send_webhook(body):
         attempts += 1
         try:
             req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            with webhook_open(req, WEBHOOK_TIMEOUT_S, {}) as resp:
+            with deps.http_open(req, WEBHOOK_TIMEOUT_S, {}) as resp:
                 resp.read()
             return "sent", None, None
         except Exception as e:
@@ -721,7 +724,7 @@ def send_webhook(body):
     return "failed", err, detail
 
 
-def emit_result(obj, result_path, notify_path):
+def emit_result(deps, obj, result_path, notify_path):
     """双产物交付（ADR-0014，#52 阶段一）。顺序：构造通知投影 → 只序列化一次 →
     写通知记录 notify.json → 首次 POST → 必要重试（复用同一组字节）→ 写全量结果
     result.json 并输出 stdout。通知记录字节与实际请求体完全相同（不追加换行），
@@ -740,7 +743,7 @@ def emit_result(obj, result_path, notify_path):
             obj["notify_record_error"] = type(e).__name__
             sys.stderr.write("[dispatch] 通知记录写入失败：%s %s（仍尝试唤醒；结果文件仍是事实源）\n"
                              % (type(e).__name__, e))
-    status, wh_err, wh_detail = send_webhook(body)
+    status, wh_err, wh_detail = send_webhook(body, deps)
     obj["webhook"] = status
     if wh_err is not None:
         obj["webhook_error"] = wh_err
@@ -899,9 +902,9 @@ def check_identity(terminal, args):
         )
 
 
-def find_app_bin():
+def find_app_bin(deps):
     """恒可见不变量要求 herdr-app；探不到即 missing_tool（创建/既有/复活共用）。"""
-    app_bin = find_tool("herdr-app")
+    app_bin = deps.locate("herdr-app")
     if not app_bin:
         raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 herdr-app",
                             ["恒可见不变量要求 herdr-app；装上后重试"])
@@ -919,11 +922,11 @@ def dialog_error(terminal):
     )
 
 
-def wait_for_result(hc_bin, args, baseline, deadline):
+def wait_for_result(deps, args, baseline, deadline):
     """hc wait 循环：状态变化即醒、到点 check-in、墙钟兜底。
     返回落定复核通过后的 hc get 结果。"""
     while True:
-        remaining = deadline - time.monotonic()
+        remaining = deadline - deps.monotonic()
         if remaining <= 0:
             raise DispatchError(
                 "timeout",
@@ -932,7 +935,7 @@ def wait_for_result(hc_bin, args, baseline, deadline):
             )
         t = min(args.check_in, remaining)
         try:
-            w = hc_json(hc_bin, ["wait", args.target, "--timeout", f"{t:.1f}"], t + WAIT_GUARD_MARGIN_S)
+            w = deps.hc_json(["wait", args.target, "--timeout", f"{t:.1f}"], t + WAIT_GUARD_MARGIN_S)
         except HcFailure as e:
             raise DispatchError("hc_failed", f"hc wait 失败：{e.message}", e.hints)
         reason = w.get("reason")
@@ -951,18 +954,18 @@ def wait_for_result(hc_bin, args, baseline, deadline):
         if reason == "status":
             state = w.get("status")
             if state == "blocked":
-                raise dialog_error(hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S))
+                raise dialog_error(deps.hc_json(["get", args.target], QUERY_GUARD_S))
             if state == "error":
                 raise DispatchError("target_error", "目标自报 error", ["到目标会话屏幕前查看"])
             if state in ("idle", "done") and w.get("turn", 0) > baseline:
-                outcome = settle(hc_bin, args, w["turn"])
+                outcome = settle(deps, args, w["turn"])
                 if outcome is not None:
                     return outcome
                 continue
             # working、或 turn 未过基线：继续等
             continue
         # timeout（check-in）及其他 reason：用 hc get 兜底核对一次
-        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
         if g.get("state") != "live":
             raise DispatchError("target_exited", "目标终端已结束", ["hc get 查看 reason"])
         state = status_state(g)
@@ -971,17 +974,17 @@ def wait_for_result(hc_bin, args, baseline, deadline):
         if state == "error":
             raise DispatchError("target_error", "目标自报 error", ["到目标会话屏幕前查看"])
         if state in ("idle", "done") and g.get("turn", 0) > baseline:
-            outcome = settle(hc_bin, args, g["turn"])
+            outcome = settle(deps, args, g["turn"])
             if outcome is not None:
                 return outcome
 
 
-def settle(hc_bin, args, wait_turn):
+def settle(deps, args, wait_turn):
     """落定复核：静置 settle_seconds 后 hc get，连续 settle_checks 次
     状态仍 idle/done 且 turn 不变才算落定。回到 working 等则返回 None 继续等。"""
     for _ in range(args.settle_checks):
-        time.sleep(args.settle_seconds)
-        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        deps.sleep(args.settle_seconds)
+        g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
         if g.get("state") != "live":
             raise DispatchError("target_exited", "落定复核时目标终端已结束", [])
         state = status_state(g)
@@ -994,13 +997,12 @@ def settle(hc_bin, args, wait_turn):
     return g
 
 
-def do_send(hc_bin, args, text, ledger, ledger_path):
+def do_send(deps, args, text, ledger, ledger_path):
     """--if idle 首发；被拒（status_mismatch）且 hc get 复核为 done 才补发一次。
     返回 (send, resent)。前置与主任务共用同一套发送护栏（裁定 6）：
     永不 --force、不碰 hc keys；被拒时零字节进入，不算重发。"""
     try:
-        send = hc_json(
-            hc_bin,
+        send = deps.hc_json(
             ["send", "--if", "idle", "--", args.target, text],
             SEND_GUARD_S,
         )
@@ -1010,7 +1012,7 @@ def do_send(hc_bin, args, text, ledger, ledger_path):
             kind = "send_refused" if e.kind == "blocked" else "hc_failed"
             raise DispatchError(kind, f"hc send 失败：{e.message}",
                                 e.hints + ["未再发送；台账已记录本次尝试"])
-        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
         if status_state(g) != "done":
             raise DispatchError(
                 "send_refused",
@@ -1020,7 +1022,7 @@ def do_send(hc_bin, args, text, ledger, ledger_path):
         ledger.update(phase="resending",
                       first_refusal={"kind": e.kind, "returncode": e.returncode})
         write_json_atomic(ledger_path, ledger)
-        g2 = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        g2 = deps.hc_json(["get", args.target], QUERY_GUARD_S)
         if g2.get("state") != "live" or status_state(g2) not in ("idle", "done"):
             raise DispatchError(
                 "send_refused",
@@ -1028,7 +1030,7 @@ def do_send(hc_bin, args, text, ledger, ledger_path):
                 ["目标可能已重新开始工作或停在弹框；本轮未再发送"],
             )
         try:
-            send = hc_json(hc_bin, ["send", "--", args.target, text], SEND_GUARD_S)
+            send = deps.hc_json(["send", "--", args.target, text], SEND_GUARD_S)
         except HcFailure as e2:
             raise DispatchError("send_refused", f"done 补发仍失败：{e2.message}",
                                 e2.hints + ["本轮不再发送；台账已记录两次尝试"])
@@ -1059,17 +1061,17 @@ def reset_settle(hc_bin, args):
     return True
 
 
-def wait_for_reset(hc_bin, args, deadline):
+def wait_for_reset(deps, args, deadline):
     """等前置（/new /clear /compact /model）落定：短轮询 hc get 至 idle/done，再屏幕静置复核。
     不要求 turn 增长（/clear、/model 可能不增 turn）。前置不抽取、不落 run_record。"""
     while True:
-        if time.monotonic() >= deadline:
+        if deps.monotonic() >= deadline:
             raise DispatchError(
                 "timeout",
                 "前置墙钟超时：目标仍未落定",
                 ["主任务未发送；本轮已停止，可经用户放行后另起一轮"],
             )
-        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+        g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
         if g.get("state") != "live":
             raise DispatchError("target_exited", "前置期间目标终端已结束", ["hc get 查看 reason"])
         state = status_state(g)
@@ -1078,10 +1080,10 @@ def wait_for_reset(hc_bin, args, deadline):
         if state == "error":
             raise DispatchError("target_error", "前置期间目标自报 error", ["到目标会话屏幕前查看"])
         if state in ("idle", "done"):
-            if reset_settle(hc_bin, args):
+            if reset_settle(deps.hc_bin, args):
                 return
             continue  # 屏幕仍在变（/clear 重绘 / /compact 收尾）：重新复核
-        time.sleep(RESET_POLL_S)  # working：短轮询
+        deps.sleep(RESET_POLL_S)  # working：短轮询
 
 
 # shell 包装（ADR-0009）：认作持久 shell 的进程名（basename、去登录前缀 -）。
@@ -1099,18 +1101,18 @@ def fg_is_shell(fg):
     return _proc_base(fg.get("name")) in SHELL_NAMES or _proc_base(first) in SHELL_NAMES
 
 
-def wait_for_shell_ready(hc_bin, target, deadline):
+def wait_for_shell_ready(deps, target, deadline):
     """创建后等 shell 就绪：短轮询 hc get 至 state live＋前台是 shell。
     刚 run 完名字可能短暂未解析（not_found 继续等）；终端结束/超时→launch_failed。"""
     while True:
-        if time.monotonic() >= deadline:
+        if deps.monotonic() >= deadline:
             raise DispatchError("launch_failed", "等新终端 shell 就绪超时",
                                 ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
         try:
-            g = hc_json(hc_bin, ["get", target], QUERY_GUARD_S)
+            g = deps.hc_json(["get", target], QUERY_GUARD_S)
         except HcFailure as e:
             if e.kind == "not_found":
-                time.sleep(RESET_POLL_S)
+                deps.sleep(RESET_POLL_S)
                 continue
             raise DispatchError("launch_failed", f"等 shell 就绪时 hc get 失败：{e.message}", e.hints)
         if g.get("state") != "live":
@@ -1118,18 +1120,18 @@ def wait_for_shell_ready(hc_bin, target, deadline):
                                 ["hc get 查看 reason；经用户放行后另起一轮"])
         if fg_is_shell(g.get("foreground") or {}):
             return g
-        time.sleep(RESET_POLL_S)
+        deps.sleep(RESET_POLL_S)
 
 
-def wait_for_agent_ready(hc_bin, args, deadline):
+def wait_for_agent_ready(deps, args, deadline):
     """等 agent 就绪：前台不再是 shell 且状态 idle/done。超时/终端结束→launch_failed；
     弹框/error 照常抛（既有 kind 不动）。返回就绪时的 hc get。"""
     while True:
-        if time.monotonic() >= deadline:
+        if deps.monotonic() >= deadline:
             raise DispatchError("launch_failed", "等 agent 就绪超时（启动命令已发）",
                                 ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
         try:
-            g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+            g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
         except HcFailure as e:
             if e.kind == "not_found":
                 # 名字只解析 live 终端：启动期间终端死亡即名字失解析。
@@ -1147,17 +1149,17 @@ def wait_for_agent_ready(hc_bin, args, deadline):
         fg = g.get("foreground") or {}
         if not fg_is_shell(fg) and state in ("idle", "done"):
             return g
-        time.sleep(RESET_POLL_S)
+        deps.sleep(RESET_POLL_S)
 
 
-def send_launch_command(hc_bin, args, ledger, ledger_path, ctx):
+def send_launch_command(deps, args, ledger, ledger_path, ctx):
     """启动前置发送（创建/复活共用）：shell 不是 agent、不报 idle，用裸 send（不带 --if）。
     启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽。
     只管发送不等就绪（#46 Bug3）：创建路径在发送与等就绪之间插领养（恒可见）。"""
     ledger.update(phase="launch_sending")
     write_json_atomic(ledger_path, ledger)
     try:
-        send = hc_json(hc_bin, ["send", "--", args.target, args.launch], SEND_GUARD_S)
+        send = deps.hc_json(["send", "--", args.target, args.launch], SEND_GUARD_S)
     except HcFailure as e:
         raise DispatchError("launch_failed", f"启动命令发送失败：{e.message}",
                             e.hints + ["主任务未发送；台账已记录本次尝试"])
@@ -1166,19 +1168,19 @@ def send_launch_command(hc_bin, args, ledger, ledger_path, ctx):
     write_json_atomic(ledger_path, ledger)
 
 
-def wait_launch_agent(hc_bin, args, ledger, ledger_path):
+def wait_launch_agent(deps, args, ledger, ledger_path):
     """等 agent 就绪＋核身份（创建/复活共用）。创建路径在领养之后跑（#46 Bug3）：
     卡弹框/超时失败时会话已领养可见，就绪失败另报状态、不影响可见性。"""
     ledger.update(phase="launch_waiting_agent")
     write_json_atomic(ledger_path, ledger)
-    g = wait_for_agent_ready(hc_bin, args, time.monotonic() + args.wall_clock)
+    g = wait_for_agent_ready(deps, args, deps.monotonic() + args.wall_clock)
     check_identity(g, args)
     ledger.update(phase="launch_done", launch_done_at=now_iso())
     write_json_atomic(ledger_path, ledger)
     return g
 
 
-def do_create(hc_bin, args, ledger, ledger_path, ctx):
+def do_create(deps, args, ledger, ledger_path, ctx):
     """创建前置（ADR-0009，单形态 shell 包装）：hc run --bg --keep --no-parent --name
     --cwd -- zsh -l→打 loop=1＋loop-agent=<expect-proc> 标签→等 shell 就绪→send 启动命令。
     等 agent 就绪＋核身份拆在 wait_launch_agent（#46 Bug3：主流程在两者之间插领养，
@@ -1189,7 +1191,7 @@ def do_create(hc_bin, args, ledger, ledger_path, ctx):
     try:
         # --no-parent（#46 Bug1）：命名会话无父链、独立于调用方终端——调用方背景
         # 终端退出/被杀不连带杀会话（die_with_parent 默认 true 会让会话活不过一轮），跨轮持久。
-        r = hc_json(hc_bin, ["run", "--bg", "--keep", "--no-parent", "--name", args.target,
+        r = deps.hc_json(["run", "--bg", "--keep", "--no-parent", "--name", args.target,
                              "--cwd", args.cwd, "--", "zsh", "-l"], SEND_GUARD_S)
     except HcFailure as e:
         raise DispatchError("launch_failed", f"hc run 创建命名会话失败（{e.kind}）：{e.message}",
@@ -1206,14 +1208,14 @@ def do_create(hc_bin, args, ledger, ledger_path, ctx):
     if args.expect_proc:
         labels.append("loop-agent=" + args.expect_proc)
     try:
-        hc_json(hc_bin, ["label", args.target, *labels], QUERY_GUARD_S)
+        deps.hc_json(["label", args.target, *labels], QUERY_GUARD_S)
     except HcFailure as e:
         raise DispatchError("launch_failed", f"打 loop 标签失败：{e.message}",
                             e.hints + ["终端已建（launched:true）；无标签终端下轮会被拒收编"])
     ledger.update(phase="launch_waiting_shell")
     write_json_atomic(ledger_path, ledger)
-    wait_for_shell_ready(hc_bin, args.target, time.monotonic() + args.wall_clock)
-    send_launch_command(hc_bin, args, ledger, ledger_path, ctx)
+    wait_for_shell_ready(deps, args.target, deps.monotonic() + args.wall_clock)
+    send_launch_command(deps, args, ledger, ledger_path, ctx)
 
 
 def find_pane(ls_data, address):
@@ -1237,11 +1239,11 @@ def find_pane_space(ls_data, address):
     return None
 
 
-def select_and_verify(app_bin, space_id):
+def select_and_verify(deps, space_id):
     """space.select＋只读 status 复核（命令成功不算数）；返回复核到的选中空间 id。
     命令/查询失败照抛 DispatchError，由调用方决定停轮还是降级。"""
-    app_json(app_bin, ["do", "space.select", json.dumps({"id": space_id})], QUERY_GUARD_S)
-    return app_json(app_bin, ["status"], QUERY_GUARD_S).get("space")
+    deps.app_json(["do", "space.select", json.dumps({"id": space_id})], QUERY_GUARD_S)
+    return deps.app_json(["status"], QUERY_GUARD_S).get("space")
 
 
 def resolve_space_id_for_learning(app_bin, space):
@@ -1283,7 +1285,7 @@ def find_tab(ls_data, address):
     return None
 
 
-def apply_display_name(app_bin, address, display_name, ledger, ledger_path, ctx):
+def apply_display_name(deps, address, display_name, ledger, ledger_path, ctx):
     """显示名落地（ADR-0010）：ls 定位 tab id → tab.rename → ls 复核 tab.name==显示名
     （命令成功不算数）。时序在领养复核 pane 落地后、前置/主任务发送前。
     失败降级告警不丢放行：rename 失败/复核不符/无 tab → ctx/台账记 display_name_warning
@@ -1291,13 +1293,14 @@ def apply_display_name(app_bin, address, display_name, ledger, ledger_path, ctx)
     硬闸（adopt_failed 语义不变）。result display_name 回显本轮传入值：落地步骤一跑就带
     （含 no_tab/ls 失败等未真正发出 rename 的降级情形，审计「请求了什么名」），成功与 error 都带。
     不写 summary 标签：机器可读靠自动跟随 tab 名的 where 标签。"""
+    deps.app_bin = find_app_bin(deps)
     ctx["display_name"] = display_name
     ledger.update(phase="naming", display_name=display_name)
     write_json_atomic(ledger_path, ledger)
     warning = None
     tab = None
     try:
-        ls = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+        ls = deps.app_json(["ls"], QUERY_GUARD_S)
         tab = find_tab(ls, address)
     except DispatchError as e:
         warning = {"reason": "rename_error", "detail": e.message}
@@ -1305,14 +1308,14 @@ def apply_display_name(app_bin, address, display_name, ledger, ledger_path, ctx)
         warning = {"reason": "no_tab", "detail": f"ls 里定位不到终端 {address} 所在 tab"}
     if warning is None:
         try:
-            app_json(app_bin, ["do", "tab.rename", json.dumps(
+            deps.app_json(["do", "tab.rename", json.dumps(
                 {"id": tab["id"], "name": display_name}, ensure_ascii=False)], QUERY_GUARD_S)
         except DispatchError as e:
             warning = {"reason": "rename_error", "detail": e.message}
     if warning is None:
         # 复核：命令成功不算数，必须只读 ls 核 tab.name 真的等于显示名。
         try:
-            ls2 = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+            ls2 = deps.app_json(["ls"], QUERY_GUARD_S)
             tab2 = find_tab(ls2, address)
             actual = tab2.get("name") if tab2 else None
         except DispatchError as e:
@@ -1329,7 +1332,7 @@ def apply_display_name(app_bin, address, display_name, ledger, ledger_path, ctx)
     write_json_atomic(ledger_path, ledger)
 
 
-def restore_space(app_bin, original, target, ledger, ledger_path, ctx):
+def restore_space(deps, original, target, ledger, ledger_path, ctx):
     """还原选中（#43 还原竞态护栏，ADR-0011）：keep 落地复核后（成功与失败路径都跑）
     把选中空间还原回领养前的原选中。护栏：先只读 status 核当前选中——仍是目标空间
     （用户没接管）才还原；用户已切走即跳过（user_switched），绝不抢回用户的视图。
@@ -1339,7 +1342,7 @@ def restore_space(app_bin, original, target, ledger, ledger_path, ctx):
     warning = None
     cur = None
     try:
-        cur = app_json(app_bin, ["status"], QUERY_GUARD_S).get("space")
+        cur = deps.app_json(["status"], QUERY_GUARD_S).get("space")
     except DispatchError as e:
         warning = {"reason": "restore_error", "detail": e.message}
     if warning is not None:
@@ -1352,7 +1355,7 @@ def restore_space(app_bin, original, target, ledger, ledger_path, ctx):
         outcome = "failed"
         cur2 = None
         try:
-            cur2 = select_and_verify(app_bin, original)
+            cur2 = select_and_verify(deps, original)
         except DispatchError as e:
             warning = {"reason": "restore_error", "detail": e.message}
         if warning is None:
@@ -1371,7 +1374,7 @@ def restore_space(app_bin, original, target, ledger, ledger_path, ctx):
         write_json_atomic(ledger_path, ledger)
 
 
-def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
+def adopt(deps, address, ledger, ledger_path, ctx, precheck, space,
           adopt_timeout=ADOPT_TIMEOUT_S, adopt_poll=ADOPT_POLL_S):
     """领养（ADR-0009 恒可见不变量）：status 探测→只读 ls 核 pane→缺则按 --space
     三态解析目标空间→（路径零匹配 space.new focus:false）→terminal.keep→带超时轮询
@@ -1388,6 +1391,7 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
     还原选中（restore_space 护栏，keep 失败路径也还原）。pane 已在则提前返回不抢。
     precheck=True（既有路径补领养）：写台账前，失败零发送、id 不消耗、同 id 重试；
     precheck=False（创建路径）：写台账后，失败保留已建终端、id 消耗、新 id 重试修复。"""
+    deps.app_bin = find_app_bin(deps)
     def fail(reason, message, hints):
         ctx["workspace"] = "failed"
         ctx["adopt_reason"] = reason
@@ -1409,11 +1413,11 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
         ledger.update(phase="adopting")
         write_json_atomic(ledger_path, ledger)
     try:
-        original_space = app_json(app_bin, ["status"], QUERY_GUARD_S).get("space")
+        original_space = deps.app_json(["status"], QUERY_GUARD_S).get("space")
     except DispatchError as e:
         fail("app_closed", f"herdr-app 没开或不可达，领养失败：{e.message}", retry)
     try:
-        ls = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+        ls = deps.app_json(["ls"], QUERY_GUARD_S)
     except DispatchError as e:
         fail("app_closed", f"herdr-app ls 失败，领养失败：{e.message}", retry)
     if find_pane(ls, address):
@@ -1463,7 +1467,7 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
     # name=目录名、folder=路径、focus:false 不抢视图；赠送 shell 清理绑 space_created。
     if space_new is not None:
         try:
-            r = app_json(app_bin, ["do", "space.new",
+            r = deps.app_json(["do", "space.new",
                                    json.dumps(space_new, ensure_ascii=False)], QUERY_GUARD_S)
         except DispatchError as e:
             fail("keep_error", f"space.new 失败：{e.message}", retry)
@@ -1477,7 +1481,7 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
         # 建后复核当前 shown：零空间时新空间即被显示（真实 app 语义），有空间时
         # focus:false 保持原 shown——目标==shown 则下面不 select。
         try:
-            original_space = app_json(app_bin, ["status"], QUERY_GUARD_S).get("space")
+            original_space = deps.app_json(["status"], QUERY_GUARD_S).get("space")
         except DispatchError as e:
             fail("keep_error", f"space.new 后 status 复核失败：{e.message}", retry)
     # select 目标空间＋status 复核选中（命令成功不算数），不符即 select_error 停轮
@@ -1494,11 +1498,11 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
             ledger.update(phase="space_selecting")
             write_json_atomic(ledger_path, ledger)
         try:
-            cur = select_and_verify(app_bin, space_target)
+            cur = select_and_verify(deps, space_target)
         except DispatchError as e:
             fail("select_error", f"space.select 失败：{e.message}", retry)
         if cur != space_target:
-            restore_space(app_bin, original_space, space_target, ledger, ledger_path, ctx)
+            restore_space(deps, original_space, space_target, ledger, ledger_path, ctx)
             fail("select_error",
                  f"space.select 复核选中={cur!r} ≠ 目标 {space_target!r}，keep 未发", retry)
         selection_switched = True
@@ -1509,17 +1513,17 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
             write_json_atomic(ledger_path, ledger)
     try:
         try:
-            app_json(app_bin, ["do", "terminal.keep",
+            deps.app_json(["do", "terminal.keep",
                                json.dumps({"terminal": address})], QUERY_GUARD_S)
         except DispatchError as e:
             fail("keep_error", f"terminal.keep 失败：{e.message}", retry)
         # keep 后台完成、失败弹 toast：命令成功不算数，必须只读 ls 复核 pane 落地。
         # 落地是异步的（#40）：单次 ls 可能跑在落地之前而误判 no_pane，改带超时轮询——
         # 窗口内反复只读 ls，pane 出现即成功；窗口耗尽仍无 pane 才报 no_pane（keep 真失败如实报）。
-        deadline = time.monotonic() + adopt_timeout
+        deadline = deps.monotonic() + adopt_timeout
         while True:
             try:
-                ls2 = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+                ls2 = deps.app_json(["ls"], QUERY_GUARD_S)
             except DispatchError as e:
                 fail("app_closed", f"keep 后 herdr-app ls 失败：{e.message}", retry)
             if find_pane(ls2, address):
@@ -1545,12 +1549,12 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
                         if ledger is not None:
                             ledger.update(space_target_warning=w)
                 break
-            if time.monotonic() >= deadline:
+            if deps.monotonic() >= deadline:
                 fail("no_pane", "keep 后轮询窗口耗尽仍无 pane（后台落地失败）", retry)
-            time.sleep(adopt_poll)
+            deps.sleep(adopt_poll)
     finally:
         if selection_switched:
-            restore_space(app_bin, original_space, space_target, ledger, ledger_path, ctx)
+            restore_space(deps, original_space, space_target, ledger, ledger_path, ctx)
     if ctx.get("space_created"):
         # 清理赠送 shell（绑 space_created，#43 定稿）：找本终端所在 space（刚建、只有赠送 tab＋keep tab），
         # 其余 tab 即赠送 shell——tab.close 结束终端，再 hc rm 清 finished 条目。
@@ -1563,7 +1567,7 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
             if address in addrs:
                 continue
             try:
-                app_json(app_bin, ["do", "tab.close", json.dumps(
+                deps.app_json(["do", "tab.close", json.dumps(
                     {"id": tb["id"], "confirmed": True})], QUERY_GUARD_S)
             except DispatchError as e:
                 gift_warning("tab_close_error", f"关闭赠送 shell tab 失败：{e.message}")
@@ -1572,11 +1576,11 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
                 # tab.close 异步结束终端（#46 Bug2，与 #40 同类竞态）：单次 rm 会撞
                 # live 被拒（退出码 1）。带超时轮询 hc get 等 finished（复用
                 # --adopt-timeout/--adopt-poll）再 rm；清理失败降级告警不丢放行。
-                deadline = time.monotonic() + adopt_timeout
+                deadline = deps.monotonic() + adopt_timeout
                 outcome = "finished"
                 while True:
                     try:
-                        g = hc_json(hc_bin, ["get", a], QUERY_GUARD_S)
+                        g = deps.hc_json(["get", a], QUERY_GUARD_S)
                     except HcFailure as e:
                         if e.kind == "not_found":
                             outcome = "gone"
@@ -1584,14 +1588,14 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
                         g = None    # 瞬时错误：窗口内继续轮询，耗尽才报
                     if g is not None and g.get("state") == "finished":
                         break
-                    if time.monotonic() >= deadline:
+                    if deps.monotonic() >= deadline:
                         outcome = "poll_error" if g is None else "timeout"
                         break
-                    time.sleep(adopt_poll)
+                    deps.sleep(adopt_poll)
                 if outcome == "gone":
                     continue    # 条目已不在，无需 rm
                 try:
-                    hc_json(hc_bin, ["rm", a], QUERY_GUARD_S)
+                    deps.hc_json(["rm", a], QUERY_GUARD_S)
                 except DispatchError as e:
                     if e.kind == "not_found":
                         continue    # get 与 rm 之间条目被收走，视同清理完成
@@ -1823,8 +1827,60 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
-def main(argv=None):
+class Deps:
+    """外部世界的七件事（ADR-0016 决定 3）：hc_json / app_json 两个命令层调用、
+    monotonic + sleep 时钟、只读环境变量映射 env、工具定位 locate、http_open、
+    run_cmd、extract。默认实现在**调用时**才解析模块级旧全局（不在构造时绑定），
+    因此现有测试的注入方式（dispatch.hc_json = fake 等）照旧生效。
+    hc_bin / app_bin / pi_bin 由 main 在原有解析点填入，调用链不再逐层透传。"""
+
+    def __init__(self, *, hc_json=None, app_json=None, monotonic=None, sleep=None,
+                 env=None, locate=None, http_open=None, run_cmd=None, extract=None):
+        self._hc_json = hc_json
+        self._app_json = app_json
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._env = env
+        self._locate = locate
+        self._http_open = http_open
+        self._run_cmd = run_cmd
+        self._extract = extract
+        self.hc_bin = None
+        self.app_bin = None
+        self.pi_bin = None
+
+    def hc_json(self, args, timeout_s):
+        return (self._hc_json or hc_json)(self.hc_bin, args, timeout_s)
+
+    def app_json(self, args, timeout_s):
+        return (self._app_json or app_json)(self.app_bin, args, timeout_s)
+
+    def monotonic(self):
+        return (self._monotonic or time.monotonic)()
+
+    def sleep(self, s):
+        return (self._sleep or time.sleep)(s)
+
+    @property
+    def env(self):
+        return self._env if self._env is not None else types.MappingProxyType(os.environ)
+
+    def locate(self, name, probe_dirs=None):
+        return (self._locate or find_tool)(name, probe_dirs)
+
+    def http_open(self, req, timeout, proxies):
+        return (self._http_open or webhook_open)(req, timeout, proxies)
+
+    def run_cmd(self, argv, timeout_s):
+        return (self._run_cmd or run_cmd)(argv, timeout_s)
+
+    def extract(self, args, turn_path):
+        return (self._extract or extract)(self.pi_bin, args, turn_path)
+
+
+def main(argv=None, *, deps=None):
     args = parse_args(argv)
+    deps = deps if deps is not None else Deps()
     ledger = None
     ledger_path = None
     result_path = None
@@ -1870,9 +1926,9 @@ def main(argv=None):
         check_structure_and_tools()
         # 抽取后端启动预检（ADR-0005）：api 缺配置立刻报错，不跑完一轮才发现；
         # pi 备选才需要 find_tool(pi)，api 路径不依赖 node/pi。
-        backend = resolve_extract_backend()
+        backend = resolve_extract_backend(deps.env)
         if backend == "api":
-            api_config()
+            api_config(deps.env)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", args.release_id):
             raise DispatchError("bad_release_id", "放行 id 只允许字母数字与 ._-，且不以符号开头", [])
         task_name = generate_short_task_name(args.release_id)
@@ -1939,11 +1995,11 @@ def main(argv=None):
                     ["改提示词文件为单行命令（只带短参数）后用同一放行 id 重试（零发送、id 不消耗）",
                      "长正文请用户重新放行、新 id 下一轮发；纪律与证据见 SKILL.md「会话起始 skill」（ADR-0017）"],
                     returncode=2)
-        hc_bin = find_tool("hc")
-        pi_bin = find_tool("pi") if backend == "pi" else None
-        if not hc_bin:
+        deps.hc_bin = deps.locate("hc")
+        deps.pi_bin = deps.locate("pi") if backend == "pi" else None
+        if not deps.hc_bin:
             raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 hc", [])
-        if backend == "pi" and not pi_bin:
+        if backend == "pi" and not deps.pi_bin:
             raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 pi",
                                 ["某些机器非交互 shell 的 PATH 里没有 node；"
                                  "脚本已探 ~/.local/bin、homebrew、nvm node bin 仍未果"])
@@ -1952,7 +2008,7 @@ def main(argv=None):
         #    not_found/finished→创建（finished 同名重建、旧条目按 t 号留审计）；
         #    live→既有路径（核身份→idle 核对→发送）。
         try:
-            g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
+            g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
         except HcFailure as e:
             if e.kind != "not_found":
                 raise
@@ -2044,14 +2100,14 @@ def main(argv=None):
             if branch == "revive":
                 # 复活同样过预检 pane 闸（US26：app 没开时所有轮次停摆，无隐性例外）；
                 # 启动机械本身不 run、不重写标签（Decision 5）。
-                adopt(hc_bin, find_app_bin(), ctx["target_address"],
+                adopt(deps, ctx["target_address"],
                       None, None, ctx, True, args.space,
                       adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
         else:
             # 身份已在分流核过（identity_ok）。恒可见（ADR-0009）：既有路径每轮预检
             # （写台账前）核 pane，缺则补领养（park 等造成的可见性漂移自愈）；补不成→
             # adopt_failed，零发送、id 不消耗、同 id 重试。app 没开时所有轮次停摆（已接受的代价）。
-            adopt(hc_bin, find_app_bin(), g.get("address") or args.target,
+            adopt(deps, g.get("address") or args.target,
                   None, None, ctx, True, args.space,
                   adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
             state = status_state(g)
@@ -2136,7 +2192,7 @@ def main(argv=None):
                 ledger.update(phase="rebuild_killing")
                 write_json_atomic(ledger_path, ledger)
                 try:
-                    hc_json(hc_bin, ["kill", args.target], SEND_GUARD_S)
+                    deps.hc_json(["kill", args.target], SEND_GUARD_S)
                 except HcFailure as e:
                     raise DispatchError("launch_failed", f"重建 kill 占位者失败：{e.message}",
                                         e.hints + ["占位者未死；本轮停止，经用户放行后另起一轮"])
@@ -2144,23 +2200,23 @@ def main(argv=None):
                 ctx["rebuilt_old_target"] = ctx.get("target_address")
                 ledger.update(rebuilt=True, rebuilt_old_target=ctx["rebuilt_old_target"])
                 write_json_atomic(ledger_path, ledger)
-            do_create(hc_bin, args, ledger, ledger_path, ctx)
-            adopt(hc_bin, find_app_bin(), ctx["target_address"],
+            do_create(deps, args, ledger, ledger_path, ctx)
+            adopt(deps, ctx["target_address"],
                   ledger, ledger_path, ctx, False, args.space,
                   adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
-            wait_launch_agent(hc_bin, args, ledger, ledger_path)
+            wait_launch_agent(deps, args, ledger, ledger_path)
         elif branch == "revive":
             # 复活（ADR-0009）：不 run、不重写标签；原地重发启动命令→等 agent 就绪→核身份
             # （领养已在预检做过）。名字/cwd/终端级历史不动，会话是空的。
-            send_launch_command(hc_bin, args, ledger, ledger_path, ctx)
-            wait_launch_agent(hc_bin, args, ledger, ledger_path)
+            send_launch_command(deps, args, ledger, ledger_path, ctx)
+            wait_launch_agent(deps, args, ledger, ledger_path)
 
         # 2.45) 显示名落地（ADR-0010）：领养复核 pane 落地后、前置/主任务发送前。
         #       创建/重建在领养成功之后、复活在启动命令发出 agent 就绪之后（上面各分支已就绪）；
         #       既有路径仅当传了显示名（复用轮可选，传了就覆盖、不传不碰）。新鲜路径必传（预检已核）。
         #       失败降级 display_name_warning 不丢放行；pane 落地仍是硬闸。
         if args.display_name is not None:
-            apply_display_name(find_app_bin(), ctx.get("target_address"),
+            apply_display_name(deps, ctx.get("target_address"),
                                args.display_name, ledger, ledger_path, ctx)
 
         # 2.47) 学习准备（ADR-0012，#48 阶段二）：LOOP_LEARNING=off 时整段跳过，原有
@@ -2172,7 +2228,8 @@ def main(argv=None):
         learning_space_id = None
         if learning_on:
             learning_store = learning.LearningStore()
-            learning_space_id = resolve_space_id_for_learning(find_app_bin(), args.space)
+            deps.app_bin = find_app_bin(deps)
+            learning_space_id = resolve_space_id_for_learning(deps.app_bin, args.space)
             if learning_space_id is None:
                 ctx["learning_warning"] = {
                     "reason": "space_id_missing",
@@ -2192,11 +2249,11 @@ def main(argv=None):
             reset_cmd = "/" + args.reset
             ledger.update(phase="reset_sending")
             write_json_atomic(ledger_path, ledger)
-            pre_send, pre_resent = do_send(hc_bin, args, reset_cmd, ledger, ledger_path)
+            pre_send, pre_resent = do_send(deps, args, reset_cmd, ledger, ledger_path)
             reset_sent = True
             ledger.update(phase="reset_waiting", reset_send=pre_send, reset_resent=pre_resent)
             write_json_atomic(ledger_path, ledger)
-            wait_for_reset(hc_bin, args, time.monotonic() + args.wall_clock)
+            wait_for_reset(deps, args, deps.monotonic() + args.wall_clock)
             ledger.update(phase="reset_done", reset_done_at=now_iso())
             write_json_atomic(ledger_path, ledger)
 
@@ -2209,17 +2266,17 @@ def main(argv=None):
             model_cmd = "/model " + args.target_model
             ledger.update(phase="model_sending")
             write_json_atomic(ledger_path, ledger)
-            pre_send, pre_resent = do_send(hc_bin, args, model_cmd, ledger, ledger_path)
+            pre_send, pre_resent = do_send(deps, args, model_cmd, ledger, ledger_path)
             model_sent = True
             ledger.update(phase="model_waiting", model_send=pre_send, model_resent=pre_resent)
             write_json_atomic(ledger_path, ledger)
-            wait_for_reset(hc_bin, args, time.monotonic() + args.wall_clock)
+            wait_for_reset(deps, args, deps.monotonic() + args.wall_clock)
             ledger.update(phase="model_done", model_done_at=now_iso())
             write_json_atomic(ledger_path, ledger)
 
         # 3) 主任务发送（墙钟从主任务发送成功起计，不重置）。
-        started = time.monotonic()
-        send, resent = do_send(hc_bin, args, text, ledger, ledger_path)
+        started = deps.monotonic()
+        send, resent = do_send(deps, args, text, ledger, ledger_path)
         baseline = send["turn"]
         ledger.update(phase="sent_waiting", sent_at=now_iso(), send=send, resent=resent)
         write_json_atomic(ledger_path, ledger)
@@ -2237,10 +2294,10 @@ def main(argv=None):
 
         # 4) 等待落定（墙钟从主任务发送成功起计）。
         deadline = started + args.wall_clock
-        final = wait_for_result(hc_bin, args, baseline, deadline)
+        final = wait_for_result(deps, args, baseline, deadline)
 
         # 5) 回读（最近 1000 行拼接历史＋当前屏，ADR-0013）＋断轮＋完整性检查。
-        read = hc_json(hc_bin, ["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)
+        read = deps.hc_json(["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)
         screen = read["text"]
         # 锚点（提示词回声首行前缀）只作信息、不阻断：本步已在 turn>基线＋落定之后，
         # 本轮确已被处理；超过 1000 行历史时回声仍可能不可得，锚点搜不到不代表
@@ -2252,7 +2309,7 @@ def main(argv=None):
         # 启发式误报代价（丢整轮）远大于漏检代价（result 带 complete:false 供人复核）。
         reasons = ["fold_markers"] if fold_hits(turn_text, text) else []
         complete = not reasons
-        elapsed = round(time.monotonic() - started, 1)
+        elapsed = round(deps.monotonic() - started, 1)
 
         # 6) 双文件逐字落盘（不加任何头尾）：回读全文（审计，含旧轮）＋本轮段
         #    （抽取器输入＋校验语料）；台账记读取元信息与断轮留痕。
@@ -2286,7 +2343,7 @@ def main(argv=None):
             seq_snapshot = inj.get("sequence", [])
             if inj.get("warning") is not None:
                 ctx["learning_warning"] = inj["warning"]
-        ext = extract(pi_bin, args, turn_path)
+        ext = deps.extract(args, turn_path)
         reply = ext.pop("reply")
         # 逐字校验语料＝本轮原料（ADR-0013）：旧轮文本不参与通过判定。
         rewritten = verify_extraction(ext, turn_text, turn_path, raw_path, backend)
@@ -2345,7 +2402,7 @@ def main(argv=None):
                 result[k] = ctx[k]
         ledger.update(phase="done", done_at=now_iso())
         write_json_atomic(ledger_path, ledger)
-        emit_result(result, result_path, notify_path)
+        emit_result(deps, result, result_path, notify_path)
         return 0
     except DispatchError as e:
         if ledger is not None and ledger_path is not None:
@@ -2382,14 +2439,14 @@ def main(argv=None):
             if k in ctx:
                 out[k] = ctx[k]
         if started is not None:
-            out["error"]["elapsed_s"] = round(time.monotonic() - started, 1)
+            out["error"]["elapsed_s"] = round(deps.monotonic() - started, 1)
         if ledger is not None and ledger.get("run_record"):
             out["error"]["run_record"] = ledger["run_record"]
         # 完整性标记（ADR-0019）：回读后发生的错误（如抽取失败）不丢折叠标记。
         if ledger is not None and "complete" in ledger:
             out["complete"] = ledger["complete"]
             out["complete_reason"] = ledger["complete_reason"]
-        emit_result(out, result_path, notify_path)
+        emit_result(deps, out, result_path, notify_path)
         return e.returncode
 
 
