@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_webhook.py — 可选 webhook 完成通知测试（mock hc/pi/urllib，不打真实端点）。
 
-跑法：python3.12 loop/scripts/test_dispatch_webhook.py
+跑法：python3.12 tests/test_dispatch_webhook.py
 覆盖：
   1 默认关：未配 env，webhook=off，不 POST，无 webhook_error。
   2 配 env＋POST 成功：webhook=sent，Authorization: Bearer、无 X-Loop-Secret、成功正文严格 13 字段投影（release_id/target 在内、task_name 只在全量结果）、无 expect_proc、密钥不进 stdout。
@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 from test_dispatch_reset import FakeHc, run_case  # noqa: E402
 

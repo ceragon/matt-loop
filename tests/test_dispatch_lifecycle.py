@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_lifecycle.py — 会话生命周期三 bug 测试（#46，ADR-0009/0011 修订，mock hc/herdr-app）。
 
-跑法：python3 loop/scripts/test_dispatch_lifecycle.py
+跑法：python3 tests/test_dispatch_lifecycle.py
 缝：分发脚本 CLI 契约（与 get_or_create/adopt/space 同一缝，NamedFakeHc/FakeApp 复用）。
 覆盖：
   1 Bug1 命名会话独立于调用方：创建/重建的 hc run 必带 --no-parent（调用方背景终端退出不连带杀）。
@@ -17,7 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402,F401
 import os  # noqa: E402
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"

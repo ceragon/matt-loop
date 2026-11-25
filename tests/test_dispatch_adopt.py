@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_adopt.py — 领养／恒可见不变量测试（ADR-0009，mock hc/herdr-app）。
 
-跑法：python3 loop/scripts/test_dispatch_adopt.py
+跑法：python3 tests/test_dispatch_adopt.py
 缝：分发脚本 CLI 契约（与 get_or_create 同一缝，FakeHc/FakeApp 复用）。
 覆盖：
   1 既有路径 pane 在：只读 status＋ls，不 keep；result workspace=adopted。
@@ -24,7 +24,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import os  # noqa: E402
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"

@@ -2,7 +2,7 @@
 """Minimal unit tests for task name generation. Do not call real agents."""
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "loop" / "scripts"))
 from dispatch import generate_short_task_name, validate_task_name, TASK_NAME_RE
 
 def test_generate_short():

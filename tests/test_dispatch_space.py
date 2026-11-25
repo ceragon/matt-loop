@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_space.py — 空间定位测试（#43 grill 定稿，ADR-0011，mock hc/herdr-app）。
 
-跑法：python3 loop/scripts/test_dispatch_space.py
+跑法：python3 tests/test_dispatch_space.py
 缝：分发脚本 CLI 契约（与 get_or_create/adopt 同一缝，NamedFakeHc/FakeApp 复用）。
 --space 必传，三态解析：/ 或 ~ 开头→路径（folder 匹配，唯一复用/零个 space.new
 {name:目录名,folder,focus:false}/多个 space_ambiguous）；sp 前缀→id 直配；
@@ -36,7 +36,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import os  # noqa: E402
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"

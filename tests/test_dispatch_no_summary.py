@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_no_summary.py — summary 移除回归测试（mock hc/pi，不打真实 agent）。
 
-跑法：python3.12 loop/scripts/test_dispatch_no_summary.py
+跑法：python3.12 tests/test_dispatch_no_summary.py
 覆盖：
   1 parse_extraction：pi 不给 summary → 照常解析，结果无 summary 键。
   2 parse_extraction：pi 多给 summary（字符串或任意类型）→ 直接丢弃，不报错。
@@ -18,7 +18,7 @@ import tempfile
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import os  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。

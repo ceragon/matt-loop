@@ -8,7 +8,7 @@ import argparse
 import importlib.util
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
+HERE = Path(__file__).resolve().parent.parent / "loop" / "scripts"
 spec = importlib.util.spec_from_file_location("dispatch", HERE / "dispatch.py")
 dispatch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dispatch)

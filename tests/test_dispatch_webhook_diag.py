@@ -2,7 +2,7 @@
 """test_dispatch_webhook_diag.py — webhook 失败诊断与出网代理选择测试
 （mock hc/pi/urllib，不打真实端点）。
 
-跑法：python3 loop/scripts/test_dispatch_webhook_diag.py
+跑法：python3 tests/test_dispatch_webhook_diag.py
 覆盖：
   1 连接被拒（URLError/ConnectionRefusedError）：type/reason_type/errno/errno_name。
   2 DNS 失败（URLError/gaierror）：errno_name 给 EAI_*，不给 POSIX 名字。
@@ -31,7 +31,7 @@ import tempfile
 import urllib.error
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"

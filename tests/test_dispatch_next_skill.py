@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_next_skill.py — next_skill 预测字段测试（ADR-0008 修订，#48 阶段一）。
 
-跑法：python3 loop/scripts/test_dispatch_next_skill.py
+跑法：python3 tests/test_dispatch_next_skill.py
 缝：分发脚本 CLI 契约（进程内 import dispatch，mock hc/网络，不打真实 agent）＋
     learning.project_next_skill 纯函数＋extract.md 文本契约。
 覆盖：
@@ -22,7 +22,7 @@ import tempfile
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import learning  # noqa: E402
 
@@ -165,7 +165,7 @@ def main():
     print("7 e2e pi: passthrough + six-field instruction ok")
 
     # 8 extract.md 规格、例外、七候选、优先级在位
-    md = (Path(__file__).resolve().parent.parent / "prompts" / "extract.md")
+    md = (Path(__file__).resolve().parent.parent / "loop" / "prompts" / "extract.md")
     text = md.read_text(encoding="utf-8")
     assert "next_skill" in text and "唯一推测字段" in text
     assert "唯一例外是 `next_skill`" in text

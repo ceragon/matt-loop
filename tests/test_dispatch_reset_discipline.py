@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_reset_discipline.py — 会话起始 skill 纪律测试（ADR-0004，mock hc/pi）。
 
-跑法：python3 loop/scripts/test_dispatch_reset_discipline.py
+跑法：python3 tests/test_dispatch_reset_discipline.py
 覆盖：
   1 纯函数 find_session_start_trigger：五个 skill 行首命中（带参/无空格带参/行前空白/
     多行行号/CRLF/报长名）；行中提及、/implementing、/implement-foo、/prototype2、
@@ -24,7 +24,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 from test_dispatch_reset import FakeApp  # noqa: E402
 import os  # noqa: E402

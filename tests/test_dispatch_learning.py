@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_learning.py — next_skill 机械反馈＋space 隔离在线 few-shot（ADR-0012，#48 阶段二）。
 
-跑法：python3 loop/scripts/test_dispatch_learning.py
+跑法：python3 tests/test_dispatch_learning.py
 缝：learning.py 公开函数/事务（临时目录真文件 I/O）＋分发脚本 CLI 契约（mock hc/app/网络）。
 覆盖：
   纯机械：parse_actual_skill / classify / project_next_skill 边界。
@@ -21,7 +21,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import learning  # noqa: E402
 

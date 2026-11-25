@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_split_required.py — 会话起始 skill 命令行形态闸测试（ADR-0017，#61，mock hc/pi）。
 
-跑法：python3 loop/scripts/test_dispatch_split_required.py
+跑法：python3 tests/test_dispatch_split_required.py
 覆盖（14 例，只钉外部行为：退出码/stdout/result.json 形状/台账/mock hc 调用数）：
   1 纯函数计量：normalize_paste（CRLF/CR→LF、tab→4 空格）、utf16_units（中文 1/emoji 2）、
     has_internal_newline（尾换行不算多行、内部空行算）。
@@ -27,7 +27,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 from test_dispatch_reset import FakeApp  # noqa: E402
 import os  # noqa: E402

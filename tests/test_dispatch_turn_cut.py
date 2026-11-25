@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_turn_cut.py — 长回复历史回读、断轮与可读抽取失败诊断（#50，ADR-0013）。
 
-跑法：python3 loop/scripts/test_dispatch_turn_cut.py
+跑法：python3 tests/test_dispatch_turn_cut.py
 缝：沿用现有唯一测试缝（进程内替换 hc/herdr-app/抽取器边界，驱动 dispatch.main），
 零新增缝。只断言外部行为：result JSON、退出码、台账、落盘文件内容。
 
@@ -22,7 +22,7 @@ import tempfile
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 from test_dispatch_reset import PROMPT, ANCHOR, FakeHc, FakeApp  # noqa: E402
 from test_dispatch_api_extract import api_env, FakeResp  # noqa: E402
