@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""test_dispatch_turn_cut.py — 长回复历史回读、断轮与可读抽取失败诊断（#50，ADR-0013）。
+
+跑法：python3 loop/scripts/test_dispatch_turn_cut.py
+缝：沿用现有唯一测试缝（进程内替换 hc/herdr-app/抽取器边界，驱动 dispatch.main），
+零新增缝。只断言外部行为：result JSON、退出码、台账、落盘文件内容。
+
+覆盖（规格五组）：
+  1 断轮：❯ 回声优先／回复引用锚点不误切／无 ❯ 退化锚点最后出现行／无锚点整段。
+  2 作用域：折叠与逐字校验只对本轮段；整段使用时旧轮折叠诚实阻断。
+  3 双文件与结果：raw/turn/run 三产物各指正确内容；台账 echo_found/切点/段字符数。
+  4 错误载荷：extraction_rewritten 逐字段整行 hint、双路径、按实际后端取文案。
+  5 回归：其余纯文本 300 字符护栏不动；回读请求 --lines 1000。
+"""
+import contextlib
+import io
+import json
+import os
+import sys
+import tempfile
+import types
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dispatch  # noqa: E402
+from test_dispatch_reset import PROMPT, ANCHOR, FakeHc, FakeApp  # noqa: E402
+from test_dispatch_api_extract import api_env, FakeResp  # noqa: E402
+
+# test_dispatch_reset 导入时已设 LOOP_EXTRACT_BACKEND=pi、LOOP_LEARNING=off。
+REAL_EXTRACT = dispatch.extract   # 真实抽取入口（后端输入测试用，不被桩污染）
+REAL_HC_JSON = dispatch.hc_json   # 真实 hc/app 咽喉（护栏回归用，run_round 会换桩）
+REAL_APP_JSON = dispatch.app_json
+
+OLD = "旧轮回复第一行\n旧轮回复第二行"
+ECHO = "❯ " + ANCHOR + " …"
+NEW = "本轮回复第一行\n本轮回复第二行"
+
+
+class RecordingHc(FakeHc):
+    """记录 read 调用参数（核对 --lines 1000），其余照 FakeHc。"""
+
+    def __init__(self):
+        super().__init__()
+        self.reads = []
+
+    def __call__(self, hc_bin, args, timeout_s):
+        if args[0] == "read":
+            self.reads.append(list(args))
+        return super().__call__(hc_bin, args, timeout_s)
+
+
+def run_round(screen, rid, ext, prompt=PROMPT, mock_extract=True):
+    """驱动主入口；mock_extract=True 时抽取器边界替换为返回给定 ext 的桩，
+    并记录其输入路径与内容；False 时用真实抽取入口（调用方自备网络/pi 桩与 env）。"""
+    with tempfile.TemporaryDirectory() as td:
+        pf = Path(td) / "prompt.md"
+        pf.write_text(prompt, encoding="utf-8")
+        ld = Path(td) / ".loop"
+        argv = ["--target", "t99", "--release-id", rid,
+                "--prompt-file", str(pf), "--loop-dir", str(ld),
+                "--space", "main",
+                "--wall-clock", "5", "--check-in", "1",
+                "--settle-seconds", "0.01", "--settle-checks", "2"]
+        fake = RecordingHc()
+        fake.screen = screen
+        captured = {}
+
+        def fake_extract(pi_bin, args, path):
+            captured["extract_path"] = str(path)
+            captured["extract_input"] = Path(path).read_text(encoding="utf-8")
+            return dict(ext)
+
+        dispatch.hc_json = fake
+        dispatch.app_json = FakeApp()
+        dispatch.extract = fake_extract if mock_extract else REAL_EXTRACT
+        dispatch.check_structure_and_tools = lambda: None
+        dispatch.shutil.which = lambda name: "/fake/" + name
+        dispatch.time.sleep = lambda s: None
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = dispatch.main(argv)
+        res = json.loads(buf.getvalue().strip())
+        led = json.loads((ld / "runs" / (rid + ".json")).read_text(encoding="utf-8"))
+        files = {}
+        for suffix in (".raw.md", ".turn.md", ".md"):
+            p = ld / "runs" / (rid + suffix)
+            if p.exists():
+                files[suffix] = p.read_text(encoding="utf-8")
+        return rc, res, led, files, captured, fake
+
+
+def slice1_echo_cut():
+    """多轮历史带 ❯ 回声：只保留本轮（含回声行），双文件逐字，台账如实。"""
+    screen = OLD + "\n" + ECHO + "\n" + NEW
+    turn = ECHO + "\n" + NEW
+    ext = {"needs_user": False, "questions": [],
+           "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW}
+    rc, res, led, files, cap, fake = run_round(screen, "tc-echo-1", ext)
+    assert rc == 0 and res["ok"], res
+    assert files[".raw.md"] == screen, "回读全文须逐字含旧轮"
+    assert files[".turn.md"] == turn, "本轮原料须逐字只含断轮段（含回声行）"
+    assert files[".md"] == NEW
+    assert res["raw_record"].endswith("tc-echo-1.raw.md"), res
+    assert res["turn_record"].endswith("tc-echo-1.turn.md"), res
+    assert res["run_record"].endswith("tc-echo-1.md"), res
+    assert led["echo_found"] is True, led
+    assert led["turn_cut_line"] == 3, led
+    assert led["turn_chars"] == len(turn), led
+    assert led["chars"] == len(screen), led
+    assert cap["extract_path"] == res["turn_record"], "抽取器输入须是本轮原料"
+    assert cap["extract_input"] == turn
+    assert res["anchor_found"] is True
+    assert fake.reads, "须有 read 调用"
+    for a in fake.reads:
+        assert a[a.index("--lines") + 1] == "1000", a
+    print("1 echo cut: turn-only segment, dual files, ledger, --lines 1000 ok")
+
+
+def slice2_echo_priority():
+    """回复正文引用锚点但无 ❯ 前缀：仍从真正的回声行切，不误切回复开头。"""
+    quote = "回复引用：" + ANCHOR
+    screen = ECHO + "\n" + quote + "\n" + NEW
+    ext = {"needs_user": False, "questions": [],
+           "conclusion": "本轮回复第一行", "blocked": "",
+           "reply": quote + "\n" + NEW}
+    rc, res, led, files, cap, fake = run_round(screen, "tc-echo-prio", ext)
+    assert rc == 0 and res["ok"], res
+    assert files[".turn.md"] == screen, "回声行在首行时本轮段＝全文（含引用行）"
+    assert led["turn_cut_line"] == 1 and led["echo_found"] is True, led
+    assert quote in files[".md"], "引用锚点的回复行须保留"
+    print("2 echo priority over later anchor quote ok")
+
+
+def slice3_fallback_last_anchor():
+    """无 ❯ 形态回声：退化为含锚点的最后一行。"""
+    screen = ANCHOR + "\n旧回复\n" + ANCHOR + "\n" + NEW
+    turn = ANCHOR + "\n" + NEW
+    ext = {"needs_user": False, "questions": [],
+           "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW}
+    rc, res, led, files, cap, fake = run_round(screen, "tc-fallback", ext)
+    assert rc == 0 and res["ok"], res
+    assert files[".turn.md"] == turn, files
+    assert led["echo_found"] is True and led["turn_cut_line"] == 3, led
+    assert led["turn_chars"] == len(turn), led
+    print("3 no-echo fallback to last anchor line ok")
+
+
+def slice4_no_anchor_whole():
+    """锚点完全找不到：整段使用，echo_found 假，切点/字符数如实表达整段。"""
+    screen = "没有锚点的回复\n第二行"
+    ext = {"needs_user": False, "questions": [],
+           "conclusion": "", "blocked": "", "reply": screen}
+    rc, res, led, files, cap, fake = run_round(screen, "tc-noanchor", ext)
+    assert rc == 0 and res["ok"], res
+    assert files[".turn.md"] == screen == files[".raw.md"], files
+    assert led["echo_found"] is False, led
+    assert led["turn_cut_line"] == 1, led
+    assert led["turn_chars"] == led["chars"] == len(screen), led
+    assert res["anchor_found"] is False
+    assert cap["extract_input"] == screen
+    print("4 no anchor: whole segment, echo_found=False ok")
+
+
+def slice5_fold_scope():
+    """折叠判据只对本轮段：旧轮折叠不误报；本轮折叠阻断；整段使用时旧轮折叠诚实阻断。"""
+    dummy = {"needs_user": False, "questions": [], "conclusion": "", "blocked": "", "reply": ""}
+    # a 旧轮含折叠、本轮干净 → 成功
+    screen = "旧轮▲折叠内容\n" + ECHO + "\n" + NEW
+    ext = {"needs_user": False, "questions": [],
+           "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW}
+    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-old", ext)
+    assert rc == 0 and res["ok"] and res["complete"], res
+    assert "▲" in files[".raw.md"] and "▲" not in files[".turn.md"]
+    # b 本轮含折叠 → incomplete_result，双路径 hint
+    screen = ECHO + "\n" + NEW + "\n▲本轮折叠"
+    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-turn", dummy)
+    assert rc == 1 and res["error"]["kind"] == "incomplete_result", res
+    assert "fold_markers" in res["error"]["message"]
+    hints = res["error"]["hints"]
+    assert any("tc-fold-turn.raw.md" in h for h in hints), hints
+    assert any("tc-fold-turn.turn.md" in h for h in hints), hints
+    assert "▲" in files[".turn.md"]
+    # c 整段使用（无锚点）＋旧轮折叠 → 诚实阻断
+    screen = "旧轮▲折叠内容\n无锚点回复"
+    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-whole", dummy)
+    assert rc == 1 and res["error"]["kind"] == "incomplete_result", res
+    assert led["echo_found"] is False
+    print("5 fold scope: old-turn pass / turn block / whole-segment honest block ok")
+
+
+def slice6_verbatim_scope():
+    """只在旧轮出现的文本不能让本轮改写字段或回复行通过逐字校验。"""
+    old_only = "旧轮独有结论句"
+    screen = old_only + "\n" + ECHO + "\n" + NEW
+    ext = {"needs_user": False, "questions": ["本轮回复第一行"],
+           "conclusion": old_only, "blocked": "",
+           "reply": old_only + "\n" + NEW}
+    rc, res, led, files, cap, fake = run_round(screen, "tc-verbatim-scope", ext)
+    assert rc == 0 and res["ok"], res
+    assert old_only in files[".raw.md"] and old_only not in files[".turn.md"]
+    assert set(res["rewritten"]) == {"conclusion", "reply"}, res["rewritten"]
+    turn_lines = [ln for ln in (ECHO + "\n" + NEW).splitlines() if ln.strip()]
+    assert res["rewritten"]["conclusion"] in turn_lines, res["rewritten"]
+    assert res["rewritten"]["reply"] in turn_lines, res["rewritten"]
+    print("6 verbatim scope: old-turn text cannot pass rewritten fields/reply ok")
+
+
+def slice7_error_payload():
+    """extraction_rewritten：逐字段整行 hint（长行零截断）＋双路径＋按实际后端取文案。"""
+    long_line = "本轮结论：" + "长" * 400   # 远超旧 300 字符护栏
+    screen = ECHO + "\n" + long_line
+    ext = {"needs_user": False, "questions": ["瞎编的问题"],
+           "conclusion": "本轮结论：短", "blocked": "", "reply": "瞎编的回复"}
+    for backend, ctx in (("pi", contextlib.nullcontext()), ("api", api_env())):
+        with ctx:
+            rc, res, led, files, cap, fake = run_round(screen, "tc-payload-" + backend, ext)
+        assert rc == 1 and res["error"]["kind"] == "extraction_rewritten", res
+        assert f"{backend} 在改写而不是抽取" in res["error"]["message"], res["error"]["message"]
+        assert "rewritten" not in res["error"], "不新增结构化错误字段"
+        hints = res["error"]["hints"]
+        field_hints = [h for h in hints if "最接近的原文整行" in h]
+        assert len(field_hints) == 2, hints   # conclusion + questions[0]
+        assert any(h.startswith("conclusion ") for h in field_hints), hints
+        assert any(h.startswith("questions[0] ") for h in field_hints), hints
+        # 长行原样整行出现、零截断（hint 以完整长行收尾）
+        assert any(h.endswith(long_line) for h in field_hints), "长行被截断"
+        assert any(("tc-payload-%s.turn.md" % backend) in h for h in hints), hints
+        assert any(("tc-payload-%s.raw.md" % backend) in h for h in hints), hints
+        # 不再出现被切开的序列化 JSON 片段
+        assert not any('"conclusion":' in h for h in hints), hints
+    print("7 error payload: per-field full-line hints, dual paths, backend message ok")
+
+
+def slice8_noise_guards():
+    """其余纯文本 stderr/stdout 摘录的 300 字符护栏保持不变（#50 只改 JSON 截断）。"""
+    long = "噪" * 500
+    ns = lambda rc, out, err: types.SimpleNamespace(returncode=rc, stdout=out, stderr=err)
+    # hc_output：rc 0 但 stdout 非 JSON
+    dispatch.run_cmd = lambda argv, ts: ns(0, long, "")
+    try:
+        REAL_HC_JSON("/fake/hc", ["read", "t99"], 30)
+        raise AssertionError("should raise hc_output")
+    except dispatch.DispatchError as e:
+        assert e.kind == "hc_output" and e.hints == [long[:300]], e.hints
+    # HcFailure：rc 1，stderr/stdout 摘录各 300
+    dispatch.run_cmd = lambda argv, ts: ns(1, long, long)
+    try:
+        REAL_HC_JSON("/fake/hc", ["get", "t99"], 30)
+        raise AssertionError("should raise HcFailure")
+    except dispatch.HcFailure as e:
+        assert e.hints == [long[:300], long[:300]], e.hints
+    # app_output：rc 0 但 stdout 非 JSON
+    dispatch.run_cmd = lambda argv, ts: ns(0, long, "")
+    try:
+        REAL_APP_JSON("/fake/app", ["ls"], 30)
+        raise AssertionError("should raise app_output")
+    except dispatch.DispatchError as e:
+        assert e.kind == "app_output" and e.hints == [long[:300]], e.hints
+    # parse_extraction：找不到形状 JSON 时 stdout 摘录 300
+    try:
+        dispatch.parse_extraction(long)
+        raise AssertionError("should raise extraction_invalid")
+    except dispatch.DispatchError as e:
+        assert e.kind == "extraction_invalid" and e.hints[-1] == long[:300], e.hints
+    # extract_via_pi：非零退出时 stderr/stdout 摘录 300
+    dispatch.run_cmd = lambda argv, ts: ns(1, "", long)
+    pi_args = types.SimpleNamespace(extract_timeout=1200.0, pi_model=None)
+    try:
+        dispatch.extract_via_pi("/fake/pi", pi_args, "/fake/turn.md")
+        raise AssertionError("should raise extraction_failed")
+    except dispatch.DispatchError as e:
+        assert e.kind == "extraction_failed" and e.hints[-1] == long[:300], e.hints
+    print("8 noise guards: other 300-char excerpts unchanged ok")
+
+
+def slice9_backend_turn_input():
+    """api 与 pi 两后端真实抽取输入都是本轮原料，不含旧轮（决策 11）。"""
+    screen = OLD + "\n" + ECHO + "\n" + NEW
+    turn = ECHO + "\n" + NEW
+    ext = {"needs_user": False, "questions": [], "conclusion": "本轮回复第一行",
+           "blocked": "", "reply": NEW, "next_skill": ""}
+    payload = {"choices": [{"message": {"content": json.dumps(ext, ensure_ascii=False)}}]}
+    # api：内联 user 内容含本轮段、不含旧轮
+    cap = {}
+
+    def fake_open(req, timeout, proxies):
+        cap["body"] = json.loads(req.data.decode("utf-8"))
+        return FakeResp(payload)
+
+    dispatch.webhook_open = fake_open
+    with api_env():
+        rc, res, led, files, _, _ = run_round(screen, "tc-api-input", ext, mock_extract=False)
+    assert rc == 0 and res["ok"] and res["extract_backend"] == "api", res
+    user = cap["body"]["messages"][1]["content"]
+    assert NEW in user and ECHO in user, "本轮段须内联"
+    assert OLD not in user, "旧轮不得进入 api 抽取输入"
+    # pi：@附件指本轮原料文件，内容逐字＝本轮段
+    pi_cap = {}
+
+    def fake_run_cmd(argv, timeout):
+        pi_cap["argv"] = argv
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(ext, ensure_ascii=False), stderr="")
+
+    dispatch.run_cmd = fake_run_cmd
+    with api_env(LOOP_EXTRACT_BACKEND="pi"):
+        rc, res, led, files, _, _ = run_round(screen, "tc-pi-input", ext, mock_extract=False)
+    assert rc == 0 and res["ok"] and res["extract_backend"] == "pi", res
+    assert "@" + res["turn_record"] in pi_cap["argv"], pi_cap["argv"]
+    attached = files[".turn.md"]   # run_round 已在临时目录内逐字读出
+    assert attached == turn and OLD not in attached
+    assert any("本轮原料落盘路径" in a for a in pi_cap["argv"])
+    print("9 backend input: api inline & pi @file both turn-only ok")
+
+
+def main():
+    slice1_echo_cut()
+    slice2_echo_priority()
+    slice3_fallback_last_anchor()
+    slice4_no_anchor_whole()
+    slice5_fold_scope()
+    slice6_verbatim_scope()
+    slice7_error_payload()
+    slice8_noise_guards()
+    slice9_backend_turn_input()
+    print("ALL TURN-CUT TESTS PASSED")
+
+
+if __name__ == "__main__":
+    main()

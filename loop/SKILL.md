@@ -7,7 +7,7 @@ description: 走管道：每轮要回复执行者的信息都经 loop 推回—�
 
 **走管道**：每一轮要发给执行者的回复，都经本 skill 的 `scripts/dispatch.py` 推回。和用户讨论定稿后，写放行文件、调 dispatch 发送＋取回、判读结果、再讨论——下一轮回复仍走管道。监听（`hc get`/`hc read` 只读）随时可；仅当 dispatch 报错才可直推，直推内容仍须用户放行。
 
-dispatch 做发送、等待、取回、落盘这些机械活，抽取器（默认直连 API，pi 备选，见「抽取后端」）读整屏原料做裁剪＋抽取；异常由脚本直接返回 error，不进抽取。架构见 `docs/adr/0002`、`docs/adr/0005`，用词见根目录 `GLOSSARY.md`；error kind 表、机械保证、发布前检查见 `REFERENCE.md`。
+dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取器（默认直连 API，pi 备选，见「抽取后端」）读本轮原料做裁剪＋抽取；异常由脚本直接返回 error，不进抽取。架构见 `docs/adr/0002`、`docs/adr/0005`、`docs/adr/0013`，用词见根目录 `GLOSSARY.md`；error kind 表、机械保证、发布前检查见 `REFERENCE.md`。
 
 ## 每轮循环（走管道）
 
@@ -52,7 +52,7 @@ python3 scripts/dispatch.py \
 - **换 kind＝换 `--target`** 到另一命名会话（get-or-create 兜底），旧会话保留可切回；`--expect-proc` 同步改新 kind。`--switch-agent`/`--exit-command`/`--exit-keys` 已整条移除（ADR-0007 superseded by ADR-0009）。
 - **命名约定**（推荐，不写死进脚本）：`<kind>-<repo>`（如 `claude-matt-loop`）或 bot 名/会话 id 类 slug，1–32 位 a-z0-9-_。**herdr 模板退居调用方侧持久配置仓库**：用时把启动命令抄出来字面传 `--launch`，loop 不感知模板、不自建配置文件。
 - **显示名约定**（推荐，不写死进脚本，ADR-0010）：`<bot 族>_<任务描述>`（如 `LoopEng_命名层设计`）、可中文，任务描述用短语（GUI 约 170px 截断、十几个汉字）。bot 族前缀表示「谁派的活」——GUI 本就能看到哪个 agent 在跑，kind 前缀冗余。**撞名警示**：显示名恰等于程序名（如 `claude`）会被 tabs mod 当自动名、继续跟随 live title；`<bot 族>_` 前缀天然避开。显示名不是会话名：寻址/复用仍用会话名。
-- 等待与抽取默认值一般不用动：墙钟 3600 秒（主任务发送成功起计）、check-in 180 秒、落定静置 10 秒 × 2 次、抽取护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 0`。
+- 等待与抽取默认值一般不用动：墙钟 3600 秒（主任务发送成功起计）、check-in 180 秒、落定静置 10 秒 × 2 次、抽取护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 1000`（ADR-0013）：回读最近 1000 行拼接历史＋当前屏，再按提示词回声断轮切出本轮段。**超过 1000 行历史的回复开头仍不可得**——回读全文不等于无限完整历史，本轮原料与干净回复全文也不提供超出该范围的保证；hc 自报 `complete` 只记台账、不作完成判据。
 - `--loop-dir` 默认 `$TMPDIR/loop`（随 OS 临时清理，记录不持久）；`--prompt-file` 传 `$TMPDIR/loop/releases/<放行id>.txt`；`--pi-model` 透传 `pi --model`（仅 pi 备选后端生效）。
 
 ## 会话起始 skill（工程纪律）
@@ -70,7 +70,7 @@ python3 scripts/dispatch.py \
 
 - `LOOP_EXTRACT_BACKEND=api|pi`，默认 `api`；非法值启动即报错。
 - `api` 需三个 env **全必填、无默认**：`LOOP_API_BASE`（基址到 `/v1`，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer，零回显）、`LOOP_API_MODEL`（模型 id 原样透传）。缺任何一个**启动预检**即报 `api_not_configured`（只列变量名），不发主任务、放行 id 不消耗。与 pi 网关复用同一把钥匙时，值指过去即可（如 `LOOP_API_KEY="$PAW_GATEWAY_KEY"`），名字归 loop。
-- 请求形状：system=extract.md，user=指令＋内联整屏原文；temp 0、max_tokens 默认 32768（`LOOP_API_MAX_TOKENS` 可覆盖，非法值启动报错）、超时复用 `--extract-timeout`、不重试、不流式、不发 response_format。出网代理与 webhook 同一套决议（ADR-0003）。
+- 请求形状：system=extract.md，user=指令＋内联本轮原料（ADR-0013）；temp 0、max_tokens 默认 32768（`LOOP_API_MAX_TOKENS` 可覆盖，非法值启动报错）、超时复用 `--extract-timeout`、不重试、不流式、不发 response_format。出网代理与 webhook 同一套决议（ADR-0003）。
 - 失败映射沿用既有 kind：HTTP → `extraction_failed`（带 `HTTP <码>`，不读响应体）；超时 → `tool_timeout`；其它网络异常 → `extraction_failed`（类名）。密钥/URL 零回显；原文已落盘，可人工重做。
 - `pi` 备选：行为照旧（@文件 附件、`--pi-model` 透传），机器上要有 pi；`api` 路径不依赖 node/pi。
 - result 与台账带 `extract_backend`（api|pi）标明本轮走的哪条路。
@@ -95,18 +95,19 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
  "reset": "none", "turn": 3, "status": "idle",
  "complete": true, "complete_reason": [], "anchor_found": true, "elapsed_s": 690.5, "chars": 1834,
  "run_record": "$TMPDIR/loop/runs/<放行id>.md", "raw_record": "$TMPDIR/loop/runs/<放行id>.raw.md",
+ "turn_record": "$TMPDIR/loop/runs/<放行id>.turn.md",
  "prompt_sha256": "…", "rewritten": {}, "extract_backend": "api", "webhook": "off",
  "needs_user": false, "questions": [], "conclusion": "…", "blocked": "", "next_skill": "to-spec"}
 ```
 
-- `run_record`（`.md`）是抽取器从整屏**裁剪出的干净回复全文**（剔 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏，逐字保留正文），是回看对象；`raw_record`（`.raw.md`）是整屏原料（逐字读回，制表符按终端制表位展开为空格，审计用）。error 时尚无干净全文，`run_record` 退回指整屏原料。
+- `run_record`（`.md`）是抽取器从本轮原料**裁剪出的干净回复全文**（剔 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏，逐字保留正文），是回看对象；`raw_record`（`.raw.md`）是回读全文（最近 1000 行历史＋当前屏逐字读回，含被断轮切掉的旧轮，制表符按终端制表位展开为空格，审计用）；`turn_record`（`.turn.md`）是本轮原料（断轮选中的本轮段，抽取器输入＋逐字校验语料，ADR-0013）。error 时尚无干净全文，`run_record` 退回指回读全文。
 - `needs_user`（布尔）：回复里是否有需用户决定的事。三个选段字段是抽取器从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批一个元素（问题＋选项＋推荐整块）、`conclusion` 结论段（无则 `""`）、`blocked` 弹框原句（无则 `""`）。干净全文 `reply` 不进本 JSON，落在 `run_record`；要展示回复内容直接用 `run_record` 原文。
 - `next_skill`（字符串，ADR-0008）：抽取器**推测**的下一轮 skill 名，不带斜杠、不含参数；候选固定为 `wayfinder`/`grill-with-docs`/`to-spec`/`to-tickets`/`implement`/`implement-spec`/`prototype`，`""`＝无预测。唯一推测字段，豁免逐字校验；缺失、非字符串、带斜杠、带参数或集外值都宽容投影为 `""`，不连累整轮。调用方负责拼成 `/<next_skill> <自填参数>`。**建议不是闸**：下一轮放行卡按「预测可见性」呈出照用或编辑状态；它是起始 skill 且 turn>0 时，讨放行一并推荐 `--reset`。
 - `next_skill_feedback`（ADR-0012，阶段二）：本轮主任务发送后与上一轮同 target 预测结算出的机械反馈，带上轮预测、本轮实际 skill／类型、skill 判定和上轮放行 id；正常 result 与发送后的 error JSON 都可带。`learning_warning` 只表示学习存储、权限、锁或记录损坏降级，不影响主轮退出码；`learning_excluded:"space_changed"` 表示跨 space 反馈已结算但不进入 few-shot。
-- `rewritten`：脚本对选段字段逐一做原文子串校验，搜不到的在此标出、值为最接近原文片段；`{}` 即全部逐字命中。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `raw_record`。**
+- `rewritten`：脚本对选段字段逐一做本轮原料子串校验，搜不到的在此标出、值为最接近原文整行；`{}` 即全部逐字命中。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `turn_record`（本轮原料）与 `raw_record`（回读全文）。**
 - `target` 恒为**传入地址**（会话名或 t 号，寻址稳定）；`target_address`：解析出的 **t 号**（审计定位，名字恒解析到最新 live）；`turn` 是**终端级累计计数**（复活会话 turn>0 但会话是空的，ADR-0009）。
 - `launched`：仅本轮 `hc run` 创建了终端才出现（`true`，创建/重建路径，error 时也带）；`rebuilt`/`rebuilt_old_target`：仅强制重建才出现（`true`＋被 kill 占位者的旧 t 号）；`workspace`：领养状态（`adopted`/`failed`，创建与既有路径都报）；`reset_skipped:"fresh_launch"`：新鲜会话跳过了重置发送（传了 `--reset` 但创建/复活/重建时）；`space`：`--space` 请求值回显（必传，成功与 error 都带，ADR-0011），`space_selected`：解析出的目标空间 id（解析成功才带），`space_landed`：pane 实际落进的空间 id，`space_target_warning`：pane 落进非目标空间告警（`landed_elsewhere`），`space_restore`：还原选中结果（`restored`/`user_switched`＝用户接管跳过/`not_needed`/`failed`），`space_restore_warning`：还原失败告警，`gift_cleanup_warning`：赠送 shell 清理失败降级告警（#46，真终端已可见、整轮仍 adopted；这些告警都不丢放行）。这些字段成功与 error 都带适用项，部分状态（终端已建/启动已发/旧会话已死/空间已建/选中已还原）如实报。
-- `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性判定，只看折叠标记（成功恒 `complete:true`）；`anchor_found`：提示词回声是否还在当前屏——仅信息，长任务回声滚出屏为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
+- `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性判定，只看本轮原料内的折叠标记（成功恒 `complete:true`）；`anchor_found`：提示词回声是否在回读范围内——仅信息，超过 1000 行历史回声不可得时为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
 - `webhook_error_detail`：仅失败时出现，与 stderr 同一份脱敏诊断。字段：`type`（外层异常类名）、`reason_type`（`URLError.reason` 是异常时的类名）、`errno`/`errno_name`（可用时，如 `61`/`ECONNREFUSED`；DNS 给 `EAI_*`）、`is_timeout`（布尔）、`ssl_verify_code`（`SSLCertVerificationError.verify_code`，可用时）、`http_status`（仅 HTTPError）、`proxy`（`{"configured": "yes|no|unknown", "matches": "yes|no|unknown", "source": "env|system|bypass|none|unknown"}`：是否配置代理、本请求是否命中、代理来自环境变量还是系统配置）、`attempts`（总尝试次数），走过代理全败直连兜底仍失败时另带 `fallback_direct: true` 与 `fallback_error`（直连尝试的类名或 `"HTTP <码>"`；`webhook_error` 与主体字段保留主路由最后一次错误以对齐 `proxy`）。不含 URL、密钥、主机名、请求头或字符串形式的 reason；判断不了就标 `unknown`。
 - **三个选段只摘原文片段、不保证覆盖全文**；要不要批准、要不要改接口的判断，必须回看 `run_record`，不能只凭 JSON 选段。
 
@@ -115,7 +116,8 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 ## 本地记录（默认 `$TMPDIR/loop`，随 OS 临时清理）
 
 - `releases/<放行id>.txt`：放行提示词（调用方写，dispatch 原文照发）。
-- `runs/<放行id>.raw.md`：整屏原料（审计）。
+- `runs/<放行id>.raw.md`：回读全文（审计，含被断轮切掉的旧轮）。
+- `runs/<放行id>.turn.md`：本轮原料（断轮段，抽取器输入＋逐字校验语料，`turn_record`）。
 - `runs/<放行id>.md`：干净回复全文（回看对象 `run_record`）。
 - `runs/<放行id>.json`：台账，先记账后发送；一个放行只跑一轮，至多发送成功三次（重置或启动前置＋切模型前置＋主任务各一次，新鲜会话跳过重置），台账存在即拒同 id 重发。台账记创建/复活/领养/重建各 phase，失败带部分状态。
 - `runs/<放行id>.result.json`：最终交付，后台调用靠读它收结果；重发拒绝仍以台账为准。
