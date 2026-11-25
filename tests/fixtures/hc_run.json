@@ -1,0 +1,24 @@
+{
+  "address": "<ADDR>",
+  "argv": [
+    "zsh",
+    "-l"
+  ],
+  "cols": 80,
+  "created_ms": 1795599201904,
+  "cwd": "<PATH>",
+  "labels": {},
+  "rows": 24,
+  "screen": "exact",
+  "state": "live",
+  "turn": 0,
+  "name": "<NAME>",
+  "status": null,
+  "foreground": {
+    "name": "zsh",
+    "argv": [
+      "/bin/zsh",
+      "-l"
+    ]
+  }
+}

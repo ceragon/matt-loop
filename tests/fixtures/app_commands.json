@@ -1,0 +1,16 @@
+{
+  "subcommands": [
+    "ls",
+    "status",
+    "commands",
+    "shot"
+  ],
+  "do_commands": [
+    "space.new",
+    "space.select",
+    "terminal.keep",
+    "terminal.kill",
+    "tab.close",
+    "tab.rename"
+  ]
+}
