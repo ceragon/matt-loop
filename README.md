@@ -14,7 +14,9 @@ caller agent (any LLM agent that can run shell commands) uses it to:
 2. wait for the turn to settle,
 3. trim and extract the reply into structured JSON (direct OpenAI-compatible
    API by default, `pi` as an explicit fallback),
-4. optionally POST the result JSON to a webhook so the caller can be woken up.
+4. optionally POST a notification projection (`notify.json`, byte-identical to the
+   request body) to a webhook so the caller can be woken up. The full `result.json`
+   stays the audit/review source of truth; callers read the narrow projection first.
 
 The script does **mechanics only**. Every workflow decision lives in the
 caller's prompts; the main program only controls the loop. No wrappers, no

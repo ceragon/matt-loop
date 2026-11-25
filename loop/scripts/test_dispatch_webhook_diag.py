@@ -77,7 +77,8 @@ def set_net(env_proxies=None, system_proxies=None, bypass=False, boom=False):
 
 
 def run_case(rid, opener):
-    """跑一轮完整 dispatch，保留临时目录以读结果文件；返回 (rc, result, stderr, 结果文件文本)。"""
+    """跑一轮完整 dispatch，保留临时目录以读结果文件与通知文件（ADR-0014 双产物）；
+    返回 (rc, result, stderr, 结果文件文本, 通知文件字节)。"""
     td = tempfile.mkdtemp()
     try:
         pf = Path(td) / "prompt.md"
@@ -99,7 +100,8 @@ def run_case(rid, opener):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = dispatch.main(argv)
         result_text = (ld / "runs" / (rid + ".result.json")).read_text(encoding="utf-8")
-        return rc, json.loads(out.getvalue().strip()), err.getvalue(), result_text
+        notify_bytes = (ld / "runs" / (rid + ".notify.json")).read_bytes()
+        return rc, json.loads(out.getvalue().strip()), err.getvalue(), result_text, notify_bytes
     finally:
         shutil.rmtree(td, ignore_errors=True)
 
@@ -111,7 +113,7 @@ def fail_with(exc, rid):
     return run_case(rid, fake_open)
 
 
-def check_common(rc, res, errtext, result_text):
+def check_common(rc, res, errtext, result_text, notify_bytes):
     assert rc == 0 and res["ok"] is True, res          # 通知失败不连累整轮
     assert res["webhook"] == "failed", res
     assert result_text.strip() == json.dumps(res, ensure_ascii=False), "result 文件须与 stdout 逐字一致"
@@ -119,6 +121,12 @@ def check_common(rc, res, errtext, result_text):
     marker = json.dumps(detail, ensure_ascii=False, sort_keys=True)
     assert marker in errtext, (marker, errtext)        # stderr 与结果文件同一份诊断
     assert_clean(json.dumps(res, ensure_ascii=False), errtext, result_text)
+    # 双产物（ADR-0014）：发送诊断只归全量结果；通知投影严格 11 字段、不含 webhook 诊断
+    notify = json.loads(notify_bytes.decode("utf-8"))
+    assert set(notify) == set(dispatch.NOTIFY_SUCCESS_FIELDS), notify
+    for k in ("webhook", "webhook_error", "webhook_error_detail"):
+        assert k not in notify, notify
+    assert_clean(notify_bytes.decode("utf-8"))
     return detail
 
 
@@ -137,8 +145,8 @@ def main():
         # 1 连接被拒：reason 是 ConnectionRefusedError，message 里塞哨兵也不得外泄
         exc = urllib.error.URLError(
             ConnectionRefusedError(errno.ECONNREFUSED, "refused while posting to " + URL))
-        rc, res, errtext, rtext = fail_with(exc, "diag-refused-1")
-        d = check_common(rc, res, errtext, rtext)
+        rc, res, errtext, rtext, nbytes = fail_with(exc, "diag-refused-1")
+        d = check_common(rc, res, errtext, rtext, nbytes)
         assert res["webhook_error"] == "URLError", res
         assert d["type"] == "URLError" and d["reason_type"] == "ConnectionRefusedError", d
         assert d["errno"] == errno.ECONNREFUSED and d["errno_name"] == "ECONNREFUSED", d
@@ -150,8 +158,8 @@ def main():
         # 2 DNS：gaierror 的 errno 是 EAI_*，不能按 POSIX errno 命名
         exc = urllib.error.URLError(
             socket.gaierror(socket.EAI_NONAME, "nodename for " + URL + " not known"))
-        rc, res, errtext, rtext = fail_with(exc, "diag-dns-1")
-        d = check_common(rc, res, errtext, rtext)
+        rc, res, errtext, rtext, nbytes = fail_with(exc, "diag-dns-1")
+        d = check_common(rc, res, errtext, rtext, nbytes)
         assert d["reason_type"] == "gaierror", d
         assert d["errno"] == socket.EAI_NONAME and d["errno_name"] == "EAI_NONAME", d
         assert d["is_timeout"] is False, d
@@ -164,8 +172,8 @@ def main():
         cert_err.verify_code = 18
         cert_err.verify_message = "self-signed certificate for example.invalid"
         exc = urllib.error.URLError(cert_err)
-        rc, res, errtext, rtext = fail_with(exc, "diag-ssl-1")
-        d = check_common(rc, res, errtext, rtext)
+        rc, res, errtext, rtext, nbytes = fail_with(exc, "diag-ssl-1")
+        d = check_common(rc, res, errtext, rtext, nbytes)
         assert d["reason_type"] == "SSLCertVerificationError", d
         assert d["ssl_verify_code"] == 18, d
         assert "errno" not in d and "errno_name" not in d, d
@@ -174,8 +182,8 @@ def main():
 
         # 4 超时：外层 URLError 包 TimeoutError
         exc = urllib.error.URLError(TimeoutError("handshake timed out for " + URL))
-        rc, res, errtext, rtext = fail_with(exc, "diag-timeout-1")
-        d = check_common(rc, res, errtext, rtext)
+        rc, res, errtext, rtext, nbytes = fail_with(exc, "diag-timeout-1")
+        d = check_common(rc, res, errtext, rtext, nbytes)
         assert d["type"] == "URLError" and d["reason_type"] == "TimeoutError", d
         assert d["is_timeout"] is True, d
         assert "http_status" not in d and "ssl_verify_code" not in d, d
@@ -184,8 +192,8 @@ def main():
         # 5 HTTP 401：保留状态码，不读 reason 短语/响应体/头
         exc = urllib.error.HTTPError(
             URL, 401, "Unauthorized", {"Authorization": "Bearer " + SECRET}, None)
-        rc, res, errtext, rtext = fail_with(exc, "diag-401-1")
-        d = check_common(rc, res, errtext, rtext)
+        rc, res, errtext, rtext, nbytes = fail_with(exc, "diag-401-1")
+        d = check_common(rc, res, errtext, rtext, nbytes)
         assert res["webhook_error"] == "HTTP 401", res
         assert d["type"] == "HTTPError" and d["http_status"] == 401, d
         assert d["is_timeout"] is False, d
@@ -204,8 +212,8 @@ def main():
             seen.append(proxies)
             raise urllib.error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused"))
 
-        rc, res, errtext, rtext = run_case("diag-proxy-sys-1", system_proxy_open)
-        d = check_common(rc, res, errtext, rtext)
+        rc, res, errtext, rtext, nbytes = run_case("diag-proxy-sys-1", system_proxy_open)
+        d = check_common(rc, res, errtext, rtext, nbytes)
         assert d["proxy"] == {"configured": "yes", "matches": "yes", "source": "system"}, d
         assert d["attempts"] == 4 and d["fallback_direct"] is True and d["fallback_error"] == "URLError", d
         sys_proxy = {"https": "http://user:hunter2@sysproxy.corp:3128"}
@@ -217,8 +225,8 @@ def main():
         set_net({"https": "http://envproxy.corp:8080"},
                 {"https": "http://sysproxy.corp:3128"})
         seen.clear()
-        rc, res, errtext, rtext = run_case("diag-proxy-env-1", system_proxy_open)
-        d = check_common(rc, res, errtext, rtext)
+        rc, res, errtext, rtext, nbytes = run_case("diag-proxy-env-1", system_proxy_open)
+        d = check_common(rc, res, errtext, rtext, nbytes)
         assert d["proxy"] == {"configured": "yes", "matches": "yes", "source": "env"}, d
         assert d["attempts"] == 4 and d["fallback_direct"] is True and d["fallback_error"] == "URLError", d
         env_proxy = {"https": "http://envproxy.corp:8080"}
@@ -229,8 +237,8 @@ def main():
         # 8 系统例外表命中：有代理配置，但本请求直连（无直连兜底，只重试 3 次）
         set_net({}, {"https": "http://sysproxy.corp:3128"}, bypass=True)
         seen.clear()
-        rc, res, errtext, rtext = run_case("diag-proxy-bypass-1", system_proxy_open)
-        d = check_common(rc, res, errtext, rtext)
+        rc, res, errtext, rtext, nbytes = run_case("diag-proxy-bypass-1", system_proxy_open)
+        d = check_common(rc, res, errtext, rtext, nbytes)
         assert d["proxy"] == {"configured": "yes", "matches": "no", "source": "bypass"}, d
         assert d["attempts"] == 3 and "fallback_direct" not in d, d
         assert seen == [{}, {}, {}], seen

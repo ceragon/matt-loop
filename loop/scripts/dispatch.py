@@ -100,17 +100,24 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
     超时复用 --extract-timeout、不重试不流式；代理与 webhook 同源（ADR-0003）；
     失败只记状态码/类名，不读响应体，密钥/URL 零回显。pi 备选路径照旧。
 
-交付：stdout 一行 JSON，同一字符串同时写 $TMPDIR/loop/runs/<放行id>.result.json
-（成功与 error 都写）。run_record 指抽取器裁剪后的干净全文 .md（回看对象），
-raw_record 指回读全文 .raw.md（审计，含旧轮），turn_record 指本轮原料 .turn.md
-（抽取器输入＋逐字校验语料，ADR-0013）。台账记过程，结果文件记最终交付，
-重发拒绝仍以台账为准。
+交付（双产物，ADR-0014，#52 阶段一）：stdout 一行 JSON，同一字符串同时写
+$TMPDIR/loop/runs/<放行id>.result.json（全量结果，成功与 error 都写，审计与回看对象）；
+另写 <放行id>.notify.json（通知投影＋通知记录，逐字记录实际 POST 正文）。成功通知严格
+只含 11 个判读字段（ok/release_id/target/needs_user/questions/conclusion/blocked/
+rewritten/run_record/elapsed_s/next_skill），error 通知保留发送前完整对象。调用方
+（DS Bot/Grok Bot）统一先读 notify.json、需要完整诊断/审计/回看再读 result.json。
+run_record 指抽取器裁剪后的干净全文 .md（回看对象），raw_record 指回读全文 .raw.md
+（审计，含旧轮），turn_record 指本轮原料 .turn.md（抽取器输入＋逐字校验语料，ADR-0013）。
+台账记过程，结果文件记最终交付，重发拒绝仍以台账为准。
 可选 webhook 完成通知：env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，
-成功/报错都 POST 结果 JSON（鉴权走 Authorization: Bearer），发失败不连累整轮，
-结果记 webhook: off/sent/failed，失败另记 webhook_error（HTTP 状态码或异常类名）
-与 webhook_error_detail（脱敏诊断：异常类名、reason 类名、errno/errno_name、是否
-超时、SSL 验证错误码、HTTP 状态码、代理是否配置/是否命中）；不收 str(e)/repr(e)/
-字符串 reason/响应体，不含 URL、密钥、主机名、头内容。stderr 打印同一份诊断。
+成功/报错都 POST 通知投影字节（与 notify.json 完全相同，只序列化一次、重试复用；
+鉴权走 Authorization: Bearer），发失败不连累整轮。顺序：构造投影→序列化→写通知记录→
+首次 POST→重试→写全量结果＋stdout；通知记录写失败仍唤醒，全量结果记 notify_record_error
+（类名）＋stderr 诊断，不改退出码/ok、不递归第二条 error 通知。结果记 webhook:
+off/sent/failed，失败另记 webhook_error（HTTP 状态码或异常类名）与 webhook_error_detail
+（脱敏诊断：异常类名、reason 类名、errno/errno_name、是否超时、SSL 验证错误码、HTTP
+状态码、代理是否配置/是否命中）；这些发送诊断只归全量结果、不进通知投影。不收
+str(e)/repr(e)/字符串 reason/响应体，不含 URL、密钥、主机名、头内容。stderr 打印同一份诊断。
 出网默认跟随本机系统代理：标准 http_proxy/https_proxy 显式配置时优先，否则读
 系统代理（macOS），系统例外表或 no_proxy 命中则直连；只作用于 webhook POST，
 不改证书校验、不关代理、不换网络策略。长任务用调用方自己的后台任务跑、靠完成通知收结果
@@ -154,6 +161,14 @@ SESSION_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 # 显示名机械校验（ADR-0010）：非空、1–64 字符、禁换行与控制字符（C0＋DEL）。不校验式样。
 DISPLAY_NAME_MAX = 64
 DISPLAY_NAME_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+# 成功通知投影白名单（ADR-0014，#52 阶段一）：成功通知严格只含这 11 个判读/交回字段，
+# 顺序即下列顺序。error 通知不套白名单、保留发送前完整对象。webhook/webhook_error/
+# webhook_error_detail 是 POST 后才产生的发送诊断，只归全量结果，绝不进投影。
+NOTIFY_SUCCESS_FIELDS = (
+    "ok", "release_id", "target", "needs_user", "questions", "conclusion",
+    "blocked", "rewritten", "run_record", "elapsed_s", "next_skill",
+)
 
 def generate_short_task_name(release_id: str) -> str:
     h = hashlib.sha256(release_id.encode("utf-8")).hexdigest()[:8]
@@ -602,10 +617,23 @@ def _webhook_error_label(exc):
     return type(exc).__name__
 
 
-def send_webhook(result):
+def notify_projection(result):
+    """通知投影（ADR-0014，#52 阶段一）：从完整结果选出唤醒载荷。
+    成功（ok=True）严格只取 NOTIFY_SUCCESS_FIELDS 白名单字段（结果缺某字段则不带，
+    不补造）；error 不套白名单，原样返回发送前完整对象（含 kind/message/hints 与
+    全部部分状态）。投影在 POST 前构造，故不含 webhook/webhook_error/
+    webhook_error_detail 等发送后才产生的诊断——那些只归全量结果。"""
+    if result.get("ok"):
+        return {k: result[k] for k in NOTIFY_SUCCESS_FIELDS if k in result}
+    return result
+
+
+def send_webhook(body):
     """可选 webhook 完成通知（Grok Bot 等支持 webhook 唤醒的调用方用）。
-    env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，默认关。成功与报错都
-    POST 结果 JSON；鉴权走 Authorization: Bearer <密钥>，不进日志、不进 stdout。
+    env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，默认关。body 是调用方
+    预先序列化好的通知投影字节（notify_projection → json.dumps 一次），本函数不再
+    序列化、不改写：首发与所有重试、直连兜底复用同一组字节（ADR-0014）。
+    鉴权走 Authorization: Bearer <密钥>，不进日志、不进 stdout。
     webhook 只是通知，结果文件才是事实源：发失败不连累整轮。
     出网默认跟随本机系统代理（见 webhook_proxy_resolution）：主出口最多尝试 3 次
     （退避 0.5s、1.0s）；若用了代理且 3 次均因瞬态/5xx 失败，再强制直连（proxies={}）
@@ -618,7 +646,6 @@ def send_webhook(result):
     secret = os.environ.get("LOOP_WEBHOOK_SECRET")
     if not url or not secret:
         return "off", None, None
-    body = json.dumps(result, ensure_ascii=False).encode("utf-8")
     headers = {"Content-Type": "application/json",
                "Authorization": "Bearer " + secret}
     proxies, _source = webhook_proxy_resolution(url)
@@ -664,12 +691,26 @@ def send_webhook(result):
     return "failed", err, detail
 
 
-def emit_result(obj, result_path):
-    """stdout 一行 JSON；同一字符串再写一份到结果文件（最终交付，逐字一致）。
-    交付前可选 POST webhook 唤醒调用方，把 webhook: off/sent/failed 记进结果；
-    失败时另记 webhook_error（HTTP 状态码或异常类名）与 webhook_error_detail
-    （脱敏诊断，与 stderr 同一份，不含 URL/密钥）。"""
-    status, wh_err, wh_detail = send_webhook(obj)
+def emit_result(obj, result_path, notify_path):
+    """双产物交付（ADR-0014，#52 阶段一）。顺序：构造通知投影 → 只序列化一次 →
+    写通知记录 notify.json → 首次 POST → 必要重试（复用同一组字节）→ 写全量结果
+    result.json 并输出 stdout。通知记录字节与实际请求体完全相同（不追加换行），
+    无论 webhook 是否启用都生成。通知记录写失败仍尝试 POST，全量结果记
+    notify_record_error（异常类名）、stderr 打印诊断；不改退出码与 ok，不递归
+    生成第二条 error 通知。webhook: off/sent/failed 等发送诊断只记全量结果，
+    不进通知投影。stdout 一行 JSON，与全量结果文件逐字一致。尚未建立安全运行
+    路径的早期 error（result_path/notify_path 为 None）不构造通知记录，保留既有
+    error 输出与发送行为。"""
+    body = json.dumps(notify_projection(obj), ensure_ascii=False).encode("utf-8")
+    if notify_path is not None:
+        try:
+            notify_path.parent.mkdir(parents=True, exist_ok=True)
+            notify_path.write_bytes(body)
+        except OSError as e:
+            obj["notify_record_error"] = type(e).__name__
+            sys.stderr.write("[dispatch] 通知记录写入失败：%s %s（仍尝试唤醒；结果文件仍是事实源）\n"
+                             % (type(e).__name__, e))
+    status, wh_err, wh_detail = send_webhook(body)
     obj["webhook"] = status
     if wh_err is not None:
         obj["webhook_error"] = wh_err
@@ -1728,6 +1769,7 @@ def main(argv=None):
     ledger = None
     ledger_path = None
     result_path = None
+    notify_path = None
     started = None
     reset_sent = False
     model_sent = False
@@ -1804,6 +1846,9 @@ def main(argv=None):
         # 结果文件是最终交付（成功与 error 都写），台账记过程；
         # 重发拒绝仍只看台账/回读原料落盘，结果文件存在不单独拦截。
         result_path = runs / f"{args.release_id}.result.json"
+        # 通知记录（ADR-0014）：与结果文件同目录、同放行 id，逐字记录实际 POST 正文。
+        # 放行 id 已在上方校验合法，此处构造路径安全；早期 error 到此之前 notify_path 仍 None。
+        notify_path = runs / f"{args.release_id}.notify.json"
         if ledger_path.exists() or raw_path.exists():
             raise DispatchError(
                 "duplicate_release",
@@ -2224,7 +2269,7 @@ def main(argv=None):
                 result[k] = ctx[k]
         ledger.update(phase="done", done_at=now_iso())
         write_json_atomic(ledger_path, ledger)
-        emit_result(result, result_path)
+        emit_result(result, result_path, notify_path)
         return 0
     except DispatchError as e:
         if ledger is not None and ledger_path is not None:
@@ -2264,7 +2309,7 @@ def main(argv=None):
             out["error"]["elapsed_s"] = round(time.monotonic() - started, 1)
         if ledger is not None and ledger.get("run_record"):
             out["error"]["run_record"] = ledger["run_record"]
-        emit_result(out, result_path)
+        emit_result(out, result_path, notify_path)
         return e.returncode
 
 
