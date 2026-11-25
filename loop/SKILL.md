@@ -14,7 +14,7 @@ dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取�
 1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_skill` 非空时，本轮主任务**应照用该 skill 作开场**，由调用方拼成 `/<next_skill> <自填参数>`；换 skill 须在放行卡明示理由（ADR-0008），卡片四状态见「预测可见性」。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd、显示名）与目标空间（`--space`，每轮必传）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
 2. **写放行文件**：全文写成 UTF-8 文件，放 `$TMPDIR/loop/releases/<放行id>.txt`（目录不存在就建），放行后一字未改。完成判据：文件就绪（dispatch 核对 sha256，改动即拒发）。
 3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset`/`--target-model` 时该放行一并授权全部前置＋主任务（重置是枚举里可预知的固定命令，切模型是字面 `/model <名字>`）。
-4. **判读结果**：读 `.result.json`＋`run_record`，整理成选项卡给用户；`next_skill` 非空时以「本轮新预测 skill」一并呈出（它是预测不是事实，参数由下一轮调用方自填）。若带 `next_skill_feedback`，把本轮刚结算的照用／偏离与关键计数变化一并呈出。完成判据：用户看到结果、给出下一轮方向。
+4. **判读结果**：先读 `.notify.json`（通知投影，成功 11 字段／error 全量），需要完整诊断、审计或回看再读 `.result.json`＋`run_record`（统一读取契约，ADR-0014），整理成选项卡给用户；`next_skill` 非空时以「本轮新预测 skill」一并呈出（它是预测不是事实，参数由下一轮调用方自填）。若带 `next_skill_feedback`，把本轮刚结算的照用／偏离与关键计数变化一并呈出。完成判据：用户看到结果、给出下一轮方向。
 5. 回到 1，下一轮回复仍走管道。
 
 ## 预测可见性（ADR-0008）
@@ -78,17 +78,17 @@ python3 scripts/dispatch.py \
 
 ## 交付：后台跑＋完成通知
 
-一轮最长约 80 分钟（抽取实测每轮 5–11 分钟，pi 路径数据）。用调用方自己的后台任务跑 dispatch、靠完成通知收结果，再读 `$TMPDIR/loop/runs/<放行id>.result.json`：
+一轮最长约 80 分钟（抽取实测每轮 5–11 分钟，pi 路径数据）。用调用方自己的后台任务跑 dispatch、靠完成通知收结果。**双产物（ADR-0014，#52 阶段一）**：dispatch 同时写 `$TMPDIR/loop/runs/<放行id>.notify.json`（通知投影＋通知记录）与 `<放行id>.result.json`（全量结果）。**统一读取契约**：所有调用方都**先读 `notify.json`**（成功严格 11 字段、error 全量），只有需要完整诊断、审计或回看时才读 `result.json`：
 
-- **DS Bot（默认）**：`run_in_background` 跑 dispatch → job 完成通知唤醒 → 读结果文件。
-- **Grok Bot**：配 `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET`（示例见 `webhook.env.example`），dispatch 完成时 POST 结果 JSON 唤醒它 → 读结果文件。
-- **其他调用方**：仿 DS Bot（后台任务＋完成通知）。
+- **DS Bot（默认）**：`run_in_background` 跑 dispatch → job 完成通知唤醒 → 先读通知投影、需要细节再读全量结果。
+- **Grok Bot**：配 `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET`（示例见 `webhook.env.example`），dispatch 完成时 POST **通知投影字节**（与 `notify.json` 完全相同）唤醒它 → 先读通知投影、需要细节再读全量结果。云端传话助手实际只取得 webhook 正文；`notify.json` 是发送端通知记录，不是云端可读本机文件。
+- **其他调用方**：仿 DS Bot（后台任务＋完成通知，同一读取契约）。
 
-结果文件永远是事实源；webhook 只是通知，发失败不连累整轮（result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`：HTTP 状态码或异常类名，以及 `webhook_error_detail` 脱敏诊断；都不含 URL/密钥）。stderr 打印同一份诊断。webhook POST 默认跟随本机系统代理：标准 `http_proxy`/`https_proxy` 显式配置时优先，否则读系统代理；系统例外表或 `no_proxy` 命中则直连（内网、localhost 不受影响）。选定出口对传输异常与 `HTTP 5xx` 最多试 3 次（退避 0.5s、1s），若走了代理且 3 次全败再强制 `ProxyHandler({})` 真直连兜底 1 次（`4xx` 立刻失败不重不退）。拿到 `failed` 时先看 `webhook_error_detail` 再判断，别把 DNS、TLS、代理、连接任一直接当已证实根因。短超时包装器（`hc exec` 默认 60 秒/上限 600 秒、超时不够的 bash）会到点把 dispatch 连同子进程杀掉、留下 `phase=waiting` 台账——给不了足够超时就用上面的后台路径。
+全量结果文件永远是事实源；webhook 只是通知，发失败不连累整轮（result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`：HTTP 状态码或异常类名，以及 `webhook_error_detail` 脱敏诊断；都不含 URL/密钥）。这些发送诊断**只归全量结果**，不进通知投影。stderr 打印同一份诊断。通知投影只序列化一次，通知记录在首次 POST 前落盘、字节与请求体完全相同（不追加换行），所有重试与直连兜底复用同一组字节；无论 webhook 是否启用都生成通知记录。通知记录写失败仍尝试唤醒，全量结果记 `notify_record_error`（异常类名）＋stderr 诊断，不改退出码/`ok`、不递归第二条 error 通知。早期 error（非法放行 id 等未建立安全运行路径）不构造通知记录，保留既有 error 输出与发送行为。webhook POST 默认跟随本机系统代理：标准 `http_proxy`/`https_proxy` 显式配置时优先，否则读系统代理；系统例外表或 `no_proxy` 命中则直连（内网、localhost 不受影响）。选定出口对传输异常与 `HTTP 5xx` 最多试 3 次（退避 0.5s、1s），若走了代理且 3 次全败再强制 `ProxyHandler({})` 真直连兜底 1 次（`4xx` 立刻失败不重不退）。拿到 `failed` 时先看 `webhook_error_detail` 再判断，别把 DNS、TLS、代理、连接任一直接当已证实根因。短超时包装器（`hc exec` 默认 60 秒/上限 600 秒、超时不够的 bash）会到点把 dispatch 连同子进程杀掉、留下 `phase=waiting` 台账——给不了足够超时就用上面的后台路径。
 
 ## 返回契约（每轮判读）
 
-stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.result.json`（成功与 error 都写，逐字一致，是**最终交付**）。成功（退出码 0）：
+stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.result.json`（全量结果，成功与 error 都写，逐字一致，是**最终交付**）；另写 `<放行id>.notify.json`（通知投影＋通知记录，ADR-0014）。**通知投影**：成功严格只含 11 字段 `ok`/`release_id`/`target`/`needs_user`/`questions`/`conclusion`/`blocked`/`rewritten`/`run_record`/`elapsed_s`/`next_skill`（逐字来自本轮结果）；error 保留发送前完整对象（含 `error.kind/message/hints` 与全部部分状态），不套白名单。`webhook`/`webhook_error`/`webhook_error_detail` 等发送诊断只在全量结果。调用方先读通知投影、需要细节再读全量结果。成功（退出码 0）：
 
 ```json
 {"ok": true, "release_id": "<放行id>", "task_name": "loop-…", "target": "claude-matt-loop", "target_address": "t7",
@@ -120,7 +120,8 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `runs/<放行id>.turn.md`：本轮原料（断轮段，抽取器输入＋逐字校验语料，`turn_record`）。
 - `runs/<放行id>.md`：干净回复全文（回看对象 `run_record`）。
 - `runs/<放行id>.json`：台账，先记账后发送；一个放行只跑一轮，至多发送成功三次（重置或启动前置＋切模型前置＋主任务各一次，新鲜会话跳过重置），台账存在即拒同 id 重发。台账记创建/复活/领养/重建各 phase，失败带部分状态。
-- `runs/<放行id>.result.json`：最终交付，后台调用靠读它收结果；重发拒绝仍以台账为准。
+- `runs/<放行id>.notify.json`：通知投影＋通知记录（ADR-0014），逐字记录实际 POST 正文（成功 11 字段／error 全量），调用方先读它；字节与请求体相同、不追加换行。
+- `runs/<放行id>.result.json`：全量结果（最终交付），需要完整诊断/审计/回看时读它；重发拒绝仍以台账为准。
 
 记录与台账都随 OS 临时清理、不持久：事后审计与拒重发保护止于重启（放行 id 每次唯一，跨重启复用风险低）。要长期留存某轮，自行另存。
 

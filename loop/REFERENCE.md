@@ -4,13 +4,13 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 ## error 返回契约
 
-失败退出码 1；参数/配置类错误退出码 2（argparse 报错无 JSON；`reset_required`、`launch_required`、`display_name_required`、`bad_args`、`api_not_configured`、`bad_extract_backend`、`bad_api_max_tokens` 是预检拒发，退出码 2、有 JSON）。stdout 一行、同一字符串写 `.result.json`：
+失败退出码 1；参数/配置类错误退出码 2（argparse 报错无 JSON；`reset_required`、`launch_required`、`display_name_required`、`bad_args`、`api_not_configured`、`bad_extract_backend`、`bad_api_max_tokens` 是预检拒发，退出码 2、有 JSON）。stdout 一行、同一字符串写 `.result.json`（全量结果）；已建立安全运行路径的 error 另写 `.notify.json`（通知记录＝发送前完整 error 对象，不套成功白名单，ADR-0014）：
 
 ```json
 {"ok": false, "release_id": "…", "target": "…", "error": {"kind": "…", "message": "…", "hints": ["…"]}}
 ```
 
-`release_id` 与 `target` 必带；在放行 id 校验后算出 `task_name` 的，也一并带顶层 `task_name`（含发给 webhook 的同一份 JSON）。发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）；用了 `--target-model` 的 error 另带 `target_model`（请求值非验证值）与 `error.model_sent`（切模型前置是否已发出）；两个前置都用时 `reset_sent`/`model_sent` 一起标明部分状态。命名会话部分状态（ADR-0009）适用即带：`target_address`（解析 t 号）、`launched`（本轮已建终端）、`launch_sent`（启动命令已发）、`rebuilt`/`rebuilt_old_target`（已 kill 占位者＋旧 t 号）、`workspace`（`adopted`/`failed`）、`adopt_reason`（`app_closed`/`keep_error`/`no_pane`/`space_not_found`/`space_ambiguous`/`select_error`）、`space_created`/`pane_adopted`（建空间与 pane 落地部分状态；#46 起 `pane_adopted` 在 keep 落地复核通过即报，不限建空间分支）、`gift_cleanup_warning`（赠送 shell 清理降级告警，#46，reason：`tab_close_error`/`finish_timeout`/`finish_poll_error`/`rm_error`；真终端已可见，整轮仍 adopted、不丢放行）、`reset_skipped`；显示名（ADR-0010）适用即带：`display_name`（本轮传入显示名，尝试过 rename 就带、成功与 error 都带）、`display_name_warning`（rename 失败告警，reason：`rename_error`/`rename_mismatch`/`no_tab`）；空间定位（ADR-0011，#43）适用即带：`space`（本轮传入 `--space` 请求值，必传、成功与 error 都带）、`space_selected`（解析出的目标空间 id，解析成功才带）、`space_landed`（pane 实际落进的空间 id，落地复核通过才带）、`space_target_warning`（pane 落进非目标空间告警，reason：`landed_elsewhere`，带 `actual`）、`space_restore`（还原选中结果：`restored`/`user_switched`/`not_needed`/`failed`）、`space_restore_warning`（还原失败告警，reason：`restore_error`/`restore_mismatch`）。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout（及配置了时的 webhook）——没有可安全落盘的文件名。
+`release_id` 与 `target` 必带；在放行 id 校验后算出 `task_name` 的，也一并带顶层 `task_name`（含发给 webhook 的同一份 JSON）。发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）；用了 `--target-model` 的 error 另带 `target_model`（请求值非验证值）与 `error.model_sent`（切模型前置是否已发出）；两个前置都用时 `reset_sent`/`model_sent` 一起标明部分状态。命名会话部分状态（ADR-0009）适用即带：`target_address`（解析 t 号）、`launched`（本轮已建终端）、`launch_sent`（启动命令已发）、`rebuilt`/`rebuilt_old_target`（已 kill 占位者＋旧 t 号）、`workspace`（`adopted`/`failed`）、`adopt_reason`（`app_closed`/`keep_error`/`no_pane`/`space_not_found`/`space_ambiguous`/`select_error`）、`space_created`/`pane_adopted`（建空间与 pane 落地部分状态；#46 起 `pane_adopted` 在 keep 落地复核通过即报，不限建空间分支）、`gift_cleanup_warning`（赠送 shell 清理降级告警，#46，reason：`tab_close_error`/`finish_timeout`/`finish_poll_error`/`rm_error`；真终端已可见，整轮仍 adopted、不丢放行）、`reset_skipped`；显示名（ADR-0010）适用即带：`display_name`（本轮传入显示名，尝试过 rename 就带、成功与 error 都带）、`display_name_warning`（rename 失败告警，reason：`rename_error`/`rename_mismatch`/`no_tab`）；空间定位（ADR-0011，#43）适用即带：`space`（本轮传入 `--space` 请求值，必传、成功与 error 都带）、`space_selected`（解析出的目标空间 id，解析成功才带）、`space_landed`（pane 实际落进的空间 id，落地复核通过才带）、`space_target_warning`（pane 落进非目标空间告警，reason：`landed_elsewhere`，带 `actual`）、`space_restore`（还原选中结果：`restored`/`user_switched`/`not_needed`/`failed`）、`space_restore_warning`（还原失败告警，reason：`restore_error`/`restore_mismatch`）。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout（及配置了时的 webhook）——没有可安全落盘的文件名，也不构造通知记录（不用非法 id 拼路径，不虚构记录已存在，ADR-0014）。
 
 主任务已发送且有上一轮预测可结算时，即使后续抽取失败，error JSON 也带 `next_skill_feedback`（机械反馈）并更新本地统计；发送前失败不结算。学习降级的 `learning_warning` 可附在成功或 error JSON，均不新增 error kind、不改变退出码。
 
@@ -78,7 +78,25 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 学习存储（ADR-0012）：默认 `${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/`，`LOOP_LEARNING_DIR` 可覆盖；目录 `0700`、文件 `0600`，本地 JSONL/JSON，90 天且每 space 最近 100 条，到期/超额先删最旧，只含计数的全局汇总可长期保留。清理由正常读写触发，无后台任务。本地读改写用短临界区锁（不跨 API/pi）、两轮放行 id 去重、统计原子写；锁/I/O/权限/损坏一律降级 `learning_warning`，不新增 error kind、不改退出码、不阻断主轮。api 后端允许同 space 历史干净回复随既有抽取请求发往 `LOOP_API_BASE`（pi 按 pi 配置），案例正文绝不进 result/webhook。`LOOP_LEARNING=off` 关闭学习读写、近期序列与 few-shot，原有 next_skill 预测照旧；其他值默认开启。space id 缺失禁用该轮学习并告警；space 重建得到新 id 即新池，不按 name/folder 继承。不自动回填 `$TMPDIR` 旧数据。
 
-可选 webhook：env `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET` 都配才发，成功/报错都 POST 结果 JSON，鉴权走 `Authorization: Bearer <密钥>`，不进日志、不进 stdout，单次 ~10 秒超时；发失败不连累整轮，result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`（HTTP 状态码如 `"HTTP 401"`，或异常类名如 `"URLError"`）与 `webhook_error_detail`（脱敏诊断，stderr 打印同一份），结果文件仍是事实源。
+通知投影与通知记录（双产物，ADR-0014，#52 阶段一）：dispatch 交付时同时写全量结果 `.result.json`（审计/回看，字段语义不变）与 `.notify.json`（通知投影＋通知记录）。**统一读取契约**：DS Bot 与 Grok Bot 都先读 `notify.json`，只有需要完整诊断、审计或回看时才读 `result.json`；云端传话助手实际只取得 webhook 正文，`notify.json` 是发送端通知记录、不是云端可读本机文件，`run_record` 只给位置、传话助手不读取。成功通知（`ok=true`）严格只含下列 11 字段（顺序固定，逐字来自本轮结果，不补造）；error 通知不套白名单、保留发送前完整对象（`error.kind/message/hints` 与全部部分状态）：
+
+| 字段 | 含义 |
+| --- | --- |
+| `ok` | 本轮是否成功（成功通知恒 `true`） |
+| `release_id` | 放行 id |
+| `target` | 传入地址（会话名或 t 号，寻址稳定） |
+| `needs_user` | 回复里是否有需用户决定的事（布尔） |
+| `questions` | 逐字摘出的问题/审批句列表 |
+| `conclusion` | 逐字摘出的结论段（无则 `""`） |
+| `blocked` | 逐字摘出的弹框原句（无则 `""`） |
+| `rewritten` | 未过逐字校验的选段字段标记（`{}`＝全部命中） |
+| `run_record` | 干净回复全文位置（仅给位置，传话助手不读） |
+| `elapsed_s` | 主任务发送成功到取回落定的秒数 |
+| `next_skill` | 抽取器推测的下一轮 skill 名（`""`＝无预测） |
+
+`webhook`/`webhook_error`/`webhook_error_detail` 是 POST 后才产生的发送诊断，**只归全量结果**，绝不进通知投影/通知记录。投影只序列化一次；通知记录在首次 POST 前落盘，文件字节与实际请求体完全相同（不追加换行），主出口/代理重试/直连兜底复用同一组字节。无论 webhook 是否启用，只要已建立安全运行路径就生成通知投影与通知记录。**唤醒优先**：通知记录写失败仍尝试 POST，全量结果记 `notify_record_error`（异常类名）＋stderr 诊断；全量结果也不可写时 stderr/stdout 不声称记录完整；写失败不改退出码/`ok`、不递归生成第二条 error 通知。早期 error（非法放行 id 等）不构造通知记录。不新增 webhook 环境开关。
+
+可选 webhook：env `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET` 都配才发，成功/报错都 POST **通知投影字节**（与 `notify.json` 完全相同，见上「通知投影与通知记录」），鉴权走 `Authorization: Bearer <密钥>`，不进日志、不进 stdout，单次 ~10 秒超时；发失败不连累整轮，result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`（HTTP 状态码如 `"HTTP 401"`，或异常类名如 `"URLError"`）与 `webhook_error_detail`（脱敏诊断，stderr 打印同一份），结果文件仍是事实源。
 
 webhook 出网默认跟随本机系统代理（见 ADR-0003）：标准 `http_proxy`/`https_proxy` 显式配置时优先（source=env）；否则读系统代理（macOS SystemConfiguration，source=system）；系统例外表或 `no_proxy` 命中则直连（source=bypass）；都没配是 none；探测失败为 unknown。不能用 `getproxies()` 直接判——只设了 `no_proxy` 或非标准 `*_proxy`（如 `JEV_UPSTREAM_PROXY`）时它也返回非空字典，却没有任何 http/https 键，urllib 实际会直连。选定出口对传输层异常与 `HTTP 5xx` 最多试 3 次（首发＋2 次重试，退避 `0.5s`、`1.0s`）；若走了代理且 3 次全败，再传 `ProxyHandler({})` 强制跳过 env/系统代理真直连兜底 1 次（`4xx` 等非 5xx 状态码立刻失败、不重试也不兜底）。该策略只作用于 webhook POST，不改进程全局代理、不关证书校验。
 
@@ -100,7 +118,7 @@ webhook 出网默认跟随本机系统代理（见 ADR-0003）：标准 `http_pr
 
 工具定位：`hc`/`uv`（及 `backend=pi` 时的 `pi`）先 `shutil.which`（尊重显式 PATH），找不到再探 `~/.local/bin`、`/opt/homebrew/bin`、`/usr/local/bin`、nvm node bin（`~/.nvm/versions/node/*/bin`）；后台 job 缺 PATH 也能起，探不到才报 `missing_tool`。调用方 `python3` 直跑即可：版本门 `>=3.10` 直跑，`<3.10` 由 `handle_old_python` 探 uv 并 `os.execv` 经 `uv run --no-python-downloads` 自举重跑（env `LOOP_UV_REEXEC` 防循环），uv 退居内部兜底，调用方不用管 PATH。
 
-本地记录归置：`--loop-dir` 默认 `$TMPDIR/loop`（`tempfile.gettempdir()/loop`），`runs/` 放记录（台账/raw/record/result）、`releases/` 放放行提示词；CWD 无关、结果绝对路径回报，在哪跑都落同一处。全部随 OS 临时清理、不留持久审计，台账拒重发保护止于重启（放行 id 每次唯一，跨重启复用风险低）；脚本不加清理垫片。PATH 由 `find_tool` 兜底，调用方不需手写 export PATH 包装脚本。
+本地记录归置：`--loop-dir` 默认 `$TMPDIR/loop`（`tempfile.gettempdir()/loop`），`runs/` 放记录（台账/raw/record/result/notify）、`releases/` 放放行提示词；CWD 无关、结果绝对路径回报，在哪跑都落同一处。全部随 OS 临时清理、不留持久审计，台账拒重发保护止于重启（放行 id 每次唯一，跨重启复用风险低）；脚本不加清理垫片。PATH 由 `find_tool` 兜底，调用方不需手写 export PATH 包装脚本。
 
 ## 发布前检查
 

@@ -4,7 +4,7 @@
 跑法：python3.12 loop/scripts/test_dispatch_webhook.py
 覆盖：
   1 默认关：未配 env，webhook=off，不 POST，无 webhook_error。
-  2 配 env＋POST 成功：webhook=sent，Authorization: Bearer、无 X-Loop-Secret、带 release_id/target/task_name、无 expect_proc、密钥不进 stdout。
+  2 配 env＋POST 成功：webhook=sent，Authorization: Bearer、无 X-Loop-Secret、成功正文严格 11 字段投影（release_id/target 在内、task_name 只在全量结果）、无 expect_proc、密钥不进 stdout。
   3 配 env＋POST 失败（OSError，无代理）：重试至 3 次，webhook=failed＋webhook_error=OSError＋attempts=3，整轮仍 ok。
   4 error 路径也发 webhook、带 webhook 与 release_id/target/task_name（无 prompt_sha256/expect_proc）。
   5 只配 URL 或只配密钥：仍 off。
@@ -102,12 +102,14 @@ def main():
         body = json.loads(req.data.decode("utf-8"))
         assert body["ok"] is True and body["target"] == "t99", body
         assert body["release_id"] == "wh-sent-1" and res["release_id"] == "wh-sent-1", body
-        assert body["task_name"] == dispatch.generate_short_task_name("wh-sent-1"), body
+        # 成功通知是 11 字段投影（ADR-0014）：task_name 等审计字段只在全量结果，不进 POST 正文
+        assert set(body) == set(dispatch.NOTIFY_SUCCESS_FIELDS), body
+        assert "task_name" not in body and res["task_name"] == dispatch.generate_short_task_name("wh-sent-1"), body
         assert "expect_proc" not in body and "expect_proc" not in res, body
         assert "webhook" not in body  # POST 发生在记 webhook 字段之前
         assert SECRET not in json.dumps(res, ensure_ascii=False)  # 密钥不进 stdout
         assert "webhook_error" not in res, res
-        print("2 env set + POST ok: webhook=sent, Authorization Bearer, no X-Loop-Secret ok")
+        print("2 env set + POST ok: webhook=sent, 11-field projection, Authorization Bearer ok")
 
         # 3 配 env＋POST 失败（OSError，无代理）：重试共 3 次，整轮仍 ok，webhook_error 记类名
         set_env(URL, SECRET)
@@ -229,7 +231,7 @@ def main():
             return FakeResp()
 
         use(flaky_eof_open)
-        status, wh_err, wh_detail = dispatch.send_webhook({"ok": True})
+        status, wh_err, wh_detail = dispatch.send_webhook(b'{"ok": true}')
         assert status == "sent" and wh_err is None and wh_detail is None
         assert [p[2] for p in posted] == [proxy, proxy, proxy], posted
         assert sleeps == [0.5, 1.0], sleeps
@@ -246,7 +248,7 @@ def main():
             return FakeResp()
 
         use(flaky_502_open)
-        status, wh_err, wh_detail = dispatch.send_webhook({"ok": True})
+        status, wh_err, wh_detail = dispatch.send_webhook(b'{"ok": true}')
         assert status == "sent" and wh_err is None and wh_detail is None
         assert len(posted) == 2 and sleeps == [0.5], (posted, sleeps)
         print("10 HTTP 502 retries and succeeds on 2nd attempt ok")
@@ -257,7 +259,7 @@ def main():
         use(http401_urlopen)
         errbuf = io.StringIO()
         with contextlib.redirect_stderr(errbuf):
-            status, wh_err, wh_detail = dispatch.send_webhook({"ok": True})
+            status, wh_err, wh_detail = dispatch.send_webhook(b'{"ok": true}')
         assert status == "failed" and wh_err == "HTTP 401"
         assert wh_detail["attempts"] == 1 and "fallback_direct" not in wh_detail, wh_detail
         assert len(posted) == 1 and sleeps == [], (posted, sleeps)
@@ -277,7 +279,7 @@ def main():
             return FakeResp()
 
         use(proxy_fail_direct_ok)
-        status, wh_err, wh_detail = dispatch.send_webhook({"ok": True})
+        status, wh_err, wh_detail = dispatch.send_webhook(b'{"ok": true}')
         assert status == "sent" and wh_err is None and wh_detail is None
         assert [(p[2], p[3]) for p in posted] == [
             (proxy, "envproxy.corp:8080"),
@@ -301,7 +303,7 @@ def main():
         use(proxy_eof_direct_timeout)
         errbuf = io.StringIO()
         with contextlib.redirect_stderr(errbuf):
-            status, wh_err, wh_detail = dispatch.send_webhook({"ok": True})
+            status, wh_err, wh_detail = dispatch.send_webhook(b'{"ok": true}')
         assert status == "failed" and wh_err == "URLError", (status, wh_err)
         assert wh_detail["reason_type"] == "SSLEOFError", wh_detail
         assert wh_detail["attempts"] == 4, wh_detail
