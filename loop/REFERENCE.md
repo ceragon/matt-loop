@@ -12,6 +12,8 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 `release_id` 与 `target` 必带；在放行 id 校验后算出 `task_name` 的，也一并带顶层 `task_name`（含发给 webhook 的同一份 JSON）。发送后失败的 error 另带 `elapsed_s`；原文已落盘的另带 `run_record`。用了 `--reset` 的 error 另带 `reset`（类型）与 `error.reset_sent`（前置是否已发出，标明「前置已发／主任务未发」这类部分状态）；用了 `--target-model` 的 error 另带 `target_model`（请求值非验证值）与 `error.model_sent`（切模型前置是否已发出）；两个前置都用时 `reset_sent`/`model_sent` 一起标明部分状态。命名会话部分状态（ADR-0009）适用即带：`target_address`（解析 t 号）、`launched`（本轮已建终端）、`launch_sent`（启动命令已发）、`rebuilt`/`rebuilt_old_target`（已 kill 占位者＋旧 t 号）、`workspace`（`adopted`/`failed`）、`adopt_reason`（`app_closed`/`keep_error`/`no_pane`/`space_not_found`/`space_ambiguous`/`select_error`）、`space_created`/`pane_adopted`（建空间与 pane 落地部分状态；#46 起 `pane_adopted` 在 keep 落地复核通过即报，不限建空间分支）、`gift_cleanup_warning`（赠送 shell 清理降级告警，#46，reason：`tab_close_error`/`finish_timeout`/`finish_poll_error`/`rm_error`；真终端已可见，整轮仍 adopted、不丢放行）、`reset_skipped`；显示名（ADR-0010）适用即带：`display_name`（本轮传入显示名，尝试过 rename 就带、成功与 error 都带）、`display_name_warning`（rename 失败告警，reason：`rename_error`/`rename_mismatch`/`no_tab`）；空间定位（ADR-0011，#43）适用即带：`space`（本轮传入 `--space` 请求值，必传、成功与 error 都带）、`space_selected`（解析出的目标空间 id，解析成功才带）、`space_landed`（pane 实际落进的空间 id，落地复核通过才带）、`space_target_warning`（pane 落进非目标空间告警，reason：`landed_elsewhere`，带 `actual`）、`space_restore`（还原选中结果：`restored`/`user_switched`/`not_needed`/`failed`）、`space_restore_warning`（还原失败告警，reason：`restore_error`/`restore_mismatch`）。放行 id 本身非法（`bad_release_id`）或参数错误的 error 只有 stdout（及配置了时的 webhook）——没有可安全落盘的文件名。
 
+主任务已发送且有上一轮预测可结算时，即使后续抽取失败，error JSON 也带 `next_skill_feedback`（机械反馈）并更新本地统计；发送前失败不结算。学习降级的 `learning_warning` 可附在成功或 error JSON，均不新增 error kind、不改变退出码。
+
 ## error kind 表
 
 | kind | 含义 | 调用方动作 |
@@ -62,9 +64,17 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 发送门：首发只 `--if idle`；被拒（`status_mismatch`，零字节进入，不算重发）后 `hc get` 复核确认 `done`，补发前再核一次非 working/blocked，才不带 `--if` 补发一次；仍失败即 error。
 
-抽取逐字校验：选段字段逐一做原文子串校验（含去空白折叠），搜不到标 `rewritten` 附最接近片段，全部搜不到则 `error(extraction_rewritten)`；`reply` 干净全文先整体、再逐行校验，未过逐字校验的行标 `rewritten["reply"]`。`needs_user`（布尔判断）与 `next_command`（推测，ADR-0008）不参与校验。
+抽取逐字校验：选段字段逐一做原文子串校验（含去空白折叠），搜不到标 `rewritten` 附最接近片段，全部搜不到则 `error(extraction_rewritten)`；`reply` 干净全文先整体、再逐行校验，未过逐字校验的行标 `rewritten["reply"]`。`needs_user`（布尔判断）与 `next_skill`（推测，ADR-0008）不参与校验。
 
-下一步预测（ADR-0008）：抽取输出第六字段 `next_command`（字符串）＝调用方下一轮该发的**完整斜杠指令**（含参数，参数取自原文上下文，如 `/implement pop-xxxx.1`）；`""`＝无预测（下一步是用户答复/自由操作/看不出）。候选集为七个打法 skill：wayfinder/grill-with-docs/to-spec/to-tickets/implement/implement-spec/prototype。唯一推测字段：extract.md「只依据原文」规则为它开显式例外，豁免逐字校验、不进 `rewritten`；缺失或非字符串按 `""` 投影，不整轮报错，形状门不检查它。仅成功结果带（error 路径不进抽取）；随同一份 JSON 进台账与 webhook。**建议不是闸**：发送路径零改动、无新 error kind；反向约束落在 SKILL 纪律——判读时呈给用户，同 target 下一轮放行应照用预测指令作开场行（可编辑，偏离明示理由），预测是起始 skill 且 turn>0 时同次放行一并推荐 `--reset`。
+下一步预测（ADR-0008，#48 阶段一）：抽取输出第六字段 `next_skill`（字符串）＝调用方下一轮应使用的 **skill 名**，不带斜杠、不含参数；`""`＝无预测。候选固定七项：wayfinder/grill-with-docs/to-spec/to-tickets/implement/implement-spec/prototype。唯一推测字段：extract.md「只依据原文」规则为它开显式例外，豁免逐字校验、不进 `rewritten`；缺失、非字符串、带斜杠、带参数或集外值均按 `""` 投影，不整轮报错，形状门不检查它，学习元数据另记 `invalid_prediction`。仅成功结果带（error 路径不进抽取）；随同一份 JSON 进 result/webhook，不写台账。调用方拼成 `/<next_skill> <自填参数>`，旧 `next_command` 直接替换、不留兼容别名。**建议不是闸**：发送路径零改动、无新 error kind；放行卡固定呈上轮预测与四状态（照用预测／已编辑＋理由／上轮无预测／预测不可得），状态不写进主任务文件，预测是起始 skill 且 turn>0 时同次放行一并推荐 `--reset`。
+
+预测反馈（ADR-0012，#48 阶段二）：按调用方传入的 `target` 字面值分组，同 target 下一次实际完成发送的主任务首个非空行是上一轮预测的唯一 ground truth；`target_address` 不作长期键。发送前失败不消耗待观察；发送成功后立即机械结算，后续抽取失败也把 `next_skill_feedback` 附在 error JSON 增量字段并更新本地统计。每轮成功抽取都创建待观察（含空预测）；异常多条只对齐最近一条，旧记录标 `orphaned`。实际首行只解析成候选 skill／集外斜杠命令／普通文本类型，不把参数或首行全文持久化进反馈或学习案例。
+
+机械指标只有三项：**skill 命中率**（实际属于七项时同 skill 才算命中，空与无效预测均算未命中）、**预测覆盖率**（实际属于七项时合法非空预测所占比例）、**空预测正确率**（实际为普通文本/集外 skill/无斜杠时合法空预测所占比例，无效预测不算正确弃答）；另报 `invalid_prediction` 与样本数。统计含全量、最近 20 条滚动窗口（带样本数）、`examples_used=0/>0` 两队列（专指 few-shot 条数；近期序列使用情况另记），只看趋势、不宣称因果提升、不设硬提升门槛。
+
+近期序列与 few-shot（ADR-0012）：主任务发送成功后记录同 space id＋同 target 最近 8 个主任务的纯 skill 名序列（含本轮、oldest→newest；集外斜杠命令记名，普通文本记 `plain_text`，不记参数正文，前置不进序列）。学习案例存 target/space_id/两轮放行 id/时间/机械分类、预测轮干净回复全文、当时 next_skill、actual_skill／实际类型、当时最多 8 条序列快照；整屏原料与下一轮完整放行正文不入案例。每轮最多选 4 条同 space 案例，优先最近纠错、补足命中与正确弃答，同 target 优先再时间倒序；注入「历史近期序列＋历史干净回复＋当时预测＋实际 skill」，历史正文总预算 16,000 字符，超限少选不截断单条，序列不占此预算。无历史保持原 prompt；预测优先级为当前回复明示＞当前近期序列＞few-shot＞空。跨 space 只按 target 结算机械反馈，案例标 `learning_excluded:"space_changed"`，不进任何池，旧 space 正文不随新 space 请求出机。
+
+学习存储（ADR-0012）：默认 `${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/`，`LOOP_LEARNING_DIR` 可覆盖；目录 `0700`、文件 `0600`，本地 JSONL/JSON，90 天且每 space 最近 100 条，到期/超额先删最旧，只含计数的全局汇总可长期保留。清理由正常读写触发，无后台任务。本地读改写用短临界区锁（不跨 API/pi）、两轮放行 id 去重、统计原子写；锁/I/O/权限/损坏一律降级 `learning_warning`，不新增 error kind、不改退出码、不阻断主轮。api 后端允许同 space 历史干净回复随既有抽取请求发往 `LOOP_API_BASE`（pi 按 pi 配置），案例正文绝不进 result/webhook。`LOOP_LEARNING=off` 关闭学习读写、近期序列与 few-shot，原有 next_skill 预测照旧；其他值默认开启。space id 缺失禁用该轮学习并告警；space 重建得到新 id 即新池，不按 name/folder 继承。不自动回填 `$TMPDIR` 旧数据。
 
 可选 webhook：env `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET` 都配才发，成功/报错都 POST 结果 JSON，鉴权走 `Authorization: Bearer <密钥>`，不进日志、不进 stdout，单次 ~10 秒超时；发失败不连累整轮，result 记 `webhook: off/sent/failed`，失败另记 `webhook_error`（HTTP 状态码如 `"HTTP 401"`，或异常类名如 `"URLError"`）与 `webhook_error_detail`（脱敏诊断，stderr 打印同一份），结果文件仍是事实源。
 
