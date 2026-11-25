@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_notify.py — 双产物通知投影与通知记录测试（ADR-0014，#52 阶段一）。
 
-跑法：python3 loop/scripts/test_dispatch_notify.py
+跑法：python3 tests/test_dispatch_notify.py
 主测试缝＝dispatch.main 端到端（假 hc/herdr-app、固定抽取、假 webhook 网络出口），
 不新增低层纯函数缝。覆盖规格阶段一测试矩阵 1–11：
   1 webhook 关闭仍生成正确通知投影（13 字段），不 POST。
@@ -27,7 +27,7 @@ import tempfile
 import urllib.error
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"

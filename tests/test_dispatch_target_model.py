@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_target_model.py — 切模型前置流程测试（mock hc/pi，不打真实 agent）。
 
-跑法：python3.12 loop/scripts/test_dispatch_target_model.py
+跑法：python3.12 tests/test_dispatch_target_model.py
 覆盖（ADR-0006）：
   1 向后兼容：不传 --target-model，只发主任务一条，结果无 target_model。
   2 单独带 --target-model：先发 /model <名字>、落定后再发主任务；台账/result 记 target_model。
@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 from test_dispatch_reset import FakeApp  # noqa: E402
 import os  # noqa: E402

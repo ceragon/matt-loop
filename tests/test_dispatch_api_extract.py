@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_api_extract.py — 抽取直连 API 后端测试（ADR-0005，mock 网络，不打真网）。
 
-跑法：python3 loop/scripts/test_dispatch_api_extract.py
+跑法：python3 tests/test_dispatch_api_extract.py
 覆盖：
   1 后端解析：默认 api；pi；大小写/空白容忍；非法值 bad_extract_backend（rc=2）。
   2 启动预检：api 缺 env → api_not_configured（rc=2，只列变量名），零发送、无台账；
@@ -26,7 +26,7 @@ import tempfile
 import urllib.error
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 from test_dispatch_reset import FakeApp  # noqa: E402
 

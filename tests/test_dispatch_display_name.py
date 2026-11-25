@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_display_name.py — 显示名层测试（ADR-0010，mock hc/herdr-app）。
 
-跑法：python3 loop/scripts/test_dispatch_display_name.py
+跑法：python3 tests/test_dispatch_display_name.py
 缝：分发脚本 CLI 契约（与 get_or_create/adopt 同一缝，FakeHc/FakeApp 复用）。
 覆盖（规格 #41 Testing Decisions）：
   T1 创建缺 --display-name（launch/cwd 齐）→ display_name_required、exit 2、
@@ -22,7 +22,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import os  # noqa: E402
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"

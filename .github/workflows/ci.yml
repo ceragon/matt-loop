@@ -25,7 +25,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run all test suites
-        working-directory: loop/scripts
+        working-directory: tests
         run: |
           set -e
           for f in test_*.py; do

@@ -59,7 +59,7 @@ EMAIL_ALLOWED_DOMAINS = (
 ALLOWLIST: list[tuple[str, str, str]] = [
     # Fake proxy credential in a test fixture (fictional .corp domain,
     # joke password); the test asserts it never leaks into output.
-    ("loop/scripts/test_dispatch_webhook_diag.py", "email", "hunter2@sysproxy.corp"),
+    ("tests/test_dispatch_webhook_diag.py", "email", "hunter2@sysproxy.corp"),
 ]
 
 

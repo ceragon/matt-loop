@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_reset.py — reset 前置流程测试（mock hc/pi，不打真实 agent）。
 
-跑法：python3.12 loop/scripts/test_dispatch_reset.py
+跑法：python3.12 tests/test_dispatch_reset.py
 覆盖：
   1 向后兼容：不传 --reset / --reset none，只发主任务一条。
   2 reset=clear：先发 /clear、落定后再发主任务，共两条；台账/result 记 reset。
@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import os  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。

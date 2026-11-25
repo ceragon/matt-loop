@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_anchor_path.py — 锚点降级＋工具路径探测测试（mock hc/pi，不打真实 agent）。
 
-跑法：python3.12 loop/scripts/test_dispatch_anchor_path.py
+跑法：python3.12 tests/test_dispatch_anchor_path.py
 覆盖：
   1 锚点在屏、无折叠 → ok，complete:true，anchor_found:true。
   2 锚点滚出屏、无折叠 → ok，complete:true，anchor_found:false（修复：不再误判）。
@@ -16,7 +16,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import os  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。

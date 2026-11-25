@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """test_dispatch_get_or_create.py — 命名会话 get-or-create 分流测试（ADR-0009，mock hc/herdr-app）。
 
-跑法：python3 loop/scripts/test_dispatch_get_or_create.py
+跑法：python3 tests/test_dispatch_get_or_create.py
 缝：分发脚本 CLI 契约（进程内 import dispatch，hc_json→NamedFakeHc、app_json→FakeApp，
 tempdir 跑 main）；断言只认 stdout 一行 JSON、退出码、台账、桩调用日志。
 覆盖：
@@ -28,7 +28,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 from test_dispatch_reset import FakeApp  # noqa: E402  （第二桩全套件共用）
 import os  # noqa: E402
