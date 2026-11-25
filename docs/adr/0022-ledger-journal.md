@@ -98,6 +98,8 @@ ADR-0002（脚本做机械）与 ADR-0014（通知投影）不冲突；ADR-0020 
    - `state.learning` 与 `Journal` 平级，都由 `RunState` 持有、互不引用；`Journal` 对学习
      完全无感，接缝只有 `fact` 一个口。谁来调 `fact`（管线拿返回值后调，还是学习对象内部
      持写入口）归 ⑤ 的设计票。
+     > 补记（ADR-0023，#84）：由学习会话内部持写入口——会话构造时拿到 `state.fact`，动词
+     > 内部写 `fact(..., ledger=False)`，不返回结果；`Journal` 一侧无需任何改动。
 7. **时间戳**：`Journal.fail` 自己盖 `failed_at`；其余 `*_at`（`created_at`、`sent_at`、
    `read_at`、各 `*_done_at`）仍由调用方作为字段传入，`Journal` 不猜字段名。`Journal`
    构造时从 `Deps` 取墙钟 `now`，不直接引用时间；若现有 `Deps` 的时钟只有单调钟与 sleep，

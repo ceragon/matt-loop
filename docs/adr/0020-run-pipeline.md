@@ -171,6 +171,12 @@ deps)`，`main` 退成薄壳，测试入口不变」；ADR-0018 立 `Herdr` 网�
       共四个点通过 `state.learning` 调用；关闭时它是空对象，调用点不写 `if learning_on`。
       `LearningStore` 内部、`begin` / `after_extract` / `finish` 的形状、空对象本身的形状
       仍归 ⑤。
+
+    > 补记（ADR-0023，#84）：这些形状已由 ADR-0023 定写——`state.learning` 是四个动词
+    > （`begin(resolve_space)` / `settle(first_line)` / `inject()` / `record(extraction,
+    > complete)`），不设 `finish`；会话持有 `state.fact`，动词不返回 feedback / warning；
+    > 关闭时的空对象是独立的 `Disabled` 类；`learning_prepare` 的 space id 解析走管线构造的
+    > 回调，`resolve_space_id_for_learning` 退役。四个调用点的位置与 `Extraction` 不变。
 14. **外部契约零变化靠特征化快照守，并成为实施前置**：在抽管线**之前**先加一套特征化快照
     测试，建在 `harness.run` 加 `FakeHerdr` 上：五路分流各跑成功路径与若干关键故障点；
     记录 stdout JSON、`result.json`、`notify.json`、台账终态与 phase 序列；时间戳与路径归一化
