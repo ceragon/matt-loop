@@ -4,6 +4,8 @@ status: accepted
 
 # 会话起始 skill 必须重置目标会话
 
+> 补记（ADR-0015，#62）：本 ADR 的机械闸（行首会话起始 skill＋turn>0＋none 拒发）不变；「新任务首轮推荐重置（不限起始 skill）」属建议层延伸纪律，不新增机械拒发，见 ADR-0015 决定 7。
+
 ## 背景
 
 loop 的调用方（Grok Bot 等）把放行提示词发进 herdr 执行者会话。执行者跑的是

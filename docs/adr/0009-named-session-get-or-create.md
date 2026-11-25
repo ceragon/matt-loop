@@ -43,7 +43,10 @@ hc 0.1.22、herdr-app 0.1.17，未碰生产会话）：
 
 1. **身份＝会话名**（Q1=C）：调用方命名（bot 名或会话 id 类，slug 成
    1–32 位 a-z0-9-_），脚本零映射；推荐命名法（`<kind>-<repo>` 或 bot slug）
-   写 SKILL.md。`--target` 推荐传名字，result `target` 恒为传入地址、另报
+   写 SKILL.md。（此句 superseded by ADR-0015：推荐命名法改为
+   `<bot>-<machine>`——一 bot 一机器恒一条，bot＝派发实例 slug、machine 本机恒
+   local／远端本地取值，任务区分交给显示名；身份＝会话名、脚本零映射、1–32
+   位 a-z0-9-_ 校验不变。）`--target` 推荐传名字，result `target` 恒为传入地址、另报
    `target_address`（解析 t 号）。
 2. **报错驱动 get-or-create**（Q2=A）：`hc get` 预检 `not_found`/`finished`
    即创建信号，同一次调用内创建→等就绪→核身份→发主任务。需创建/复活而无
@@ -103,7 +106,9 @@ hc 0.1.22、herdr-app 0.1.17，未碰生产会话）：
      `--space` 必传三态解析显式指定落点。）
 9. **switch-agent 移除**（Q5=B）：`--switch-agent`/`--exit-command`/
    `--exit-keys` 代码＋测试＋文档整条删除；换 kind＝换 `--target` 到另一命名
-   会话（get-or-create 兜底），旧会话保留可切回；既有未命名终端下次换 kind
+   会话（get-or-create 兜底），旧会话保留可切回（此推荐路径 superseded by
+   ADR-0015：约定内换 kind＝同名 `--rebuild`，显式授权、只杀 idle/done；换
+   `--target` 降为约定外逃生门，机制仍在）；既有未命名终端下次换 kind
    时 kill 另建命名会话。ADR-0007 标 superseded by 0009，文件保留。
 10. **词汇**（Q13）：GLOSSARY 目标会话去 grok 硬编码、地址改名字（推荐）或
     t 号；新词条会话名/命名会话/shell 包装/创建前置/复活/强制重建/领养；
