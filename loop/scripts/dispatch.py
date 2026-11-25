@@ -84,8 +84,15 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
     重启（放行 id 每次唯一）。PATH 由 find_tool 兜底，不需手写包装脚本。
   - 抽取字段逐字校验：搜不到原文的字段标 rewritten 并附最接近片段；
     全部搜不到则 error(extraction_rewritten)。reply 干净全文先整体、再逐行校验，
-    未过逐字校验的行标 rewritten["reply"]。next_command 是推测字段（ADR-0008）：
-    下一轮该发的完整斜杠指令，豁免逐字校验，缺失/非字符串按 ""，不整轮报错。
+    未过逐字校验的行标 rewritten["reply"]。next_skill 是推测字段（ADR-0008 修订，#48）：
+    下一轮应使用的纯 skill 名（候选固定七项、不带斜杠不含参数），豁免逐字校验，
+    缺失/非字符串/带斜杠/带参数/集外值均宽容投影为 ""，不整轮报错。
+  - 本地学习（ADR-0012，#48 阶段二，learning.py）：LOOP_LEARNING=off 可整体关闭。开启时
+    主任务发送成功后机械结算上一轮同 target 预测（next_skill_feedback）＋记同 space＋target
+    近期 skill 序列；成功抽取后创建待观察（含空预测）；抽取前选 ≤4 条同 space 案例注入既有
+    调用（不新增模型请求）。存储默认 ${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/
+    （LOOP_LEARNING_DIR 可覆盖），90 天＋每 space 100 条，短临界区锁不跨抽取调用；任何
+    锁/I/O/权限/损坏降级 learning_warning，不新增 error kind、不改退出码、不阻断主轮。
   - 抽取后端（ADR-0005）：LOOP_EXTRACT_BACKEND=api|pi，默认 api。api 走 OpenAI 兼容
     chat completions（LOOP_API_BASE/KEY/MODEL 全必填无默认，启动预检缺失即
     api_not_configured）；temp 0、max_tokens 默认 32768（LOOP_API_MAX_TOKENS 可覆盖）、
@@ -131,6 +138,11 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+# learning.py 与本脚本同目录；无论 dispatch 被直跑还是经 importlib 加载（部分测试不加
+# sys.path），都先把脚本目录挂上，保证兄弟模块可导入。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import learning  # noqa: E402
 
 # hc 任务名规则
 TASK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
@@ -237,9 +249,11 @@ WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
 
 # summary 已移除（原文才是重点）：pi 若仍多给 summary，投影时直接丢弃，
 # 不算坏行、不进 rewritten。
-# next_command（ADR-0008）是唯一推测字段：下一轮该发的完整斜杠指令，
-# 缺失/非字符串按 "" 投影，不整轮报错；不参与逐字校验。
-EXTRACT_FIELDS = ("needs_user", "questions", "conclusion", "blocked", "reply", "next_command")
+# next_skill（ADR-0008 修订，#48）是唯一推测字段：下一轮应使用的纯 skill 名（不带斜杠、
+# 不含参数），候选固定七项；缺失/非字符串/带斜杠/带参数/集外值均宽容投影为 ""，不整轮
+# 报错；不参与逐字校验。格式错误另记 invalid（learning.project_next_skill），供阶段二
+# 统计 invalid_prediction，不得把格式错误算作正确弃答。
+EXTRACT_FIELDS = ("needs_user", "questions", "conclusion", "blocked", "reply", "next_skill")
 
 # 会话起始 skill（ADR-0004）：新会话必须以其中之一开场，调用时目标会话必须先重置。
 # 清单出自 /ask-matt 工作流（默认调用方已装 Matt 全套 skill）；中途 skill
@@ -693,7 +707,7 @@ def closest_fragment(value, text):
 def verify_extraction(ext, screen, raw_path):
     """裁定 C：questions/conclusion/blocked 全部逐字摘原文。
     对每个非空字段值做子串校验；搜不到的标 rewritten 并附最接近片段；
-    全部搜不到则 error。needs_user 是布尔判断字段、next_command 是推测字段
+    全部搜不到则 error。needs_user 是布尔判断字段、next_skill 是推测字段
     （ADR-0008），均不参与校验。"""
     checks = [("conclusion", ext["conclusion"]), ("blocked", ext["blocked"])]
     checks += [(f"questions[{i}]", q) for i, q in enumerate(ext["questions"])]
@@ -1092,6 +1106,32 @@ def select_and_verify(app_bin, space_id):
     return app_json(app_bin, ["status"], QUERY_GUARD_S).get("space")
 
 
+def resolve_space_id_for_learning(app_bin, space):
+    """只读把 --space 三态解析成 space id（ADR-0012 学习用），不建空间、不 select、不抛错。
+
+    与领养的三态匹配同规则，但纯只读：路径按 folder 唯一匹配、sp 前缀按 id、其余按名唯一。
+    零匹配/多匹配/缺 id/ls 失败一律返回 None——学习侧据此禁用本轮 space scoped 学习并告警
+    （id 缺失禁用该轮学习，ADR-0012）。绝不触发 space.new（那是领养路径的显式 opt-in）。
+    """
+    try:
+        ls = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+    except DispatchError:
+        return None
+    spaces = ls.get("spaces") or []
+    if space.startswith(("/", "~")):
+        path = os.path.normpath(str(Path(space).expanduser()))
+        matches = [sp for sp in spaces if sp.get("folder") == path]
+        if len(matches) == 1:
+            return matches[0].get("id") or None
+        return None
+    if space.startswith("sp"):
+        return space if any(sp.get("id") == space for sp in spaces) else None
+    matches = [sp for sp in spaces if sp.get("name") == space]
+    if len(matches) == 1:
+        return matches[0].get("id") or None
+    return None
+
+
 def find_tab(ls_data, address):
     """在 herdr-app ls 结果里找终端所在 tab 条目（显示名落地用，ADR-0010）；
     定位不到（无 tab 或 tab 无 id）返回 None。"""
@@ -1426,7 +1466,12 @@ def adopt(hc_bin, app_bin, address, ledger, ledger_path, ctx, precheck, space,
         write_json_atomic(ledger_path, ledger)
 
 
-def parse_extraction(stdout):
+def parse_extraction(stdout, meta=None):
+    """解析抽取输出成固定六字段。next_skill 经闭集宽容投影（ADR-0008）。
+
+    meta 为可选 dict：给定时写入 meta["next_skill_invalid"]（格式错误标记，供阶段二
+    统计），不进入返回的 ext（ext 恒为 EXTRACT_FIELDS 六字段，形状门不检查 next_skill）。
+    """
     s = stdout.strip()
     candidates = []
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.S)
@@ -1447,11 +1492,13 @@ def parse_extraction(stdout):
             and isinstance(obj.get("conclusion"), str)
             and isinstance(obj.get("reply"), str)
         ):
-            ext = {k: obj[k] for k in EXTRACT_FIELDS if k != "next_command"}
-            # next_command 是推测字段（ADR-0008）：缺失或非字符串按 ""，
-            # 建议性字段不连累整轮（与 webhook 失败不连累同哲学）。
-            nc = obj.get("next_command")
-            ext["next_command"] = nc if isinstance(nc, str) else ""
+            ext = {k: obj[k] for k in EXTRACT_FIELDS if k != "next_skill"}
+            # next_skill 是唯一推测字段（ADR-0008）：闭集宽容投影，建议性字段不连累整轮
+            # （与 webhook 失败不连累同哲学）。格式错误标 invalid，另供学习统计。
+            skill, invalid = learning.project_next_skill(obj.get("next_skill"))
+            ext["next_skill"] = skill
+            if meta is not None:
+                meta["next_skill_invalid"] = invalid
             return ext
     raise DispatchError(
         "extraction_invalid",
@@ -1466,9 +1513,13 @@ def extract_via_pi(pi_bin, args, raw_path):
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
     instruction = (
         "整屏原文已随消息附上（@文件）。按系统提示词裁剪并抽取，"
-        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_command 六个字段。"
-        f'整屏原文落盘路径：{raw_path}'
+        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
     )
+    # 在线 few-shot（ADR-0012）：同 space 历史案例＋当前近期序列，无历史时为空、沿用原 prompt。
+    injection = getattr(args, "learning_injection", "")
+    if injection:
+        instruction += "\n\n" + injection
+    instruction += f'\n整屏原文落盘路径：{raw_path}'
     argv = [
         pi_bin, "-p",
         "--no-tools", "--no-session", "--no-extensions", "--no-skills",
@@ -1486,7 +1537,10 @@ def extract_via_pi(pi_bin, args, raw_path):
             ["原文已落盘，可人工重做抽取", (p.stderr or p.stdout).strip()[:300]],
         )
     # 研究表明 pi 模型失败时退出码可能仍为 0，所以无论退出码都要校验输出。
-    return parse_extraction(p.stdout)
+    meta = {}
+    ext = parse_extraction(p.stdout, meta)
+    args.learning_next_skill_invalid = meta.get("next_skill_invalid", False)
+    return ext
 
 
 def extract_via_api(args, raw_path):
@@ -1501,13 +1555,17 @@ def extract_via_api(args, raw_path):
     raw_text = Path(raw_path).read_text(encoding="utf-8")
     instruction = (
         "整屏原文已内联在本消息末尾。按系统提示词裁剪并抽取，"
-        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_command 六个字段。"
+        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
     )
+    # 在线 few-shot（ADR-0012）：同 space 历史案例＋当前近期序列插在指令与整屏原文之间，
+    # 整屏原文仍居消息末尾；无历史时为空、沿用原 prompt（冷启动行为不变）。
+    injection = getattr(args, "learning_injection", "")
+    user_content = instruction + ("\n\n" + injection if injection else "") + "\n\n" + raw_text
     body = json.dumps({
         "model": model,
         "messages": [
             {"role": "system", "content": extract_md.read_text(encoding="utf-8")},
-            {"role": "user", "content": instruction + "\n\n" + raw_text},
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0,
         "max_tokens": max_tokens,
@@ -1538,7 +1596,10 @@ def extract_via_api(args, raw_path):
         raise DispatchError("extraction_invalid",
                             "API 响应缺 choices[0].message.content",
                             ["原文已落盘，可人工重做抽取"])
-    return parse_extraction(content)
+    meta = {}
+    ext = parse_extraction(content, meta)
+    args.learning_next_skill_invalid = meta.get("next_skill_invalid", False)
+    return ext
 
 
 def extract(pi_bin, args, raw_path):
@@ -1929,6 +1990,21 @@ def main(argv=None):
             apply_display_name(find_app_bin(), ctx.get("target_address"),
                                args.display_name, ledger, ledger_path, ctx)
 
+        # 2.47) 学习准备（ADR-0012，#48 阶段二）：LOOP_LEARNING=off 时整段跳过，原有
+        #       next_skill 预测/抽取/发送照旧。开启时只读把 --space 解析成 space id（不建
+        #       空间、不 select）；id 缺失则本轮 space scoped 学习禁用并告警。学习全程建议性，
+        #       任何存储/锁/I/O 故障降级 learning_warning，不阻断主轮。
+        learning_on = learning.enabled()
+        learning_store = None
+        learning_space_id = None
+        if learning_on:
+            learning_store = learning.LearningStore()
+            learning_space_id = resolve_space_id_for_learning(find_app_bin(), args.space)
+            if learning_space_id is None:
+                ctx["learning_warning"] = {
+                    "reason": "space_id_missing",
+                    "detail": "--space 未能只读解析出唯一 space id，本轮序列/案例/few-shot 禁用"}
+
         # 2.5) 重置前置（--reset != none）：同一 target 上先发字面命令 /new /clear /compact，
         #      等落定（idle/done + 屏幕静置）后再发主任务。放行一并授权前置＋主任务：
         #      前置按枚举校验（argparse choices），主任务仍逐字来自放行文件、校 sha256。
@@ -1975,6 +2051,17 @@ def main(argv=None):
         ledger.update(phase="sent_waiting", sent_at=now_iso(), send=send, resent=resent)
         write_json_atomic(ledger_path, ledger)
 
+        # 3.5) 学习结算（ADR-0012）：主任务发送成功后立即记近期序列＋结算上一轮同 target
+        #      预测。发送前预检失败不会到这里（不消耗待观察）；后续抽取失败仍保留反馈并附在
+        #      error JSON。ground truth＝主任务首个非空行（nonempty[0]），重置/切模型前置不算。
+        if learning_on:
+            lr = learning_store.settle_and_record(args.target, args.release_id,
+                                                  learning_space_id, nonempty[0])
+            if lr.get("feedback") is not None:
+                ctx["next_skill_feedback"] = lr["feedback"]
+            if lr.get("warning") is not None:
+                ctx["learning_warning"] = lr["warning"]
+
         # 4) 等待落定（墙钟从主任务发送成功起计）。
         deadline = started + args.wall_clock
         final = wait_for_result(hc_bin, args, baseline, deadline)
@@ -2016,6 +2103,20 @@ def main(argv=None):
         # 7) 裁剪＋抽取（默认 API 直连，pi 备选）＋逐字校验（裁定 C），合并输出。
         ledger.update(phase="extracting")
         write_json_atomic(ledger_path, ledger)
+        # 7.0) 在线 few-shot（ADR-0012）：抽取前选 ≤4 条同 space 案例＋当前近期序列注入既有
+        #      抽取调用（不新增模型请求）。锁在此事务内即释放，绝不跨下面的 API/pi 调用。
+        #      无历史时注入为空、完全沿用原 prompt（冷启动行为不变）。
+        examples_used = 0
+        sequence_used = False
+        seq_snapshot = []
+        if learning_on:
+            inj = learning_store.build_injection(learning_space_id, args.target)
+            args.learning_injection = inj.get("text", "")
+            examples_used = inj.get("examples_used", 0)
+            sequence_used = inj.get("sequence_used", False)
+            seq_snapshot = inj.get("sequence", [])
+            if inj.get("warning") is not None:
+                ctx["learning_warning"] = inj["warning"]
         ext = extract(pi_bin, args, raw_path)
         reply = ext.pop("reply")
         rewritten = verify_extraction(ext, screen, raw_path)
@@ -2026,6 +2127,15 @@ def main(argv=None):
         record_path.write_text(reply, encoding="utf-8", newline="")
         ledger.update(rewritten=rewritten, run_record=str(record_path),
                       reply_chars=len(reply), reply_bad_lines=len(bad_reply_lines))
+        # 7.5) 创建待观察预测（ADR-0012）：每轮成功抽取都创建（含空预测），供下一轮同 target
+        #      结算。以预测轮放行 id 去重；案例正文绝不进 result/webhook（只存本地）。
+        if learning_on:
+            pr = learning_store.record_prediction(
+                args.target, args.release_id, learning_space_id,
+                ext.get("next_skill", ""), getattr(args, "learning_next_skill_invalid", False),
+                reply, seq_snapshot, examples_used, sequence_used)
+            if pr.get("warning") is not None:
+                ctx["learning_warning"] = pr["warning"]
         result = {
             "ok": True,
             "phase": "done",
@@ -2057,7 +2167,8 @@ def main(argv=None):
                   "workspace", "space_created", "pane_adopted", "gift_cleanup_warning",
                   "reset_skipped", "display_name", "display_name_warning",
                   "space", "space_selected", "space_landed", "space_target_warning",
-                  "space_restore", "space_restore_warning"):
+                  "space_restore", "space_restore_warning",
+                  "next_skill_feedback", "learning_warning"):
             if k in ctx:
                 result[k] = ctx[k]
         ledger.update(phase="done", done_at=now_iso())
@@ -2094,7 +2205,8 @@ def main(argv=None):
                   "space_created", "pane_adopted", "gift_cleanup_warning",
                   "reset_skipped", "display_name", "display_name_warning",
                   "space", "space_selected", "space_landed", "space_target_warning",
-                  "space_restore", "space_restore_warning"):
+                  "space_restore", "space_restore_warning",
+                  "next_skill_feedback", "learning_warning"):
             if k in ctx:
                 out[k] = ctx[k]
         if started is not None:

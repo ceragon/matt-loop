@@ -11,11 +11,15 @@ dispatch 做发送、等待、取回、落盘这些机械活，抽取器（默�
 
 ## 每轮循环（走管道）
 
-1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_command` 非空时，本轮放行开场行**应照用该预测指令**（可编辑；偏离须向用户明示理由，ADR-0008）。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd、显示名）与目标空间（`--space`，每轮必传）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
+1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_skill` 非空时，本轮主任务**应照用该 skill 作开场**，由调用方拼成 `/<next_skill> <自填参数>`；换 skill 须在放行卡明示理由（ADR-0008），卡片四状态见「预测可见性」。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd、显示名）与目标空间（`--space`，每轮必传）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
 2. **写放行文件**：全文写成 UTF-8 文件，放 `$TMPDIR/loop/releases/<放行id>.txt`（目录不存在就建），放行后一字未改。完成判据：文件就绪（dispatch 核对 sha256，改动即拒发）。
 3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset`/`--target-model` 时该放行一并授权全部前置＋主任务（重置是枚举里可预知的固定命令，切模型是字面 `/model <名字>`）。
-4. **判读结果**：读 `.result.json`＋`run_record`，整理成选项卡给用户；`next_command` 非空时一并呈出（它是预测不是事实，参数可能有错，下一轮放行前用户会审）。完成判据：用户看到结果、给出下一轮方向。
+4. **判读结果**：读 `.result.json`＋`run_record`，整理成选项卡给用户；`next_skill` 非空时以「本轮新预测 skill」一并呈出（它是预测不是事实，参数由下一轮调用方自填）。若带 `next_skill_feedback`，把本轮刚结算的照用／偏离与关键计数变化一并呈出。完成判据：用户看到结果、给出下一轮方向。
 5. 回到 1，下一轮回复仍走管道。
+
+## 预测可见性（ADR-0008）
+
+每轮放行卡固定展示上一轮同 target 的预测 skill，并在卡片开场标四态之一：`照用预测`（沿用同一 skill，自填参数不算编辑）、`已编辑：<理由>`（换 skill，理由必写）、`上轮无预测`、`预测不可得`。没有可取得的上一轮结果时不猜测、不补造。**状态标签只给用户看，不写进主任务放行文件**；主任务首个非空行仍是实际 `/skill 参数` 或普通任务文本，保住行首预检与 ground truth。卡片上的「上轮预测」与结果选项卡上的「本轮新预测 skill」必须分开标注。以上是调用方硬纪律，但建议不是闸：不新增机械拒发，不强制改写用户放行。
 
 ## 调用前
 
@@ -92,12 +96,13 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
  "complete": true, "complete_reason": [], "anchor_found": true, "elapsed_s": 690.5, "chars": 1834,
  "run_record": "$TMPDIR/loop/runs/<放行id>.md", "raw_record": "$TMPDIR/loop/runs/<放行id>.raw.md",
  "prompt_sha256": "…", "rewritten": {}, "extract_backend": "api", "webhook": "off",
- "needs_user": false, "questions": [], "conclusion": "…", "blocked": "", "next_command": "/to-spec"}
+ "needs_user": false, "questions": [], "conclusion": "…", "blocked": "", "next_skill": "to-spec"}
 ```
 
 - `run_record`（`.md`）是抽取器从整屏**裁剪出的干净回复全文**（剔 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏，逐字保留正文），是回看对象；`raw_record`（`.raw.md`）是整屏原料（逐字读回，制表符按终端制表位展开为空格，审计用）。error 时尚无干净全文，`run_record` 退回指整屏原料。
 - `needs_user`（布尔）：回复里是否有需用户决定的事。三个选段字段是抽取器从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批一个元素（问题＋选项＋推荐整块）、`conclusion` 结论段（无则 `""`）、`blocked` 弹框原句（无则 `""`）。干净全文 `reply` 不进本 JSON，落在 `run_record`；要展示回复内容直接用 `run_record` 原文。
-- `next_command`（字符串，ADR-0008）：抽取器**推测**的下一轮完整斜杠指令（七个打法 skill 候选，参数取自原文上下文）；`""`＝无预测。唯一推测字段，豁免逐字校验、缺失按 `""` 不连累整轮。**建议不是闸**：下一轮放行应照它作开场行（可编辑，偏离明示理由）；它是起始 skill 且 turn>0 时，讨放行一并推荐 `--reset`。
+- `next_skill`（字符串，ADR-0008）：抽取器**推测**的下一轮 skill 名，不带斜杠、不含参数；候选固定为 `wayfinder`/`grill-with-docs`/`to-spec`/`to-tickets`/`implement`/`implement-spec`/`prototype`，`""`＝无预测。唯一推测字段，豁免逐字校验；缺失、非字符串、带斜杠、带参数或集外值都宽容投影为 `""`，不连累整轮。调用方负责拼成 `/<next_skill> <自填参数>`。**建议不是闸**：下一轮放行卡按「预测可见性」呈出照用或编辑状态；它是起始 skill 且 turn>0 时，讨放行一并推荐 `--reset`。
+- `next_skill_feedback`（ADR-0012，阶段二）：本轮主任务发送后与上一轮同 target 预测结算出的机械反馈，带上轮预测、本轮实际 skill／类型、skill 判定和上轮放行 id；正常 result 与发送后的 error JSON 都可带。`learning_warning` 只表示学习存储、权限、锁或记录损坏降级，不影响主轮退出码；`learning_excluded:"space_changed"` 表示跨 space 反馈已结算但不进入 few-shot。
 - `rewritten`：脚本对选段字段逐一做原文子串校验，搜不到的在此标出、值为最接近原文片段；`{}` 即全部逐字命中。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `raw_record`。**
 - `target` 恒为**传入地址**（会话名或 t 号，寻址稳定）；`target_address`：解析出的 **t 号**（审计定位，名字恒解析到最新 live）；`turn` 是**终端级累计计数**（复活会话 turn>0 但会话是空的，ADR-0009）。
 - `launched`：仅本轮 `hc run` 创建了终端才出现（`true`，创建/重建路径，error 时也带）；`rebuilt`/`rebuilt_old_target`：仅强制重建才出现（`true`＋被 kill 占位者的旧 t 号）；`workspace`：领养状态（`adopted`/`failed`，创建与既有路径都报）；`reset_skipped:"fresh_launch"`：新鲜会话跳过了重置发送（传了 `--reset` 但创建/复活/重建时）；`space`：`--space` 请求值回显（必传，成功与 error 都带，ADR-0011），`space_selected`：解析出的目标空间 id（解析成功才带），`space_landed`：pane 实际落进的空间 id，`space_target_warning`：pane 落进非目标空间告警（`landed_elsewhere`），`space_restore`：还原选中结果（`restored`/`user_switched`＝用户接管跳过/`not_needed`/`failed`），`space_restore_warning`：还原失败告警，`gift_cleanup_warning`：赠送 shell 清理失败降级告警（#46，真终端已可见、整轮仍 adopted；这些告警都不丢放行）。这些字段成功与 error 都带适用项，部分状态（终端已建/启动已发/旧会话已死/空间已建/选中已还原）如实报。
@@ -116,6 +121,14 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `runs/<放行id>.result.json`：最终交付，后台调用靠读它收结果；重发拒绝仍以台账为准。
 
 记录与台账都随 OS 临时清理、不持久：事后审计与拒重发保护止于重启（放行 id 每次唯一，跨重启复用风险低）。要长期留存某轮，自行另存。
+
+## 本地学习（ADR-0012，阶段二）
+
+学习数据与上述单轮产物分家：默认落 `${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/`（`LOOP_LEARNING_DIR` 可覆盖），目录 `0700`、文件 `0600`，90 天且每 space 最近 100 条；公开仓库不放真实案例。`LOOP_LEARNING=off` 时完全关闭学习读写、近期序列与 few-shot，原有 `next_skill` 预测照常。
+
+脚本机械记录同 space、同 target 最近 8 个主任务的纯 skill 名序列（普通文本记 `plain_text`，不存参数正文），并保存含干净回复、预测、实际 skill 与当时序列快照的学习案例。每轮最多选 4 条同 space 案例注入既有抽取调用，历史正文总预算 16,000 字符；不新增模型调用。预测优先级为**当前回复明示＞当前近期序列＞few-shot＞空**。
+
+使用 api 后端时，选中的同 space 历史干净回复会随抽取请求发往 `LOOP_API_BASE`；案例正文绝不进入 result/webhook。反馈按 target 配对，案例池按解析后的 space id 隔离；space 重建得到新 id 即新池，同 target 跨 space 只结算机械反馈、不共享案例。学习 I/O、权限、锁或损坏问题一律降级 `learning_warning`，不阻断主轮。机械指标与统计细节见 `REFERENCE.md` 和 ADR-0012。
 
 ## 护栏
 

@@ -49,7 +49,7 @@ _Avoid_: 卡住、阻塞
 _Avoid_: 总结、概括、提炼
 
 **整屏原料**（Raw Record）:
-一轮取回的完整屏幕原文，逐字写到 `.loop/runs/<放行id>.raw.md`，含终端界面杂物，作审计。
+一轮取回的完整屏幕原文，逐字写到 `$TMPDIR/loop/runs/<放行id>.raw.md`，含终端界面杂物，作审计。
 _Avoid_: 日志、转录、dump
 
 **裁剪**（Trimming）:
@@ -57,7 +57,7 @@ _Avoid_: 日志、转录、dump
 _Avoid_: 清洗、过滤、摘要
 
 **干净回复全文**（Reply）:
-抽取器裁剪整屏原料得到的目标回复正文，逐字、去杂物，写到 `.loop/runs/<放行id>.md`，是调用方回看的对象（result 的 run_record）。
+抽取器裁剪整屏原料得到的目标回复正文，逐字、去杂物，写到 `$TMPDIR/loop/runs/<放行id>.md`，是调用方回看的对象（result 的 run_record）。
 _Avoid_: 摘要、转录、选段
 
 **唤醒**（Wake-up）:
@@ -67,6 +67,22 @@ _Avoid_: 交付物、输出
 **选项卡**（Option Card）:
 调用方把一次唤醒的内容整理给用户的形态；原文不直接转给用户。
 _Avoid_: 摘要、转发
+
+**下一步预测**（Next Skill）:
+抽取器对调用方下一轮应使用的打法 skill 的建议，值为七个候选 skill 名之一或空；不含斜杠与参数，参数由调用方决定。
+_Avoid_: next_command、完整指令预测
+
+**预测反馈**（Prediction Feedback）:
+同一 target 的上一轮下一步预测与下一次实际放行主任务 skill 的机械对齐结果；实际放行是唯一事实源，未出现实际放行时待观察。
+_Avoid_: 语义复判、judge
+
+**近期 skill 序列**（Recent Skill Sequence）:
+同一 space 与 target 下最近若干主任务实际 skill 名（普通文本记 plain_text）的有序序列，用于表示打法链位置；不含参数与任务正文。
+_Avoid_: 会话摘要、聊天历史
+
+**学习案例**（Learning Case）:
+一次预测对应的干净回复全文、预测、实际 skill、近期 skill 序列及机械反馈所组成的本地 few-shot 样本；按 space 隔离。
+_Avoid_: 训练集、模型复判
 
 ### 会话生命周期
 
