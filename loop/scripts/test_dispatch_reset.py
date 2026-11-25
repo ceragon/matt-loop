@@ -21,6 +21,9 @@ import dispatch  # noqa: E402
 import os  # noqa: E402
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
+# 测试隔离：学习默认开启（ADR-0012），既有套件不测学习、也不碰真实学习目录，统一关闭。
+# 学习专项测试（test_dispatch_learning）自行显式开启并指 LOOP_LEARNING_DIR 到临时目录。
+os.environ["LOOP_LEARNING"] = "off"
 
 
 PROMPT = "请实现某个功能\n第二行说明"
