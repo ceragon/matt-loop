@@ -4,6 +4,11 @@ status: accepted
 
 # 测试缝先于网关：`Deps` 注入加命令级 `FakeHerdr`
 
+> 补记（ADR-0023，#84）：「待⑤收口」的环境变量洞至此完全收口——除 `learning.enabled(env)`
+> 外，`learning_dir(env)`（含以 `env["HOME"]` 取代 `Path.home()`）与学习事件时间戳
+> （走 `deps.now`）也都经 `Deps` 注入，由 `learning.open(env, now, fact)` 在 `admit` 里
+> 一次构造。
+
 > 补记（ADR-0020，#75）：决定 1 预留的 `run(request, deps)` 已由 ADR-0020 按预留定形，
 > `main` 退成薄壳、测试入口不变；决定 3 里 `extract` 字段的签名改为显式的
 > `deps.extract(request, turn_path, injection) -> Extraction`，取代往 `args` 上暗渡

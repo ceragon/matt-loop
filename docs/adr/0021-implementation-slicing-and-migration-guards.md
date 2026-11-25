@@ -86,6 +86,10 @@ status: accepted
      的方法体，并新增兄弟模块 `journal.py`（过部署冒烟门）；该片 PR 须列出约 5 处延后落盘
      改为立即落盘的快照 diff（决定 5 的「有意的契约变化」）。`S` 片的快照须带「`FakeHerdr`
      每收一条命令读一次磁盘台账并记下」，以照出「先记账后发送」的次序。
+   - 补记（ADR-0023，#84）：⑤ 已定型——落地分两部分：纯新增的 `learning.py` 部分
+     （`learning_dir(env)`、`LearningStore` 的 `now` 参数、`LearningSession`、`Disabled`、
+     `open` 与单测）不改 `dispatch.py`，可先行；`state.learning` 四个调用点的接线随 `P3`，
+     快照须覆盖 `LOOP_LEARNING` 开与关两种状态。清单仍不建实施票。
 
 ## 与既有 ADR 的关系
 
