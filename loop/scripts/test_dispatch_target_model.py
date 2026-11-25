@@ -173,7 +173,7 @@ def main():
     # 8 会话起始 skill＋turn>0＋reset=none：切模型不能替代重置
     fake = FakeHc(turn=5)
     rc, res, led = run_case(None, "opus", fake, "tm-discipline-1",
-                            prompt="/wayfinder #7\n请绘图")
+                            prompt="/wayfinder #7")
     assert rc == 2 and not res["ok"], res
     assert res["error"]["kind"] == "reset_required", res
     assert res["target_model"] == "opus" and res["error"]["model_sent"] is False
@@ -184,10 +184,10 @@ def main():
     # 9 turn==0 豁免＋切模型前置照跑
     fake = FakeHc(turn=0)
     rc, res, led = run_case(None, "gemini-3-pro", fake, "tm-fresh-1",
-                            prompt="/wayfinder #7\n请绘图")
+                            prompt="/wayfinder #7")
     assert rc == 0 and res["ok"], res
     assert fake.sends == [("/model gemini-3-pro", True),
-                          ("/wayfinder #7\n请绘图", True)], fake.sends
+                          ("/wayfinder #7", True)], fake.sends
     assert res["target_model"] == "gemini-3-pro" and res["reset"] == "none"
     print("9 turn==0 exempt + model pre-step still runs ok")
 

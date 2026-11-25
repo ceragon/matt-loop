@@ -69,6 +69,9 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
     或缺失时拒发（reset_required，退出码 2），放行 id 不消耗，补 --reset 同 id 可重试。
     分流判定创建/复活/重建的新鲜会话视同 turn 0 豁免、不看终端 turn（turn 是终端级
     累计计数，复活会话 turn>0 但会话是空的，ADR-0009 修正 ADR-0007）。
+    其前另有静态形态闸 split_required（ADR-0017，#61）：命中触发器且归一化 UTF-16
+    码元 >700 或含内部换行（尾部换行不算）时，在工具查找/hc get 之前拒发（退出码 2、
+    零发送零副作用、id 不消耗），先于 reset_required、不分 agent、与 --reset 独立。
   - 首发只用 --if idle；被拒（status_mismatch）且 hc get 复核为 done 时，
     再核一次非 working/blocked 后不带 --if 补发一次（被拒时零字节进入，不算重发）。
     永不 --force，不碰 hc keys。
@@ -293,6 +296,29 @@ def find_session_start_trigger(text):
     if m is None:
         return None
     return m.group(1), text.count("\n", 0, m.start()) + 1
+
+
+# 会话起始 skill 命令行形态闸（ADR-0017，#61）：Claude Code 把超体积或多行粘贴
+# 折叠成 [Pasted text #N +M lines] 块，块内行首斜杠命令不展开、skill 不被调用。
+# 上游实证折叠阈值 800 UTF-16 码元（2.1.331 原生二进制内嵌 JS：常量 @323578697，
+# 判定式 长度>800 OR 换行数>max(0,min(rows-10,2)) @343663417），留余量取 700。
+# 硬编码、零旋钮（无 env、无旗标），与 READ_LINES 同等待遇；改值须重验上游版本。
+SPLIT_MAX_UTF16 = 700
+
+
+def normalize_paste(text):
+    """复刻 Claude Code 2.1.331 粘贴归一化：CRLF/CR→LF、tab→4 空格。"""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ")
+
+
+def utf16_units(text):
+    """UTF-16 码元数（中文 1、emoji 2）：UTF-16-LE 编码字节数除以 2。"""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def has_internal_newline(text):
+    """内部换行＝剥掉尾部换行（含连续多个）后仍含换行（尾换行豁免，ADR-0017 定案 A）。"""
+    return "\n" in text.rstrip("\n")
 
 
 # 抽取后端（ADR-0005）：默认直连 API（OpenAI 兼容 chat completions），pi 为显式备选。
@@ -1855,6 +1881,31 @@ def main(argv=None):
                 f"放行 id {args.release_id} 已有台账或原文落盘，一个放行只跑一轮",
                 ["查看台账确认上次结果；要重发须经用户重新放行、用新 id"],
             )
+        # 1.1) 静态形态闸（ADR-0017，#61）：会话起始 skill 命令行必须单独单行一轮。
+        #      duplicate_release 之后、工具查找/hc get/领养之前：纯文本判定，零发送
+        #      零副作用、放行 id 不消耗（退出码 2）。不分 agent kind、与 --reset 独立、
+        #      新鲜路径不豁免；与 reset_required 双命中先报本错。体积按含尾换行的
+        #      归一化全文计（忠实于实际发送物），内部换行＝剥掉尾部换行后仍含换行。
+        normalized = normalize_paste(text)
+        split_hit = find_session_start_trigger(normalized)
+        if split_hit is not None:
+            units = utf16_units(normalized)
+            multiline = has_internal_newline(normalized)
+            if multiline or units > SPLIT_MAX_UTF16:
+                skill, lineno = split_hit
+                reasons = []
+                if multiline:
+                    reasons.append("含内部换行（尾部换行不算）")
+                if units > SPLIT_MAX_UTF16:
+                    reasons.append(f"归一化 UTF-16 码元 {units} > 闸值 {SPLIT_MAX_UTF16}")
+                raise DispatchError(
+                    "split_required",
+                    f"提示词第 {lineno} 行调用会话起始 skill /{skill}，"
+                    + "、".join(reasons)
+                    + "：Claude Code 折叠超体积/多行粘贴致 slash 命令不展开，命令行必须单独单行一轮",
+                    ["改提示词文件为单行命令（只带短参数）后用同一放行 id 重试（零发送、id 不消耗）",
+                     "长正文请用户重新放行、新 id 下一轮发；纪律与证据见 SKILL.md「会话起始 skill」（ADR-0017）"],
+                    returncode=2)
         hc_bin = find_tool("hc")
         pi_bin = find_tool("pi") if backend == "pi" else None
         if not hc_bin:
@@ -1984,6 +2035,8 @@ def main(argv=None):
         #      turn > 0 或 turn 缺失且 --reset=none 时拒发（放行 id 不消耗，补 --reset 同 id 可重试）。
         #      创建/复活/重建的新鲜会话视同 turn 0 豁免、不看终端 turn（turn 是终端级累计，
         #      复活会话 turn>0 但会话是空的，ADR-0009）。
+        #      静态形态闸 split_required（ADR-0017）已在工具查找前先检；双命中先报
+        #      split，本闸只管重置口径。
         if args.reset == "none" and not fresh:
             hit = find_session_start_trigger(text)
             if hit is not None:

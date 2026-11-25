@@ -360,11 +360,11 @@ def main():
     app = FakeApp(hc=fake)
     rc, res, led, td = run_case(fake, app, "create-fresh-1", launch=LAUNCH, cwd="/proj",
                                 expect_proc="claude", reset="clear", model="opus",
-                                prompt="/wayfinder #7\n请绘图")
+                                prompt="/wayfinder #7")
     assert rc == 0 and res["ok"], res
     new_addr = [d["address"] for d in fake.terminals.values() if d["name"] == NAME][0]
     assert fake.sends == [(new_addr, LAUNCH, False), (new_addr, "/model opus", True),
-                          (new_addr, "/wayfinder #7\n请绘图", True)], fake.sends
+                          (new_addr, "/wayfinder #7", True)], fake.sends
     assert res["reset_skipped"] == "fresh_launch" and res["reset"] == "clear", res
     assert led["reset_skipped"] == "fresh_launch" and "reset_send" not in led
     assert len(fake.sends) == 3, "一轮至多发送成功三次（启动＋切模型＋主任务）"
@@ -395,10 +395,10 @@ def main():
     app = FakeApp(hc=fake, panes=("t50",))
     rc, res, led, td = run_case(fake, app, "revive-fresh-1", launch=LAUNCH, cwd="/proj",
                                 expect_proc="claude", reset="clear", model="opus",
-                                prompt="/implement #38\n请实现")
+                                prompt="/implement #38")
     assert rc == 0 and res["ok"], res
     assert fake.sends == [("t50", LAUNCH, False), ("t50", "/model opus", True),
-                          ("t50", "/implement #38\n请实现", True)], fake.sends
+                          ("t50", "/implement #38", True)], fake.sends
     assert res["reset_skipped"] == "fresh_launch", res
     print("3b revive fresh exemption: turn>0 ignored, reset skipped, model runs ok")
 

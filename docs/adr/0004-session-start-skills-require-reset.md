@@ -4,6 +4,8 @@ status: accepted
 
 # 会话起始 skill 必须重置目标会话
 
+> 补记（ADR-0017，#61）：本 ADR 的机械闸（行首会话起始 skill＋turn>0＋none 拒发）不变；其前新增静态预检 `split_required`——命中触发器且提示词超体积或多行时先拒发（命令行必须单独单行一轮），先于 `reset_required`，口径与证据见 ADR-0017。
+
 > 补记（ADR-0015，#62）：本 ADR 的机械闸（行首会话起始 skill＋turn>0＋none 拒发）不变；「新任务首轮推荐重置（不限起始 skill）」属建议层延伸纪律，不新增机械拒发，见 ADR-0015 决定 7。
 
 ## 背景
