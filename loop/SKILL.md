@@ -14,7 +14,7 @@ dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取�
 1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_skill` 非空时，本轮主任务**应照用该 skill 作开场**，由调用方拼成 `/<next_skill> <自填参数>`；换 skill 须在放行卡明示理由（ADR-0008），卡片四状态见「预测可见性」。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd）、显示名（每轮贴出：同任务各轮同名、新任务换名）与目标空间（`--space`，每轮必传）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；新任务首轮三件套（ADR-0015）：换显示名＋推荐 `--reset`（不限会话起始 skill，建议不是闸）＋放行卡预测标「已编辑：新任务，上轮预测不适用」；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，**命令行必须单独单行一轮**（只带短参数，长正文下一轮，ADR-0017；超体积或多行会被 `split_required` 静态拒发，别先撞了再回来二轮请示），先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
 2. **写放行文件**：全文写成 UTF-8 文件，放 `$TMPDIR/loop/releases/<放行id>.txt`（目录不存在就建），放行后一字未改。完成判据：文件就绪（dispatch 核对 sha256，改动即拒发）。
 3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset`/`--target-model` 时该放行一并授权全部前置＋主任务（重置是枚举里可预知的固定命令，切模型是字面 `/model <名字>`）。
-4. **判读结果**：先读 `.notify.json`（通知投影，成功 11 字段／error 全量），需要完整诊断、审计或回看再读 `.result.json`＋`run_record`（统一读取契约，ADR-0014），整理成选项卡给用户；`next_skill` 非空时以「本轮新预测 skill」一并呈出（它是预测不是事实，参数由下一轮调用方自填）。若带 `next_skill_feedback`，把本轮刚结算的照用／偏离与关键计数变化一并呈出。完成判据：用户看到结果、给出下一轮方向。
+4. **判读结果**：先读 `.notify.json`（通知投影，成功 13 字段／error 全量），需要完整诊断、审计或回看再读 `.result.json`＋`run_record`（统一读取契约，ADR-0014），整理成选项卡给用户；`next_skill` 非空时以「本轮新预测 skill」一并呈出（它是预测不是事实，参数由下一轮调用方自填）。若带 `next_skill_feedback`，把本轮刚结算的照用／偏离与关键计数变化一并呈出。完成判据：用户看到结果、给出下一轮方向。
 5. 回到 1，下一轮回复仍走管道。
 
 ## 预测可见性（ADR-0008）
@@ -92,7 +92,7 @@ python3 scripts/dispatch.py \
 
 ## 交付：后台跑＋完成通知
 
-一轮最长约 80 分钟（抽取实测每轮 5–11 分钟，pi 路径数据）。用调用方自己的后台任务跑 dispatch、靠完成通知收结果。**双产物（ADR-0014，#52 阶段一）**：dispatch 同时写 `$TMPDIR/loop/runs/<放行id>.notify.json`（通知投影＋通知记录）与 `<放行id>.result.json`（全量结果）。**统一读取契约**：所有调用方都**先读 `notify.json`**（成功严格 11 字段、error 全量），只有需要完整诊断、审计或回看时才读 `result.json`：
+一轮最长约 80 分钟（抽取实测每轮 5–11 分钟，pi 路径数据）。用调用方自己的后台任务跑 dispatch、靠完成通知收结果。**双产物（ADR-0014，#52 阶段一）**：dispatch 同时写 `$TMPDIR/loop/runs/<放行id>.notify.json`（通知投影＋通知记录）与 `<放行id>.result.json`（全量结果）。**统一读取契约**：所有调用方都**先读 `notify.json`**（成功严格 13 字段、error 全量），只有需要完整诊断、审计或回看时才读 `result.json`：
 
 - **DS Bot（默认）**：`run_in_background` 跑 dispatch → job 完成通知唤醒 → 先读通知投影、需要细节再读全量结果。
 - **Grok Bot**：配 `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET`（示例见 `webhook.env.example`），dispatch 完成时 POST **通知投影字节**（与 `notify.json` 完全相同）唤醒它 → 先读通知投影、需要细节再读全量结果。云端传话助手实际只取得 webhook 正文；`notify.json` 是发送端通知记录，不是云端可读本机文件。
@@ -102,7 +102,7 @@ python3 scripts/dispatch.py \
 
 ## 返回契约（每轮判读）
 
-stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.result.json`（全量结果，成功与 error 都写，逐字一致，是**最终交付**）；另写 `<放行id>.notify.json`（通知投影＋通知记录，ADR-0014）。**通知投影**：成功严格只含 11 字段 `ok`/`release_id`/`target`/`needs_user`/`questions`/`conclusion`/`blocked`/`rewritten`/`run_record`/`elapsed_s`/`next_skill`（逐字来自本轮结果）；error 保留发送前完整对象（含 `error.kind/message/hints` 与全部部分状态），不套白名单。`webhook`/`webhook_error`/`webhook_error_detail` 等发送诊断只在全量结果。调用方先读通知投影、需要细节再读全量结果。成功（退出码 0）：
+stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.result.json`（全量结果，成功与 error 都写，逐字一致，是**最终交付**）；另写 `<放行id>.notify.json`（通知投影＋通知记录，ADR-0014）。**通知投影**：成功严格只含 13 字段 `ok`/`release_id`/`target`/`needs_user`/`questions`/`conclusion`/`blocked`/`rewritten`/`run_record`/`elapsed_s`/`next_skill`/`complete`/`complete_reason`（逐字来自本轮结果，ADR-0019 增补完整性标记）；error 保留发送前完整对象（含 `error.kind/message/hints` 与全部部分状态），不套白名单。`webhook`/`webhook_error`/`webhook_error_detail` 等发送诊断只在全量结果。调用方先读通知投影、需要细节再读全量结果。成功（退出码 0）：
 
 ```json
 {"ok": true, "release_id": "<放行id>", "task_name": "loop-…", "target": "claude-matt-loop", "target_address": "t7",
@@ -117,11 +117,11 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `run_record`（`.md`）是抽取器从本轮原料**裁剪出的干净回复全文**（剔 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏，逐字保留正文），是回看对象；`raw_record`（`.raw.md`）是回读全文（最近 1000 行历史＋当前屏逐字读回，含被断轮切掉的旧轮，制表符按终端制表位展开为空格，审计用）；`turn_record`（`.turn.md`）是本轮原料（断轮选中的本轮段，抽取器输入＋逐字校验语料，ADR-0013）。error 时尚无干净全文，`run_record` 退回指回读全文。
 - `needs_user`（布尔）：回复里是否有需用户决定的事。三个选段字段是抽取器从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批一个元素（问题＋选项＋推荐整块）、`conclusion` 结论段（无则 `""`）、`blocked` 弹框原句（无则 `""`）。干净全文 `reply` 不进本 JSON，落在 `run_record`；要展示回复内容直接用 `run_record` 原文。
 - `next_skill`（字符串，ADR-0008）：抽取器**推测**的下一轮 skill 名，不带斜杠、不含参数；候选固定为 `wayfinder`/`grill-with-docs`/`to-spec`/`to-tickets`/`implement`/`implement-spec`/`prototype`，`""`＝无预测。唯一推测字段，豁免逐字校验；缺失、非字符串、带斜杠、带参数或集外值都宽容投影为 `""`，不连累整轮。调用方负责拼成 `/<next_skill> <自填参数>`。**建议不是闸**：下一轮放行卡按「预测可见性」呈出照用或编辑状态；它是起始 skill 且 turn>0 时，讨放行一并推荐 `--reset`。
-- `next_skill_feedback`（ADR-0012，阶段二）：本轮主任务发送后与上一轮同 target 预测结算出的机械反馈，带上轮预测、本轮实际 skill／类型、skill 判定和上轮放行 id；正常 result 与发送后的 error JSON 都可带。`learning_warning` 只表示学习存储、权限、锁或记录损坏降级，不影响主轮退出码；`learning_excluded:"space_changed"` 表示跨 space 反馈已结算但不进入 few-shot。
+- `next_skill_feedback`（ADR-0012，阶段二）：本轮主任务发送后与上一轮同 target 预测结算出的机械反馈，带上轮预测、本轮实际 skill／类型、skill 判定和上轮放行 id；正常 result 与发送后的 error JSON 都可带。`learning_warning` 只表示学习存储、权限、锁或记录损坏降级，不影响主轮退出码；`learning_excluded:"space_changed"` 表示跨 space 反馈已结算但不进入 few-shot；`learning_excluded:"incomplete_turn"` 表示上一轮带折叠标记（`complete:false`），反馈照旧结算但案例不入 few-shot（ADR-0019）。
 - `rewritten`：脚本对选段字段逐一做本轮原料子串校验，搜不到的在此标出、值为最接近原文整行；`{}` 即全部逐字命中。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `turn_record`（本轮原料）与 `raw_record`（回读全文）。**
 - `target` 恒为**传入地址**（会话名或 t 号，寻址稳定）；`target_address`：解析出的 **t 号**（审计定位，名字恒解析到最新 live）；`turn` 是**终端级累计计数**（复活会话 turn>0 但会话是空的，ADR-0009）。
 - `launched`：仅本轮 `hc run` 创建了终端才出现（`true`，创建/重建路径，error 时也带）；`rebuilt`/`rebuilt_old_target`：仅强制重建才出现（`true`＋被 kill 占位者的旧 t 号）；`workspace`：领养状态（`adopted`/`failed`，创建与既有路径都报）；`reset_skipped:"fresh_launch"`：新鲜会话跳过了重置发送（传了 `--reset` 但创建/复活/重建时）；`space`：`--space` 请求值回显（必传，成功与 error 都带，ADR-0011），`space_selected`：解析出的目标空间 id（解析成功才带），`space_landed`：pane 实际落进的空间 id，`space_target_warning`：pane 落进非目标空间告警（`landed_elsewhere`），`space_restore`：还原选中结果（`restored`/`user_switched`＝用户接管跳过/`not_needed`/`failed`），`space_restore_warning`：还原失败告警，`gift_cleanup_warning`：赠送 shell 清理失败降级告警（#46，真终端已可见、整轮仍 adopted；这些告警都不丢放行）。这些字段成功与 error 都带适用项，部分状态（终端已建/启动已发/旧会话已死/空间已建/选中已还原）如实报。
-- `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性判定，只看本轮原料内的折叠标记（成功恒 `complete:true`）；`anchor_found`：提示词回声是否在回读范围内——仅信息，超过 1000 行历史回声不可得时为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
+- `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性标记，只看本轮原料内的实证折叠形态（与提示词行精确相同的回声行不参与）；成功通常 `complete:true`，折叠命中 `complete:false`——抽取照常、需人复核（ADR-0019）；`anchor_found`：提示词回声是否在回读范围内——仅信息，超过 1000 行历史回声不可得时为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
 - `webhook_error_detail`：仅失败时出现，与 stderr 同一份脱敏诊断。字段：`type`（外层异常类名）、`reason_type`（`URLError.reason` 是异常时的类名）、`errno`/`errno_name`（可用时，如 `61`/`ECONNREFUSED`；DNS 给 `EAI_*`）、`is_timeout`（布尔）、`ssl_verify_code`（`SSLCertVerificationError.verify_code`，可用时）、`http_status`（仅 HTTPError）、`proxy`（`{"configured": "yes|no|unknown", "matches": "yes|no|unknown", "source": "env|system|bypass|none|unknown"}`：是否配置代理、本请求是否命中、代理来自环境变量还是系统配置）、`attempts`（总尝试次数），走过代理全败直连兜底仍失败时另带 `fallback_direct: true` 与 `fallback_error`（直连尝试的类名或 `"HTTP <码>"`；`webhook_error` 与主体字段保留主路由最后一次错误以对齐 `proxy`）。不含 URL、密钥、主机名、请求头或字符串形式的 reason；判断不了就标 `unknown`。
 - **三个选段只摘原文片段、不保证覆盖全文**；要不要批准、要不要改接口的判断，必须回看 `run_record`，不能只凭 JSON 选段。
 
@@ -134,7 +134,7 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `runs/<放行id>.turn.md`：本轮原料（断轮段，抽取器输入＋逐字校验语料，`turn_record`）。
 - `runs/<放行id>.md`：干净回复全文（回看对象 `run_record`）。
 - `runs/<放行id>.json`：台账，先记账后发送；一个放行只跑一轮，至多发送成功三次（重置或启动前置＋切模型前置＋主任务各一次，新鲜会话跳过重置），台账存在即拒同 id 重发。台账记创建/复活/领养/重建各 phase，失败带部分状态。
-- `runs/<放行id>.notify.json`：通知投影＋通知记录（ADR-0014），逐字记录实际 POST 正文（成功 11 字段／error 全量），调用方先读它；字节与请求体相同、不追加换行。
+- `runs/<放行id>.notify.json`：通知投影＋通知记录（ADR-0014），逐字记录实际 POST 正文（成功 13 字段／error 全量），调用方先读它；字节与请求体相同、不追加换行。
 - `runs/<放行id>.result.json`：全量结果（最终交付），需要完整诊断/审计/回看时读它；重发拒绝仍以台账为准。
 
 记录与台账都随 OS 临时清理、不持久：事后审计与拒重发保护止于重启（放行 id 每次唯一，跨重启复用风险低）。要长期留存某轮，自行另存。

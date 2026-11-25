@@ -5,12 +5,13 @@
 缝：沿用现有唯一测试缝（进程内替换 hc/herdr-app/抽取器边界，驱动 dispatch.main），
 零新增缝。只断言外部行为：result JSON、退出码、台账、落盘文件内容。
 
-覆盖（规格五组）：
+覆盖（规格五组＋折叠判据组）：
   1 断轮：❯ 回声优先／回复引用锚点不误切／无 ❯ 退化锚点最后出现行／无锚点整段。
-  2 作用域：折叠与逐字校验只对本轮段；整段使用时旧轮折叠诚实阻断。
+  2 作用域：折叠与逐字校验只对本轮段；折叠命中只标记 complete:false 不阻断（ADR-0019）。
   3 双文件与结果：raw/turn/run 三产物各指正确内容；台账 echo_found/切点/段字符数。
   4 错误载荷：extraction_rewritten 逐字段整行 hint、双路径、按实际后端取文案。
   5 回归：其余纯文本 300 字符护栏不动；回读请求 --lines 1000。
+  6 折叠判据（ADR-0019，#79）：实证形态两分支、U+2026 码位、回声排除、降级契约全链。
 """
 import contextlib
 import io
@@ -82,7 +83,7 @@ def run_round(screen, rid, ext, prompt=PROMPT, mock_extract=True):
         res = json.loads(buf.getvalue().strip())
         led = json.loads((ld / "runs" / (rid + ".json")).read_text(encoding="utf-8"))
         files = {}
-        for suffix in (".raw.md", ".turn.md", ".md"):
+        for suffix in (".raw.md", ".turn.md", ".md", ".notify.json"):
             p = ld / "runs" / (rid + suffix)
             if p.exists():
                 files[suffix] = p.read_text(encoding="utf-8")
@@ -162,30 +163,29 @@ def slice4_no_anchor_whole():
 
 
 def slice5_fold_scope():
-    """折叠判据只对本轮段：旧轮折叠不误报；本轮折叠阻断；整段使用时旧轮折叠诚实阻断。"""
+    """折叠判据作用域（ADR-0019）：只对本轮段；命中只标记 complete:false，抽取照常。"""
     dummy = {"needs_user": False, "questions": [], "conclusion": "", "blocked": "", "reply": ""}
-    # a 旧轮含折叠、本轮干净 → 成功
-    screen = "旧轮▲折叠内容\n" + ECHO + "\n" + NEW
+    # a 旧轮含折叠、本轮干净 → complete:true
+    screen = "旧轮\n… +36 lines\n" + ECHO + "\n" + NEW
     ext = {"needs_user": False, "questions": [],
            "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW}
     rc, res, led, files, cap, fake = run_round(screen, "tc-fold-old", ext)
     assert rc == 0 and res["ok"] and res["complete"], res
-    assert "▲" in files[".raw.md"] and "▲" not in files[".turn.md"]
-    # b 本轮含折叠 → incomplete_result，双路径 hint
-    screen = ECHO + "\n" + NEW + "\n▲本轮折叠"
+    assert "… +36 lines" in files[".raw.md"] and "… +36 lines" not in files[".turn.md"]
+    # b 本轮含折叠 → 标记不阻断，抽取照跑，result/台账带标记
+    screen = ECHO + "\n" + NEW + "\n… +25 lines (~2 KB)"
     rc, res, led, files, cap, fake = run_round(screen, "tc-fold-turn", dummy)
-    assert rc == 1 and res["error"]["kind"] == "incomplete_result", res
-    assert "fold_markers" in res["error"]["message"]
-    hints = res["error"]["hints"]
-    assert any("tc-fold-turn.raw.md" in h for h in hints), hints
-    assert any("tc-fold-turn.turn.md" in h for h in hints), hints
-    assert "▲" in files[".turn.md"]
-    # c 整段使用（无锚点）＋旧轮折叠 → 诚实阻断
-    screen = "旧轮▲折叠内容\n无锚点回复"
+    assert rc == 0 and res["ok"], res
+    assert res["complete"] is False and res["complete_reason"] == ["fold_markers"], res
+    assert led["complete"] is False and led["complete_reason"] == ["fold_markers"], led
+    assert cap["extract_input"] == files[".turn.md"], "命中不阻断抽取"
+    assert "… +25 lines (~2 KB)" in files[".turn.md"]
+    # c 整段使用（无锚点）＋旧轮折叠 → 诚实标记，不阻断
+    screen = "旧轮\n… +36 lines\n无锚点回复"
     rc, res, led, files, cap, fake = run_round(screen, "tc-fold-whole", dummy)
-    assert rc == 1 and res["error"]["kind"] == "incomplete_result", res
+    assert rc == 0 and res["ok"] and res["complete"] is False, res
     assert led["echo_found"] is False
-    print("5 fold scope: old-turn pass / turn block / whole-segment honest block ok")
+    print("5 fold scope: old-turn pass / turn flag / whole-segment honest flag ok")
 
 
 def slice6_verbatim_scope():
@@ -312,6 +312,59 @@ def slice9_backend_turn_input():
     print("9 backend input: api inline & pi @file both turn-only ok")
 
 
+def slice10_fold_criterion():
+    """折叠判据纯函数（ADR-0019，#79）：两独立分支、U+2026 码位、单复数、回声排除、箭头回归。"""
+    fh = dispatch.fold_hits
+    P = "请实现某个功能"
+    # 分支一：行首（允许前导空白）、单复数、KB 后缀
+    assert fh("… +36 lines", P)
+    assert fh("     … +36 lines", P)
+    assert fh("… +25 lines (~2 KB)", P)
+    assert fh("… +1 line", P)
+    # 分支一不命中：行中散文、三个 ASCII 点（码位回归）、非数字 N
+    assert not fh("如上文 … +36 lines 所示", P)
+    assert not fh("... +36 lines", P)
+    assert not fh("… +N lines", P)
+    # 分支二：两种实证形态（⎿ 变体左括号后另有内容，字面不带左括号）
+    assert fh("› Message from @X (ctrl+o to expand)", P)
+    assert fh("⎿ Backgrounded agent (↓ to manage · ctrl+o to expand)", P)
+    # #79 回归：那两个箭头字符（U+25B2/U+25BC）无折叠语义，行中行首都不命中
+    assert not fh("回复引用 \u25b2\u25bc 折叠判据", P)
+    assert not fh("\u25b2 行首也不命中", P)
+    assert not fh("\u25bc", P)
+    # 回声排除：与提示词某行去首尾空白后精确相同的行不参与；非精确相同不排除
+    prompt = "第一行\n… +36 lines\n第三行"
+    assert not fh("… +36 lines", prompt)
+    assert not fh("  … +36 lines  ", prompt)
+    assert fh("… +37 lines", prompt), "不同行不被排除"
+    assert fh("… +36 lines (~2 KB)", prompt), "非精确相同不排除"
+    print("10 fold criterion: two branches, U+2026, plural, echo exclusion, arrow regression ok")
+
+
+def slice11_fold_demotion_contract():
+    """降级契约（ADR-0019，#79）：notify 带标记；抽取失败 error 仍带标记；hc 自报 complete 无关。"""
+    # a 命中轮：result/台账/notify 三处齐带 complete:false，抽取照跑
+    screen = ECHO + "\n" + NEW + "\n… +36 lines"
+    ext = {"needs_user": False, "questions": [],
+           "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW, "next_skill": ""}
+    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-notify", ext)
+    assert rc == 0 and res["ok"], res
+    assert res["complete"] is False and res["complete_reason"] == ["fold_markers"], res
+    assert led["complete"] is False and led["complete_reason"] == ["fold_markers"], led
+    assert led["hc_read"]["complete"] is True, "hc 自报 complete 与折叠判据无关"
+    assert cap["extract_input"] == files[".turn.md"], "命中不阻断抽取"
+    notify = json.loads(files[".notify.json"])
+    assert set(notify) == set(dispatch.NOTIFY_SUCCESS_FIELDS), notify
+    assert notify["complete"] is False and notify["complete_reason"] == ["fold_markers"], notify
+    # b 命中＋抽取失败：error 对象仍带完整性标记（不丢在台账里）
+    ext_bad = {"needs_user": False, "questions": [],
+               "conclusion": "原文中不存在的句子", "blocked": "", "reply": NEW}
+    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-extfail", ext_bad)
+    assert rc == 1 and res["error"]["kind"] == "extraction_rewritten", res
+    assert res["complete"] is False and res["complete_reason"] == ["fold_markers"], res
+    print("11 fold demotion: result/ledger/notify flags, error carries flag, hc complete irrelevant ok")
+
+
 def main():
     slice1_echo_cut()
     slice2_echo_priority()
@@ -322,6 +375,8 @@ def main():
     slice7_error_payload()
     slice8_noise_guards()
     slice9_backend_turn_input()
+    slice10_fold_criterion()
+    slice11_fold_demotion_contract()
     print("ALL TURN-CUT TESTS PASSED")
 
 

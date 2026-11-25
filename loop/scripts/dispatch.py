@@ -78,9 +78,11 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
   - 发送前核对目标身份（--expect-proc，认 foreground.argv[0]/status.app，可选但强烈建议传；
     foreground.name 不可靠——claude 实测为版本号，不作判据，ADR-0009）。
   - 台账记录实际发出内容的 sha256，成功输出也带 prompt_sha256。
-  - 完整性判据：折叠标记（▲▼）只查本轮段，命中即 error，不进抽取；双文件照常落盘。
-    锚点（提示词回声首行前缀）只作信息 anchor_found、不阻断——检查在 turn>基线＋落定
-    之后，超过 1000 行历史时回声仍可能不可得，搜不到不代表回复不完整（ADR-0013）。
+  - 完整性判据（ADR-0019，#79）：折叠判据只查本轮段（与提示词行精确相同的回声行不参与），
+    只认实证形态（行首 … +N lines／行内 ctrl+o to expand）；命中只标记 complete:false，
+    照常抽取、照常出 result，incomplete_result 退役。锚点（提示词回声首行前缀）只作信息
+    anchor_found、不阻断——检查在 turn>基线＋落定之后，超过 1000 行历史时回声仍可能不可得，
+    搜不到不代表回复不完整（ADR-0013）。
   - 工具定位：hc/uv（及 backend=pi 时的 pi）先 shutil.which，PATH 找不到时自动探常见目录（~/.local/bin、
     homebrew、nvm node bin），后台 job 缺 PATH 也能起。
   - 本地记录归置：--loop-dir 默认 $TMPDIR/loop（tempfile.gettempdir()/loop），runs/ 放
@@ -106,8 +108,9 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
 交付（双产物，ADR-0014，#52 阶段一）：stdout 一行 JSON，同一字符串同时写
 $TMPDIR/loop/runs/<放行id>.result.json（全量结果，成功与 error 都写，审计与回看对象）；
 另写 <放行id>.notify.json（通知投影＋通知记录，逐字记录实际 POST 正文）。成功通知严格
-只含 11 个判读字段（ok/release_id/target/needs_user/questions/conclusion/blocked/
-rewritten/run_record/elapsed_s/next_skill），error 通知保留发送前完整对象。调用方
+只含 13 个判读字段（ok/release_id/target/needs_user/questions/conclusion/blocked/
+rewritten/run_record/elapsed_s/next_skill/complete/complete_reason，ADR-0019 增补），
+error 通知保留发送前完整对象。调用方
 （DS Bot/Grok Bot）统一先读 notify.json、需要完整诊断/审计/回看再读 result.json。
 run_record 指抽取器裁剪后的干净全文 .md（回看对象），raw_record 指回读全文 .raw.md
 （审计，含旧轮），turn_record 指本轮原料 .turn.md（抽取器输入＋逐字校验语料，ADR-0013）。
@@ -165,12 +168,13 @@ SESSION_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 DISPLAY_NAME_MAX = 64
 DISPLAY_NAME_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
-# 成功通知投影白名单（ADR-0014，#52 阶段一）：成功通知严格只含这 11 个判读/交回字段，
+# 成功通知投影白名单（ADR-0014，#52 阶段一；ADR-0019 增补完整性标记）：成功通知严格只含这 13 个判读/交回字段，
 # 顺序即下列顺序。error 通知不套白名单、保留发送前完整对象。webhook/webhook_error/
 # webhook_error_detail 是 POST 后才产生的发送诊断，只归全量结果，绝不进投影。
 NOTIFY_SUCCESS_FIELDS = (
     "ok", "release_id", "target", "needs_user", "questions", "conclusion",
     "blocked", "rewritten", "run_record", "elapsed_s", "next_skill",
+    "complete", "complete_reason",
 )
 
 def generate_short_task_name(release_id: str) -> str:
@@ -800,6 +804,34 @@ def cut_turn(text, anchor):
     if cut is None:
         return text, False, 1
     return "".join(lines[cut:]), True, cut + 1
+
+
+# 折叠判据（ADR-0019，#79）：只认 claude 实证形态，两独立分支。
+# … 恒 U+2026（真实语料 e2 80 a6 核过），不是三个 ASCII 点；行首允许前导空白，
+# 单复数 lines?（模板有 +1 line 形态）。分支二字面不带左括号——
+# ⎿ Backgrounded agent (↓ to manage · ctrl+o to expand) 变体左括号后另有内容。
+FOLD_COUNT_RE = re.compile(r"… \+\d+ lines?\b")
+FOLD_HINT = "ctrl+o to expand"
+
+
+def fold_hits(turn_text, prompt_text):
+    """折叠判据（ADR-0019）：返回命中行列表（空＝完整）。命中不阻断，只标记 complete:false。
+
+    两独立分支：去前导空白后行首匹配 … +N lines；行内含 ctrl+o to expand。
+    回声排除：本轮段里与提示词某行（去首尾空白后）精确相同的行不参与——
+    自己发出去的已知文本不是 TUI 渲染证据。.turn.md 本身不动（逐字校验语料维持 ADR-0013）。
+    残余（降级吸收）：回声首行带 ❯ 前缀、超宽行软换行碎段无法精确匹配；
+    其他 kind 与键位重映射形态可能漏检（ADR-0019 缺口声明）。
+    """
+    prompt_lines = {ln.strip() for ln in prompt_text.splitlines() if ln.strip()}
+    hits = []
+    for ln in turn_text.splitlines():
+        s = ln.strip()
+        if not s or s in prompt_lines:
+            continue
+        if FOLD_COUNT_RE.match(ln.lstrip()) or FOLD_HINT in ln:
+            hits.append(ln)
+    return hits
 
 
 def verify_extraction(ext, turn_text, turn_path, raw_path, backend):
@@ -2213,13 +2245,11 @@ def main(argv=None):
         # 本轮确已被处理；超过 1000 行历史时回声仍可能不可得，锚点搜不到不代表
         # 回复不完整（PAW 实测多次误判后降级，ADR-0013 维持信息字段）。
         anchor_found = verbatim_present(anchor, screen)
-        # 断轮（ADR-0013）：确定性机械切出本轮段；折叠判据与逐字校验都只对本轮段。
+        # 断轮（ADR-0013）：确定性机械切出本轮段；逐字校验只对本轮段。
         turn_text, echo_found, cut_line = cut_turn(screen, anchor)
-        # 折叠标记仍是唯一硬判据：▲▼ 说明目标 TUI 藏了内容。只查本轮段——旧轮已折叠
-        # 内容不误报本轮；整段使用（锚点找不到）时旧轮折叠仍可命中，此时阻断是诚实的。
-        reasons = []
-        if "▲" in turn_text or "▼" in turn_text:
-            reasons.append("fold_markers")
+        # 折叠判据（ADR-0019，#79）：只认实证形态、回声行排除；命中只标记不阻断——
+        # 启发式误报代价（丢整轮）远大于漏检代价（result 带 complete:false 供人复核）。
+        reasons = ["fold_markers"] if fold_hits(turn_text, text) else []
         complete = not reasons
         elapsed = round(time.monotonic() - started, 1)
 
@@ -2237,15 +2267,6 @@ def main(argv=None):
             run_record=str(raw_path), raw_record=str(raw_path), turn_record=str(turn_path),
         )
         write_json_atomic(ledger_path, ledger)
-
-        # 折叠判据命中即 error，不进抽取；双文件已照常落盘。锚点缺失只记信息、不阻断。
-        if not complete:
-            raise DispatchError(
-                "incomplete_result",
-                "完整性判据命中：" + "、".join(reasons),
-                [f"回读全文已落盘：{raw_path}", f"本轮原料已落盘：{turn_path}",
-                 "请用户回看原文；不按键、不自动补发"],
-            )
 
         # 7) 裁剪＋抽取（默认 API 直连，pi 备选）＋逐字校验（裁定 C），合并输出。
         ledger.update(phase="extracting")
@@ -2277,11 +2298,12 @@ def main(argv=None):
                       reply_chars=len(reply), reply_bad_lines=len(bad_reply_lines))
         # 7.5) 创建待观察预测（ADR-0012）：每轮成功抽取都创建（含空预测），供下一轮同 target
         #      结算。以预测轮放行 id 去重；案例正文绝不进 result/webhook（只存本地）。
+        #      折叠标记轮照创建（complete 旗标随 pending），结算时案例标 excluded（ADR-0019）。
         if learning_on:
             pr = learning_store.record_prediction(
                 args.target, args.release_id, learning_space_id,
                 ext.get("next_skill", ""), getattr(args, "learning_next_skill_invalid", False),
-                reply, seq_snapshot, examples_used, sequence_used)
+                reply, seq_snapshot, examples_used, sequence_used, complete=complete)
             if pr.get("warning") is not None:
                 ctx["learning_warning"] = pr["warning"]
         result = {
@@ -2362,6 +2384,10 @@ def main(argv=None):
             out["error"]["elapsed_s"] = round(time.monotonic() - started, 1)
         if ledger is not None and ledger.get("run_record"):
             out["error"]["run_record"] = ledger["run_record"]
+        # 完整性标记（ADR-0019）：回读后发生的错误（如抽取失败）不丢折叠标记。
+        if ledger is not None and "complete" in ledger:
+            out["complete"] = ledger["complete"]
+            out["complete_reason"] = ledger["complete_reason"]
         emit_result(out, result_path, notify_path)
         return e.returncode
 

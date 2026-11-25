@@ -4,8 +4,8 @@
 跑法：python3 loop/scripts/test_dispatch_notify.py
 主测试缝＝dispatch.main 端到端（假 hc/herdr-app、固定抽取、假 webhook 网络出口），
 不新增低层纯函数缝。覆盖规格阶段一测试矩阵 1–11：
-  1 webhook 关闭仍生成正确通知投影（11 字段），不 POST。
-  2 纯成功与 needs_user=true 的成功通知都严格只有 11 字段。
+  1 webhook 关闭仍生成正确通知投影（13 字段），不 POST。
+  2 纯成功与 needs_user=true 的成功通知都严格只有 13 字段。
   3 questions/blocked/conclusion/rewritten/run_record/elapsed_s/next_skill 逐字来自本轮结果。
   4 error 通知保留完整 kind/message/hints 与部分状态，不套成功白名单。
   5 全量结果保留既有字段；webhook/webhook_error/webhook_error_detail 只在全量结果。
@@ -40,7 +40,7 @@ SECRET = "s3cret-token"
 SENTINELS = (URL, "example.invalid", SECRET, "Bearer", "Authorization",
              "reason-with-host-detail", "envproxy.corp", "hunter2", "3128")
 
-# 固定抽取结果：六字段齐全（含 next_skill），成功通知投影据此凑足 11 字段。
+# 固定抽取结果：六字段齐全（含 next_skill），成功通知投影据此凑足 13 字段。
 # 选段字段须逐字来自屏幕（verify_extraction），故 conclusion 取 SCREEN 内原句。
 CONCLUSION = "已完成该功能。"
 QUESTION = "要不要批准接口改动？"
@@ -152,15 +152,15 @@ def main():
         assert o["notify_files"] == ["nf-off-1.notify.json"], o["notify_files"]
         print("1 webhook off: notify projection still written, no POST ok")
 
-        # 2 纯成功与 needs_user=true 都严格 11 字段
+        # 2 纯成功与 needs_user=true 都严格 13 字段
         for tag, ext, hc in (("pure", EXT, None), ("needs", EXT_NEEDS_USER, hc_with_question())):
             o = run_round("nf-11-" + tag, ext=ext, hc=hc)
             assert o["rc"] == 0 and o["res"]["ok"], o["res"]
             notify = json.loads(o["notify_bytes"].decode("utf-8"))
             assert set(notify) == set(dispatch.NOTIFY_SUCCESS_FIELDS), (tag, notify)
-            assert len(notify) == 11, (tag, notify)
+            assert len(notify) == 13, (tag, notify)
             assert notify["needs_user"] is ext["needs_user"], (tag, notify)
-        print("2 pure success and needs_user=true: exactly 11 fields ok")
+        print("2 pure success and needs_user=true: exactly 13 fields ok")
 
         # 3 判读字段逐字来自本轮结果
         o = run_round("nf-verbatim-1", ext=EXT_NEEDS_USER, hc=hc_with_question())
@@ -168,7 +168,8 @@ def main():
         notify = json.loads(o["notify_bytes"].decode("utf-8"))
         res = o["res"]
         for k in ("ok", "release_id", "target", "needs_user", "questions", "conclusion",
-                  "blocked", "rewritten", "run_record", "elapsed_s", "next_skill"):
+                  "blocked", "rewritten", "run_record", "elapsed_s", "next_skill",
+                  "complete", "complete_reason"):
             assert notify[k] == res[k], (k, notify[k], res[k])
         assert notify["questions"] == [QUESTION], notify
         assert notify["conclusion"] == CONCLUSION, notify

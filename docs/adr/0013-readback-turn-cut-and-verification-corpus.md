@@ -4,6 +4,11 @@ status: accepted
 
 # 回读范围、断轮与校验语料：1000 行历史回读＋回声断轮＋本轮原料
 
+> 补记（ADR-0019，#79）：决定 4 的折叠判据那半被部分覆盖——判据字符（U+25B2/U+25BC）
+> 经实证无任何 TUI 折叠语义，替换为 claude 实证形态（行首 `… +N lines`／行内
+> `ctrl+o to expand`），命中由硬阻断降级为 `complete:false` 标记，`incomplete_result`
+> 退役；回声行退出判据作用域。「逐字校验作用域＝本轮原料」不受影响。详见 ADR-0019。
+
 ## 背景
 
 issue #50 实证：一轮长任务（约 28 分钟）完成后，调用方收到的 `extraction_rewritten`
