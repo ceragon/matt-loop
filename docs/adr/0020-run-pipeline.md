@@ -154,6 +154,12 @@ deps)`，`main` 退成薄壳，测试入口不变」；ADR-0018 立 `Herdr` 网�
     不变；④ 以后换掉方法体，管线调用点不动。会失败的阶段（`ensure_visible`、`bring_up`）
     用 `try/finally` 在阶段出口调 `state.fact`，所以 `f.restore` 在成功与失败时都进 ctx 与
     台账——ADR-0018 交接的「`focus` 退出结局如何写进 ctx 与台账」在此一并定了。
+
+    > 补记（ADR-0022，#83）：三个方法的存在与调用点不变，其真正实现已由 ADR-0022 定写：
+    > 台账文件独立成 `Journal`（`RunState` 持有），`project` 留在 `RunState`。本决定与
+    > 决定 7 里「台账未开时先缓冲、`open_ledger` 时补写」改为不做通用缓冲——facts 即预检期
+    > 缓冲，首版台账只取 `target_address` 与 `workspace`（现行行为）。「两份 20 键清单」
+    > 订正为成功 19 键、error 21 键（error 多 `launch_sent`、`adopt_reason`）。
 13. **与 ⑤ 学习 session 的预留缝（只堵两处）**：
     - `learning.enabled(env)` 加一个参数、默认 `os.environ`，只改这一个函数签名；`admit` 里
       调一次 `learning.enabled(deps.env)`，结果放进 `RunState`。
