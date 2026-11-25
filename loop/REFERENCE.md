@@ -37,11 +37,10 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 | `dialog_blocked` | 目标停在弹框（审批/提问/认证）。创建路径等 agent 就绪时卡弹框（#46）：领养先于等就绪，会话已可见（`workspace:"adopted"`＋`pane_adopted:true`），主任务未发、放行 id 消耗 | 告知用户去目标屏幕前处理（会话已可见于 herdr-app 目标空间）；不按键、不代答；处理后用**新放行 id** 重新发起（走既有路径） |
 | `timeout` | 墙钟到点（前置或主任务），目标仍未落定 | 告知用户；前置超时则主任务未发、原文未取回 |
 | `not_started` / `target_exited` / `target_error` | 发出后未开工 / 程序退出 / 自报 error | 告知用户 |
-| `incomplete_result` | 本轮原料内折叠标记命中（▲▼ 藏了内容，本轮看不到完整回复；整段使用时旧轮折叠也可命中，诚实阻断） | 双文件已落盘，hints 给回读全文＋本轮原料路径，请用户回看 |
 | `extraction_rewritten` | 抽取字段全部未通过本轮原料逐字校验；message 按实际后端（api/pi）取值 | hints 逐字段给「字段名＋最接近原文整行」（零截断）＋本轮原料＋回读全文路径；可人工重做抽取 |
 | `extraction_failed` / `extraction_invalid` / `tool_timeout` | 抽取失败或子进程超护栏 | 原文已落盘，可人工重做抽取 |
 
-完整性硬判据只剩 `fold_markers`（**本轮原料**含 ▲ 或 ▼，目标 TUI 折叠了内容，本轮看不到完整回复）：命中即双文件落盘后返回 `error(kind=incomplete_result)`，不进抽取。旧轮已折叠内容不误报本轮；锚点找不到而整段使用时，本轮原料就是全部回读，旧轮折叠仍可命中——无法定位本轮边界时的诚实阻断。锚点（提示词第一个非空行前 24 字符）降级为信息字段 `anchor_found`：完整性检查在 turn>基线＋落定之后，本轮确已被处理，超过 1000 行历史时回声仍可能不可得，故锚点搜不到不再阻断（PAW 实测多次误判后降级，ADR-0013 维持信息字段、不得恢复为硬判据）。hc read 自己的 `complete` 字段只记台账、不作判据。
+完整性标记（ADR-0019，#79）：**无完整性硬闸**。折叠判据（词条见 GLOSSARY）只查**本轮原料**（与提示词行去首尾空白后精确相同的回声行不参与），只认 claude 实证形态、两独立分支：① 去前导空白后行首 `… +N lines`（… 恒 U+2026，允许 `(~K KB)` 等后缀与单数 `+1 line`）；② 行内含 `ctrl+o to expand`（覆盖 `› Message from @X (…)` 与 `⎿ Backgrounded agent (…)` 形态）。命中只标记 `complete:false`＋`complete_reason:["fold_markers"]`，抽取与 result 照常，供人复核；`incomplete_result` 退役。旧轮已折叠内容不误报本轮；锚点找不到而整段使用时，本轮原料就是全部回读，旧轮折叠仍可命中——诚实标记。判据只覆盖 claude code 2.1.331 实证形态，其他 kind（grok「首行 + …」、qwen 等）与键位重映射场景可能漏检，不为未实证形态加猜测性判据（ADR-0019 缺口声明）。锚点（提示词第一个非空行前 24 字符）降级为信息字段 `anchor_found`：完整性检查在 turn>基线＋落定之后，本轮确已被处理，超过 1000 行历史时回声仍可能不可得，故锚点搜不到不再阻断（PAW 实测多次误判后降级，ADR-0013 维持信息字段、不得恢复为硬判据）。hc read 自己的 `complete` 字段只记台账、不作判据。
 
 监听（`hc get`/`hc read` 只读）随时可；直推（绕过 dispatch 主动发）仅在报错时，且内容仍须用户放行。正常回复一律走管道。
 
@@ -81,7 +80,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 学习存储（ADR-0012）：默认 `${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/`，`LOOP_LEARNING_DIR` 可覆盖；目录 `0700`、文件 `0600`，本地 JSONL/JSON，90 天且每 space 最近 100 条，到期/超额先删最旧，只含计数的全局汇总可长期保留。清理由正常读写触发，无后台任务。本地读改写用短临界区锁（不跨 API/pi）、两轮放行 id 去重、统计原子写；锁/I/O/权限/损坏一律降级 `learning_warning`，不新增 error kind、不改退出码、不阻断主轮。api 后端允许同 space 历史干净回复随既有抽取请求发往 `LOOP_API_BASE`（pi 按 pi 配置），案例正文绝不进 result/webhook。`LOOP_LEARNING=off` 关闭学习读写、近期序列与 few-shot，原有 next_skill 预测照旧；其他值默认开启。space id 缺失禁用该轮学习并告警；space 重建得到新 id 即新池，不按 name/folder 继承。不自动回填 `$TMPDIR` 旧数据。
 
-通知投影与通知记录（双产物，ADR-0014，#52 阶段一）：dispatch 交付时同时写全量结果 `.result.json`（审计/回看，字段语义不变）与 `.notify.json`（通知投影＋通知记录）。**统一读取契约**：DS Bot 与 Grok Bot 都先读 `notify.json`，只有需要完整诊断、审计或回看时才读 `result.json`；云端传话助手实际只取得 webhook 正文，`notify.json` 是发送端通知记录、不是云端可读本机文件，`run_record` 只给位置、传话助手不读取。成功通知（`ok=true`）严格只含下列 11 字段（顺序固定，逐字来自本轮结果，不补造）；error 通知不套白名单、保留发送前完整对象（`error.kind/message/hints` 与全部部分状态）：
+通知投影与通知记录（双产物，ADR-0014，#52 阶段一）：dispatch 交付时同时写全量结果 `.result.json`（审计/回看，字段语义不变）与 `.notify.json`（通知投影＋通知记录）。**统一读取契约**：DS Bot 与 Grok Bot 都先读 `notify.json`，只有需要完整诊断、审计或回看时才读 `result.json`；云端传话助手实际只取得 webhook 正文，`notify.json` 是发送端通知记录、不是云端可读本机文件，`run_record` 只给位置、传话助手不读取。成功通知（`ok=true`）严格只含下列 13 字段（ADR-0019 增补完整性标记）（顺序固定，逐字来自本轮结果，不补造）；error 通知不套白名单、保留发送前完整对象（`error.kind/message/hints` 与全部部分状态）：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -96,6 +95,8 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 | `run_record` | 干净回复全文位置（仅给位置，传话助手不读） |
 | `elapsed_s` | 主任务发送成功到取回落定的秒数 |
 | `next_skill` | 抽取器推测的下一轮 skill 名（`""`＝无预测） |
+| `complete` | 完整性标记（折叠命中 `false`，抽取照常、需人复核，ADR-0019） |
+| `complete_reason` | 命中原因列表（`["fold_markers"]` 或 `[]`） |
 
 `webhook`/`webhook_error`/`webhook_error_detail` 是 POST 后才产生的发送诊断，**只归全量结果**，绝不进通知投影/通知记录。投影只序列化一次；通知记录在首次 POST 前落盘，文件字节与实际请求体完全相同（不追加换行），主出口/代理重试/直连兜底复用同一组字节。无论 webhook 是否启用，只要已建立安全运行路径就生成通知投影与通知记录。**唤醒优先**：通知记录写失败仍尝试 POST，全量结果记 `notify_record_error`（异常类名）＋stderr 诊断；全量结果也不可写时 stderr/stdout 不声称记录完整；写失败不改退出码/`ok`、不递归生成第二条 error 通知。早期 error（非法放行 id 等）不构造通知记录。不新增 webhook 环境开关。
 

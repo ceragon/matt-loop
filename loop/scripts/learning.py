@@ -7,7 +7,8 @@
 
 纯机械事实源：用户实际放行的下一轮主任务首个非空行是唯一 ground truth，按调用方传入的
 target 字面值分组结算上一轮预测；target_address 不作长期键，跨 target 不互判。案例池按
-解析后的 space id 隔离，跨 space 只结算机械反馈、案例标 learning_excluded 不入池。
+解析后的 space id 隔离，跨 space 或折叠标记轮（complete:false，ADR-0019）只结算机械反馈、
+案例标 learning_excluded 不入池。
 
 建议性不变量：任何锁失败、超时、权限错误、I/O 错误或记录损坏都降级为 learning_warning，
 不新增 error kind、不改退出码、不阻断主轮。本地读改写用短临界区锁，锁绝不跨抽取 API/pi
@@ -380,6 +381,9 @@ class LearningStore:
 
         cross_space = bool(space_id and pred.get("space_id")
                            and space_id != pred.get("space_id"))
+        # 案例入池的排除原因（两处共用同一判定）：跨 space 先于折叠标记。
+        exclusion = "space_changed" if cross_space else (
+            "incomplete_turn" if pred.get("complete") is False else None)
         feedback = {
             "prev_release_id": pred.get("release_id"),
             "predicted_skill": predicted,
@@ -388,9 +392,9 @@ class LearningStore:
             "actual_type": actual_type,
             "verdict": verdict,
         }
-        if cross_space:
-            feedback["learning_excluded"] = "space_changed"
-        # 案例：space id 缺失时不入池（无法确认隔离）；跨 space 入池但标 excluded。
+        if exclusion:
+            feedback["learning_excluded"] = exclusion
+        # 案例：space id 缺失时不入池（无法确认隔离）；跨 space 或折叠标记轮入池但标 excluded。
         if space_id:
             case = {
                 "target": target,
@@ -408,8 +412,8 @@ class LearningStore:
                 "sequence": pred.get("sequence", []),
                 "examples_used": pred.get("examples_used", 0),
             }
-            if cross_space:
-                case["learning_excluded"] = "space_changed"
+            if exclusion:
+                case["learning_excluded"] = exclusion
             if not any(c.get("predict_release_id") == case["predict_release_id"]
                        and c.get("actual_release_id") == release_id for c in cases):
                 cases.append(case)
@@ -481,8 +485,11 @@ class LearningStore:
         return selected
 
     def record_prediction(self, target, release_id, space_id, next_skill, invalid,
-                          reply, sequence, examples_used, sequence_used):
+                          reply, sequence, examples_used, sequence_used, complete=True):
         """成功抽取后调用：创建待观察记录（含空预测）。以预测轮放行 id 去重。
+
+        complete=False（折叠标记轮，ADR-0019）照创建待观察，旗标随 pending；结算时
+        案例标 learning_excluded=incomplete_turn 不入 few-shot，反馈照旧结算。
 
         space id 缺失时禁用本轮学习（ADR-0012）：不持久化待观察（干净回复不入存储），
         返回 space_id_missing 告警。target 维度的上一轮反馈结算不受影响（见 settle）。
@@ -501,6 +508,7 @@ class LearningStore:
                         "sequence": list(sequence or []),
                         "examples_used": examples_used,
                         "sequence_used": bool(sequence_used), "ts": now_iso(),
+                        "complete": bool(complete),
                     })
                 self._save_all(cases, pending, sequences, stats)
                 return {"warning": None}

@@ -5,8 +5,8 @@
 覆盖：
   1 锚点在屏、无折叠 → ok，complete:true，anchor_found:true。
   2 锚点滚出屏、无折叠 → ok，complete:true，anchor_found:false（修复：不再误判）。
-  3 有折叠标记 ▲ → error(incomplete_result)，complete:false（折叠仍硬阻断）。
-  4 锚点缺失＋折叠 → error（折叠阻断）。
+  3 折叠命中 → ok，complete:false（标记不阻断，ADR-0019）。
+  4 锚点缺失＋折叠 → 标记与 anchor_found:false 并存。
   5 find_tool：which 命中直接用；which 失效探到可执行文件；非可执行/空目录 → None。
 """
 import contextlib
@@ -72,17 +72,18 @@ def main():
         assert res["complete_reason"] == []
         print("2 anchor scrolled off, no fold: ok, anchor_found=False (no false error) ok")
 
-        # 3 折叠标记仍硬阻断
-        rc, res, led = run_round(ANCHOR + "\n回复▲折叠内容", "ap-fold")
-        assert rc == 1 and not res["ok"], res
-        assert res["error"]["kind"] == "incomplete_result", res
-        assert "fold_markers" in res["error"]["message"]
-        print("3 fold marker: still error(incomplete_result) ok")
+        # 3 折叠命中 → 标记不阻断（ADR-0019）
+        rc, res, led = run_round(ANCHOR + "\n回复\n… +36 lines", "ap-fold")
+        assert rc == 0 and res["ok"], res
+        assert res["complete"] is False and res["complete_reason"] == ["fold_markers"], res
+        assert led["complete"] is False
+        print("3 fold marker: complete=false flag, no block ok")
 
-        # 4 锚点缺失＋折叠 → 折叠阻断
-        rc, res, led = run_round("回复▼折叠内容", "ap-fold-noanchor")
-        assert rc == 1 and res["error"]["kind"] == "incomplete_result", res
-        print("4 anchor gone + fold: fold still blocks ok")
+        # 4 锚点缺失＋折叠 → 标记与 anchor_found:false 并存
+        rc, res, led = run_round("回复\n… +36 lines", "ap-fold-noanchor")
+        assert rc == 0 and res["ok"] and res["complete"] is False, res
+        assert res["anchor_found"] is False
+        print("4 anchor gone + fold: flag without block ok")
 
         # 5 find_tool
         dispatch.shutil.which = lambda name: "/usr/bin/" + name

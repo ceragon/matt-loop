@@ -6,7 +6,7 @@
 覆盖：
   纯机械：parse_actual_skill / classify / project_next_skill 边界。
   只读 space 解析：resolve_space_id_for_learning 三态（不建空间）。
-  Store：待观察创建（含空）/结算判分/统计/孤儿/跨 space 排除/id 缺失/保留期/去重/
+  Store：待观察创建（含空）/结算判分/统计/孤儿/跨 space 排除/折叠标记排除（ADR-0019）/id 缺失/保留期/去重/
         few-shot 选取（纠错优先、同 target 优先、限量、预算少选不截断）/损坏降级/锁超时/权限。
   e2e：两轮结算反馈、抽取失败仍带反馈、发送前失败不消耗、few-shot 注入、off 关闭、
         存储故障降级不阻断、重置前置不进序列。
@@ -56,7 +56,7 @@ def iso(days_ago=0):
 
 
 def seed_pending(store, target, rid, skill, space="sp1", invalid=False, reply="历史回复",
-                 examples_used=0, ts=None, sequence=None):
+                 examples_used=0, ts=None, sequence=None, complete=True):
     store.dir.mkdir(parents=True, exist_ok=True)
     pending = []
     if store.pending_path.exists():
@@ -64,7 +64,7 @@ def seed_pending(store, target, rid, skill, space="sp1", invalid=False, reply="�
     pending.append({"target": target, "release_id": rid, "space_id": space,
                     "next_skill": skill, "invalid": invalid, "reply": reply,
                     "sequence": sequence or [], "examples_used": examples_used,
-                    "sequence_used": False, "ts": ts or iso()})
+                    "sequence_used": False, "ts": ts or iso(), "complete": complete})
     store.pending_path.write_text(json.dumps(pending, ensure_ascii=False), encoding="utf-8")
 
 
@@ -84,7 +84,7 @@ def seed_case(store, target, space, verdict, reply="历史回复", ts=None, excl
 
 
 def run_round(td, rid, prompt, ext_obj, ldir, target="t99", space="main",
-              extra_argv=(), fail_extract=False, refuse_nth=None):
+              extra_argv=(), fail_extract=False, refuse_nth=None, screen=None):
     pf = Path(td) / (rid + ".txt")
     pf.write_text(prompt, encoding="utf-8")
     ld = Path(td) / ".loop"
@@ -92,7 +92,10 @@ def run_round(td, rid, prompt, ext_obj, ldir, target="t99", space="main",
             "--loop-dir", str(ld), "--space", space,
             "--wall-clock", "5", "--check-in", "1",
             "--settle-seconds", "0.01", "--settle-checks", "2", *extra_argv]
-    dispatch.hc_json = FakeHc(refuse_nth=refuse_nth) if refuse_nth else FakeHc()
+    fake = FakeHc(refuse_nth=refuse_nth) if refuse_nth else FakeHc()
+    if screen is not None:
+        fake.screen = screen
+    dispatch.hc_json = fake
     dispatch.app_json = FakeApp()
     dispatch.check_structure_and_tools = lambda: None
     dispatch.shutil.which = lambda name: "/fake/" + name
@@ -227,6 +230,20 @@ def main():
         inj1 = store.build_injection("sp1", "t99")
         assert inj1["examples_used"] == 0  # excluded 也不入 sp1 池
         print("6 store: cross-space feedback settles, case excluded from pools ok")
+
+    # ---- 折叠标记轮：反馈照旧结算、案例标 excluded 不入池（ADR-0019） ----
+    with tempfile.TemporaryDirectory() as td:
+        store = learning.LearningStore(Path(td) / "learn")
+        seed_pending(store, "t99", "p1", "to-spec", space="sp1",
+                     reply="疑似截断回复", complete=False)
+        r = store.settle_and_record("t99", "a1", "sp1", "/to-spec x")
+        assert r["feedback"]["verdict"] == "hit"
+        assert r["feedback"]["learning_excluded"] == "incomplete_turn"
+        cases = store._read_cases()
+        assert cases[0]["learning_excluded"] == "incomplete_turn"
+        inj = store.build_injection("sp1", "t99")
+        assert inj["examples_used"] == 0
+        print("6b store: incomplete-turn feedback settles, case excluded ok")
 
     # ---- space id 缺失：禁用 space 学习但反馈仍结算 ----
     with tempfile.TemporaryDirectory() as td:
@@ -382,6 +399,21 @@ def main():
         assert "历史参考案例" in user_msg and "当前近期 skill 序列" in user_msg
         assert SCREEN in user_msg  # 历史干净回复注入
         print("12 e2e: two-round feedback + few-shot injection ok")
+
+    # ---- e2e：折叠标记轮照常出 result，下轮反馈带 incomplete_turn、案例不入 few-shot ----
+    with tempfile.TemporaryDirectory() as td:
+        ldir = Path(td) / "learn"
+        fold_screen = SCREEN + "\n… +36 lines"
+        rc, res1, _, _ = run_round(td, "fold1", "请实现功能", dict(EXT, next_skill="to-spec"),
+                                   ldir, screen=fold_screen)
+        assert rc == 0 and res1["ok"], res1
+        assert res1["complete"] is False and res1["complete_reason"] == ["fold_markers"], res1
+        rc, res2, _, cap2 = run_round(td, "fold2", "/to-spec #7", dict(EXT, next_skill=""), ldir)
+        assert rc == 0 and res2["ok"], res2
+        fb = res2["next_skill_feedback"]
+        assert fb["verdict"] == "hit" and fb["learning_excluded"] == "incomplete_turn", fb
+        assert "历史参考案例" not in cap2["body"]["messages"][1]["content"]
+        print("12b e2e: fold-flagged round settles feedback, case excluded from few-shot ok")
 
     # ---- e2e：抽取失败仍带反馈（发送后）----
     with tempfile.TemporaryDirectory() as td:
