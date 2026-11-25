@@ -1,0 +1,35 @@
+{
+  "spaces": [
+    {
+      "id": "<SPACE_ID>",
+      "name": "<TITLE>",
+      "folder": "<PATH>",
+      "machine": null,
+      "active": true,
+      "tabs": [
+        {
+          "id": "<TAB_ID>",
+          "name": "<TITLE>",
+          "active": true,
+          "settled": false,
+          "terminals": [
+            {
+              "terminal": "<ADDR>",
+              "pane": "<PANE_ID>",
+              "status": "working",
+              "app": "claude-code",
+              "name": "<NAME>",
+              "sub_agents": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "recent": [
+    {
+      "name": "<TITLE>",
+      "folder": "<PATH>"
+    }
+  ]
+}

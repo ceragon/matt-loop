@@ -1,0 +1,41 @@
+{
+  "address": "<ADDR>",
+  "argv": [
+    "/bin/zsh",
+    "-l"
+  ],
+  "cols": 80,
+  "created_ms": 1795599201904,
+  "cwd": "<PATH>",
+  "die_with_parent": false,
+  "exit_code": null,
+  "finished_ms": null,
+  "foreground": {
+    "name": "zsh",
+    "argv": [
+      "/bin/zsh",
+      "-l"
+    ],
+    "cwd": "<PATH>",
+    "pid": 22409
+  },
+  "identity": "ghostty",
+  "keep": true,
+  "labels": {},
+  "name": null,
+  "notify": true,
+  "parent": null,
+  "pid": 22409,
+  "reason": null,
+  "reported": false,
+  "rm": false,
+  "rows": 24,
+  "screen": "exact",
+  "signal": null,
+  "state": "live",
+  "status": null,
+  "status_ms": null,
+  "template": null,
+  "title": "",
+  "turn": 46
+}

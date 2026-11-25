@@ -1,0 +1,58 @@
+{
+  "address": "<ADDR>",
+  "argv": [
+    "zsh",
+    "-l"
+  ],
+  "cols": 73,
+  "created_ms": 1795599201904,
+  "cwd": "<PATH>",
+  "die_with_parent": false,
+  "exit_code": null,
+  "finished_ms": null,
+  "foreground": {
+    "argv": [
+      "claude",
+      "--dangerously-skip-permissions"
+    ],
+    "cwd": "<PATH>",
+    "name": "2.1.331",
+    "pid": 22780
+  },
+  "identity": "ghostty",
+  "keep": true,
+  "labels": {
+    "herdr.seen": "2",
+    "herdr.space": "<SPACE_ID>",
+    "herdr.tab": "<TAB_ID>",
+    "loop": "1",
+    "loop-agent": "claude",
+    "where": "<TITLE>"
+  },
+  "name": "<NAME>",
+  "notify": true,
+  "parent": null,
+  "pid": 22409,
+  "reason": null,
+  "records": {
+    "<HEX>": {
+      "app": "claude-code",
+      "state": "working",
+      "title": "<TITLE>"
+    }
+  },
+  "reported": true,
+  "rm": false,
+  "rows": 62,
+  "screen": "exact",
+  "signal": null,
+  "state": "live",
+  "status": {
+    "app": "claude-code",
+    "state": "working"
+  },
+  "status_ms": 1795600036419,
+  "template": null,
+  "title": "<TITLE>",
+  "turn": 3
+}

@@ -1,0 +1,13 @@
+{
+  "zoom": 1.0,
+  "font_size": 14.0,
+  "ui_font_size": 13.0,
+  "space": "<SPACE_ID>",
+  "tab": "<TAB_ID>",
+  "focused_pane": "<PANE_ID>",
+  "layout": "main",
+  "agent": "<ADDR>",
+  "floats": {},
+  "overlays": [],
+  "errors": []
+}

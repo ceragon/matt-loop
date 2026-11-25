@@ -1,0 +1,3 @@
+{
+  "error": "unknown command \"--help\": see `herdr-app commands`; a mod's are <mod>.<command> and need the mod loaded"
+}
