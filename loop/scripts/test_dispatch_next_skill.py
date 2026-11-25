@@ -114,13 +114,13 @@ def main():
 
     # 4 瞎编 next_skill 豁免逐字校验；全部瞎编门不变
     ext = dict(BASE_EXT, conclusion="已完成该功能。", next_skill="implement")
-    rewritten = dispatch.verify_extraction(ext, SCREEN, "/fake/raw.md")
+    rewritten = dispatch.verify_extraction(ext, SCREEN, "/fake/turn.md", "/fake/raw.md", "pi")
     assert rewritten == {}, rewritten
     ext = {"needs_user": False, "questions": ["瞎编的问题"],
            "conclusion": "瞎编的结论", "blocked": "瞎编的弹框",
            "reply": SCREEN, "next_skill": "wayfinder"}
     try:
-        dispatch.verify_extraction(ext, SCREEN, "/fake/raw.md")
+        dispatch.verify_extraction(ext, SCREEN, "/fake/turn.md", "/fake/raw.md", "pi")
         raise AssertionError("全部瞎编应 extraction_rewritten")
     except dispatch.DispatchError as e:
         assert e.kind == "extraction_rewritten", e.kind

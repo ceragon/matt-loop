@@ -34,17 +34,19 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 | `dialog_blocked` | 目标停在弹框（审批/提问/认证）。创建路径等 agent 就绪时卡弹框（#46）：领养先于等就绪，会话已可见（`workspace:"adopted"`＋`pane_adopted:true`），主任务未发、放行 id 消耗 | 告知用户去目标屏幕前处理（会话已可见于 herdr-app 目标空间）；不按键、不代答；处理后用**新放行 id** 重新发起（走既有路径） |
 | `timeout` | 墙钟到点（前置或主任务），目标仍未落定 | 告知用户；前置超时则主任务未发、原文未取回 |
 | `not_started` / `target_exited` / `target_error` | 发出后未开工 / 程序退出 / 自报 error | 告知用户 |
-| `incomplete_result` | 折叠标记命中（▲▼ 藏了内容，当前屏看不到完整回复） | 原文已落盘，请用户回看 `run_record` |
-| `extraction_rewritten` | 抽取字段全部未通过逐字校验 | 原文已落盘，请用户回看；可人工重做抽取 |
+| `incomplete_result` | 本轮原料内折叠标记命中（▲▼ 藏了内容，本轮看不到完整回复；整段使用时旧轮折叠也可命中，诚实阻断） | 双文件已落盘，hints 给回读全文＋本轮原料路径，请用户回看 |
+| `extraction_rewritten` | 抽取字段全部未通过本轮原料逐字校验；message 按实际后端（api/pi）取值 | hints 逐字段给「字段名＋最接近原文整行」（零截断）＋本轮原料＋回读全文路径；可人工重做抽取 |
 | `extraction_failed` / `extraction_invalid` / `tool_timeout` | 抽取失败或子进程超护栏 | 原文已落盘，可人工重做抽取 |
 
-完整性硬判据只剩 `fold_markers`（回读含 ▲ 或 ▼，目标 TUI 折叠了内容，当前屏看不到完整回复）：命中即落盘后返回 `error(kind=incomplete_result)`，不进抽取。锚点（提示词第一个非空行前 24 字符）降级为信息字段 `anchor_found`：完整性检查在 turn>基线＋落定之后，本轮确已被处理，长任务提示词回声滚出当前屏（`--lines 0`）是常态、回复仍在屏底，故锚点搜不到不再阻断（PAW 实测多次误判后降级）。hc read 自己的 `complete` 字段只记台账、不作判据。
+完整性硬判据只剩 `fold_markers`（**本轮原料**含 ▲ 或 ▼，目标 TUI 折叠了内容，本轮看不到完整回复）：命中即双文件落盘后返回 `error(kind=incomplete_result)`，不进抽取。旧轮已折叠内容不误报本轮；锚点找不到而整段使用时，本轮原料就是全部回读，旧轮折叠仍可命中——无法定位本轮边界时的诚实阻断。锚点（提示词第一个非空行前 24 字符）降级为信息字段 `anchor_found`：完整性检查在 turn>基线＋落定之后，本轮确已被处理，超过 1000 行历史时回声仍可能不可得，故锚点搜不到不再阻断（PAW 实测多次误判后降级，ADR-0013 维持信息字段、不得恢复为硬判据）。hc read 自己的 `complete` 字段只记台账、不作判据。
 
 监听（`hc get`/`hc read` 只读）随时可；直推（绕过 dispatch 主动发）仅在报错时，且内容仍须用户放行。正常回复一律走管道。
 
 ## 机械保证（脚本兜底，调用方无需自查）
 
 原文照发、一个放行至多发送成功三次（重置或启动前置＋切模型前置＋主任务，各一次；新鲜会话跳过重置）、永不 `--force`、不碰 `hc keys`、身份预检（`--expect-proc` 匹配 foreground.argv[0]/status.app 任一；foreground.name 不可靠——claude 实测为版本号，不作判据）、sha256 记账并随成功输出回报、不完整不进抽取、改写字段标 `rewritten`。重置前置按枚举校验、与主任务共用同一发送门，任一步发不出即整轮停。
+
+回读与断轮（ADR-0013，supersede 裁定 A3「只取当前屏」）：主任务落定后 `hc read --lines 1000` 回读最近 1000 行拼接历史＋当前屏（hc stitched 历史上限），不再只抓当前屏——长回复滚出当前屏的部分仍可取回。**超过 1000 行历史的回复开头仍不可得**，回读全文不等于无限完整历史，本轮原料与干净回复全文也不提供超出该范围的保证（如实声明，不自动滚动/按键/补发）。回读全文逐字落 `.raw.md`（审计，含旧轮）；再按锚点（提示词第一个非空行前 24 字符，匹配沿用字面＋去空白折叠容错）做一次确定性**断轮**：优先取「去前导空白后以 `❯` 开头且含锚点」的最后一行往后切（回复正文引用锚点但无 `❯` 前缀时不误切回复开头），无 `❯` 形态回声时退化为含锚点的最后一行，锚点完全找不到则整段使用；选中的回声行保留在段内。断轮是机械步，不用模型判轮次边界、不按回复长度/句首形态猜完整性、不因断轮失败新增错误。本轮段逐字落 `.turn.md`（抽取器输入＋逐字校验语料）。result `raw_record` 指回读全文、新增 `turn_record` 指本轮原料、`run_record` 仍指干净全文；台账记 `echo_found`（是否找到锚点并切片）、`turn_cut_line`（1 起切点行号）、`turn_chars`（本轮段字符数），整段使用时 `echo_found:false`、切点 1、字符数＝全文。折叠判据与逐字校验都只对本轮原料（见下）。hc 自报 `complete`/`how`/`why` 只作台账元信息。
 
 切模型前置（`--target-model`，ADR-0006）：重置（如有）之后、主任务之前发字面 `/model <名字>`，等落定（idle/done＋屏幕静置，复用重置的落定机械）再发主任务。名字原样透传：脚本不认识模型、不按 agent 映射、不核实生效、不预读跳过；与 `--reset` 独立可单独带，同传顺序固定 重置→切模型→主任务。`target_model` 是请求值非验证值（仅传了才出现在结果，成功与 error 都带）；前置不抽取、不落 run_record，任一步发不出即整轮停（`error.model_sent` 标明部分状态）。会话起始 skill 纪律不变：`turn > 0` 且 `--reset=none` 仍拒发 `reset_required`，切模型不能替代重置；`turn == 0` 豁免时切模型前置照跑。agent 支持对照见 SKILL.md「调用」（codex 别传：裸 `/model` 开选择器会 blocked 停轮）。
 
@@ -60,11 +62,11 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 会话起始 skill 纪律（ADR-0004）：提示词**行首**出现 `/wayfinder`、`/grill-with-docs`、`/implement`、`/implement-spec`、`/prototype` 之一（允许行前空白；命令后须非词字符且非连字符，`/implementing`、`/implement-foo` 不误中，`/wayfinder#7` 算调用；`implement-spec` 优先报长名）且 `--reset=none` 时，在 `hc get`＋身份预检之后、写台账与任何发送之前校验目标 `turn`：`turn == 0`（精确整数 `0`，尚未跑过任何轮次的全新空会话）直接豁免放行；`turn > 0` 或缺失时拒发（`reset_required`，退出码 2，message 带 skill 名、行号与当前 `turn` 值）。分流判定创建/复活/重建的新鲜会话视同 turn 0 豁免、不看终端 turn（turn 是终端级累计，复活会话 turn>0 但会话空，ADR-0009）。行文中提及不触发；放行 id 不消耗，补 `--reset` 同 id 可重试。`new`/`clear`/`compact` 都算重置。「调用独占一行」是 SKILL.md 的文字纪律，机械检查只兜行首这一层；`not_idle`/`identity_mismatch` 先于 `reset_required`。
 
-抽取后端（ADR-0005）：`LOOP_EXTRACT_BACKEND=api|pi`，默认 `api`。`api` 走 OpenAI 兼容 chat completions：`LOOP_API_BASE`（到 `/v1`，容忍尾斜杠，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer）、`LOOP_API_MODEL` 全必填无默认，启动预检缺失即 `api_not_configured`（只列变量名）；`LOOP_API_MAX_TOKENS` 可选、默认 32768、非正整数启动即 `bad_api_max_tokens`。请求 system=extract.md、user=指令＋内联整屏原文，temp 0、不流式、不重试、不发 response_format，超时复用 `--extract-timeout`；代理决议与出口和 webhook 同源（ADR-0003）。失败只记状态码/类名（HTTP → `extraction_failed` 带 `HTTP <码>`、不读响应体；超时 → `tool_timeout`；其它网络异常 → `extraction_failed` 带类名），密钥/URL 零回显。`pi` 备选路径照旧（@文件、`--pi-model`），`api` 路径不找 pi、不依赖 node。result 与台账 params 带 `extract_backend`（error 也带）。
+抽取后端（ADR-0005）：`LOOP_EXTRACT_BACKEND=api|pi`，默认 `api`。`api` 走 OpenAI 兼容 chat completions：`LOOP_API_BASE`（到 `/v1`，容忍尾斜杠，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer）、`LOOP_API_MODEL` 全必填无默认，启动预检缺失即 `api_not_configured`（只列变量名）；`LOOP_API_MAX_TOKENS` 可选、默认 32768、非正整数启动即 `bad_api_max_tokens`。请求 system=extract.md、user=指令＋内联本轮原料（ADR-0013），temp 0、不流式、不重试、不发 response_format，超时复用 `--extract-timeout`；代理决议与出口和 webhook 同源（ADR-0003）。失败只记状态码/类名（HTTP → `extraction_failed` 带 `HTTP <码>`、不读响应体；超时 → `tool_timeout`；其它网络异常 → `extraction_failed` 带类名），密钥/URL 零回显。`pi` 备选路径照旧（@本轮原料文件、`--pi-model`），`api` 路径不找 pi、不依赖 node。两后端都读本轮原料、不再读含旧轮的回读全文。result 与台账 params 带 `extract_backend`（error 也带）。
 
 发送门：首发只 `--if idle`；被拒（`status_mismatch`，零字节进入，不算重发）后 `hc get` 复核确认 `done`，补发前再核一次非 working/blocked，才不带 `--if` 补发一次；仍失败即 error。
 
-抽取逐字校验：选段字段逐一做原文子串校验（含去空白折叠），搜不到标 `rewritten` 附最接近片段，全部搜不到则 `error(extraction_rewritten)`；`reply` 干净全文先整体、再逐行校验，未过逐字校验的行标 `rewritten["reply"]`。`needs_user`（布尔判断）与 `next_skill`（推测，ADR-0008）不参与校验。
+抽取逐字校验（语料＝本轮原料，ADR-0013）：选段字段逐一做本轮原料子串校验（含去空白折叠），搜不到标 `rewritten` 附最接近原文整行，全部搜不到则 `error(extraction_rewritten)`；`reply` 干净全文先整体、再逐行校验，未过逐字校验的行标 `rewritten["reply"]`。旧轮文本不参与通过判定。`needs_user`（布尔判断）与 `next_skill`（推测，ADR-0008）不参与校验。`extraction_rewritten` 错误载荷（#50）：不新增结构化字段，hints 每个未过校验字段一条「字段名＋最接近的原文整行」（`closest_fragment` 原样整行、零截断，不再对序列化 JSON 切片），另给本轮原料路径＋回读全文路径；message 按本轮实际后端（`api`/`pi`）取值，不写死 pi（pi 专属启动/进程退出路径文案保留）。其余纯文本 stderr/stdout 摘录的 300 字符噪声护栏不变。
 
 下一步预测（ADR-0008，#48 阶段一）：抽取输出第六字段 `next_skill`（字符串）＝调用方下一轮应使用的 **skill 名**，不带斜杠、不含参数；`""`＝无预测。候选固定七项：wayfinder/grill-with-docs/to-spec/to-tickets/implement/implement-spec/prototype。唯一推测字段：extract.md「只依据原文」规则为它开显式例外，豁免逐字校验、不进 `rewritten`；缺失、非字符串、带斜杠、带参数或集外值均按 `""` 投影，不整轮报错，形状门不检查它，学习元数据另记 `invalid_prediction`。仅成功结果带（error 路径不进抽取）；随同一份 JSON 进 result/webhook，不写台账。调用方拼成 `/<next_skill> <自填参数>`，旧 `next_command` 直接替换、不留兼容别名。**建议不是闸**：发送路径零改动、无新 error kind；放行卡固定呈上轮预测与四状态（照用预测／已编辑＋理由／上轮无预测／预测不可得），状态不写进主任务文件，预测是起始 skill 且 turn>0 时同次放行一并推荐 `--reset`。
 
@@ -72,7 +74,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 机械指标只有三项：**skill 命中率**（实际属于七项时同 skill 才算命中，空与无效预测均算未命中）、**预测覆盖率**（实际属于七项时合法非空预测所占比例）、**空预测正确率**（实际为普通文本/集外 skill/无斜杠时合法空预测所占比例，无效预测不算正确弃答）；另报 `invalid_prediction` 与样本数。统计含全量、最近 20 条滚动窗口（带样本数）、`examples_used=0/>0` 两队列（专指 few-shot 条数；近期序列使用情况另记），只看趋势、不宣称因果提升、不设硬提升门槛。
 
-近期序列与 few-shot（ADR-0012）：主任务发送成功后记录同 space id＋同 target 最近 8 个主任务的纯 skill 名序列（含本轮、oldest→newest；集外斜杠命令记名，普通文本记 `plain_text`，不记参数正文，前置不进序列）。学习案例存 target/space_id/两轮放行 id/时间/机械分类、预测轮干净回复全文、当时 next_skill、actual_skill／实际类型、当时最多 8 条序列快照；整屏原料与下一轮完整放行正文不入案例。每轮最多选 4 条同 space 案例，优先最近纠错、补足命中与正确弃答，同 target 优先再时间倒序；注入「历史近期序列＋历史干净回复＋当时预测＋实际 skill」，历史正文总预算 16,000 字符，超限少选不截断单条，序列不占此预算。无历史保持原 prompt；预测优先级为当前回复明示＞当前近期序列＞few-shot＞空。跨 space 只按 target 结算机械反馈，案例标 `learning_excluded:"space_changed"`，不进任何池，旧 space 正文不随新 space 请求出机。
+近期序列与 few-shot（ADR-0012）：主任务发送成功后记录同 space id＋同 target 最近 8 个主任务的纯 skill 名序列（含本轮、oldest→newest；集外斜杠命令记名，普通文本记 `plain_text`，不记参数正文，前置不进序列）。学习案例存 target/space_id/两轮放行 id/时间/机械分类、预测轮干净回复全文、当时 next_skill、actual_skill／实际类型、当时最多 8 条序列快照；回读原料、本轮原料与下一轮完整放行正文不入案例。每轮最多选 4 条同 space 案例，优先最近纠错、补足命中与正确弃答，同 target 优先再时间倒序；注入「历史近期序列＋历史干净回复＋当时预测＋实际 skill」，历史正文总预算 16,000 字符，超限少选不截断单条，序列不占此预算。无历史保持原 prompt；预测优先级为当前回复明示＞当前近期序列＞few-shot＞空。跨 space 只按 target 结算机械反馈，案例标 `learning_excluded:"space_changed"`，不进任何池，旧 space 正文不随新 space 请求出机。
 
 学习存储（ADR-0012）：默认 `${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/`，`LOOP_LEARNING_DIR` 可覆盖；目录 `0700`、文件 `0600`，本地 JSONL/JSON，90 天且每 space 最近 100 条，到期/超额先删最旧，只含计数的全局汇总可长期保留。清理由正常读写触发，无后台任务。本地读改写用短临界区锁（不跨 API/pi）、两轮放行 id 去重、统计原子写；锁/I/O/权限/损坏一律降级 `learning_warning`，不新增 error kind、不改退出码、不阻断主轮。api 后端允许同 space 历史干净回复随既有抽取请求发往 `LOOP_API_BASE`（pi 按 pi 配置），案例正文绝不进 result/webhook。`LOOP_LEARNING=off` 关闭学习读写、近期序列与 few-shot，原有 next_skill 预测照旧；其他值默认开启。space id 缺失禁用该轮学习并告警；space 重建得到新 id 即新池，不按 name/folder 继承。不自动回填 `$TMPDIR` 旧数据。
 

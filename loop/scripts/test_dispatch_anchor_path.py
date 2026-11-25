@@ -28,7 +28,7 @@ REAL_WHICH = dispatch.shutil.which
 
 
 def run_round(screen, rid):
-    """reply 取整屏（保证逐字校验过），聚焦完整性门而非抽取质量。"""
+    """reply 取回读全文（无旧轮时本轮段＝全文，保证逐字校验过），聚焦完整性门而非抽取质量。"""
     with tempfile.TemporaryDirectory() as td:
         pf = Path(td) / "prompt.md"
         pf.write_text(PROMPT, encoding="utf-8")

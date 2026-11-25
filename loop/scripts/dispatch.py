@@ -9,9 +9,10 @@
 自动经 uv run --no-python-downloads 用机器上已有的 3.10+ 解释器重跑，不下载。）
 
 机械活：读放行提示词 → 核对目标 → hc send --if idle → hc wait 循环 →
-hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净全文 reply 落盘 .md
-＋抽取选段字段（默认直连 API，pi 显式备选，ADR-0005）→ 合并成一行 JSON。
-异常直接返回 error（退出码非零），不进抽取。只用 Python 标准库。
+hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出本轮段 → 完整性检查
+（只对本轮段）→ 回读全文落盘 .raw.md＋本轮原料落盘 .turn.md → 抽取器裁剪出干净
+全文 reply 落盘 .md＋抽取选段字段（默认直连 API，pi 显式备选，ADR-0005）→ 合并成
+一行 JSON。异常直接返回 error（退出码非零），不进抽取。只用 Python 标准库。
 
 机械保证（不靠提示词）：
   - 原文照发：主任务文件内容一字不改地作为 hc send 的位置参数。
@@ -74,9 +75,9 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
   - 发送前核对目标身份（--expect-proc，认 foreground.argv[0]/status.app，可选但强烈建议传；
     foreground.name 不可靠——claude 实测为版本号，不作判据，ADR-0009）。
   - 台账记录实际发出内容的 sha256，成功输出也带 prompt_sha256。
-  - 完整性判据：折叠标记（▲▼）命中即 error，不进 pi；原文照常落盘。锚点（提示词
-    回声首行前缀）只作信息 anchor_found、不阻断——检查在 turn>基线＋落定之后，
-    长任务回声滚出当前屏是常态，回复仍在屏底。
+  - 完整性判据：折叠标记（▲▼）只查本轮段，命中即 error，不进抽取；双文件照常落盘。
+    锚点（提示词回声首行前缀）只作信息 anchor_found、不阻断——检查在 turn>基线＋落定
+    之后，超过 1000 行历史时回声仍可能不可得，搜不到不代表回复不完整（ADR-0013）。
   - 工具定位：hc/uv（及 backend=pi 时的 pi）先 shutil.which，PATH 找不到时自动探常见目录（~/.local/bin、
     homebrew、nvm node bin），后台 job 缺 PATH 也能起。
   - 本地记录归置：--loop-dir 默认 $TMPDIR/loop（tempfile.gettempdir()/loop），runs/ 放
@@ -100,8 +101,9 @@ hc read → 完整性检查 → 整屏原料落盘 .raw.md → 裁剪出干净�
     失败只记状态码/类名，不读响应体，密钥/URL 零回显。pi 备选路径照旧。
 
 交付：stdout 一行 JSON，同一字符串同时写 $TMPDIR/loop/runs/<放行id>.result.json
-（成功与 error 都写）。run_record 指 pi 裁剪后的干净全文 .md（回看对象），
-raw_record 指整屏原料 .raw.md（审计）。台账记过程，结果文件记最终交付，
+（成功与 error 都写）。run_record 指抽取器裁剪后的干净全文 .md（回看对象），
+raw_record 指回读全文 .raw.md（审计，含旧轮），turn_record 指本轮原料 .turn.md
+（抽取器输入＋逐字校验语料，ADR-0013）。台账记过程，结果文件记最终交付，
 重发拒绝仍以台账为准。
 可选 webhook 完成通知：env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，
 成功/报错都 POST 结果 JSON（鉴权走 Authorization: Bearer），发失败不连累整轮，
@@ -116,7 +118,7 @@ raw_record 指整屏原料 .raw.md（审计）。台账记过程，结果文件�
 不要用 hc exec 或短超时包装器同步等。
 
 已裁定默认值（issue #16，2026-11-19）：墙钟 3600s（发送成功起计、不重置）、
-check-in 180s、落定静置 10s × 2 次、pi 抽取护栏 1200s、hc read --lines 0。
+check-in 180s、落定静置 10s × 2 次、抽取护栏 1200s、hc read --lines 1000（ADR-0013）。
 """
 
 import argparse
@@ -234,8 +236,11 @@ SEND_GUARD_S = 120.0
 QUERY_GUARD_S = 30.0
 # hc wait 子进程护栏 = 本次 --timeout + 余量。
 WAIT_GUARD_MARGIN_S = 30.0
-# 裁定 A3：只取当前屏。对 grok，--lines > 0 时 hc 的 complete 恒 false，语义失真。
-READ_LINES = 0
+# 回读范围（ADR-0013，supersede 裁定 A3「只取当前屏」）：请求最近 1000 行拼接
+# 历史＋当前屏（hc stitched 历史上限）。长回复滚出当前屏的部分仍可取回；超过
+# 1000 行历史的开头仍不可得（如实声明，不承诺无限历史）。hc 自报 complete 只记
+# 台账、不作判据（A3 所称 grok complete 恒 false 未全面证伪，见 ADR-0013 证据边界）。
+READ_LINES = 1000
 # 前置落定用短轮询而非 hc wait：/clear 是本地命令、可能不进 working，
 # hc wait 会空等一个 check-in。working 时每 RESET_POLL_S 秒 hc get 查一次。
 RESET_POLL_S = 2.0
@@ -247,7 +252,7 @@ WEBHOOK_TIMEOUT_S = 10.0
 # webhook 主出口重试退避（共 3 次：首发 + 2 次重试）；全败且用了代理时再直连兜底 1 次。
 WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
 
-# summary 已移除（原文才是重点）：pi 若仍多给 summary，投影时直接丢弃，
+# summary 已移除（原文才是重点）：抽取器若仍多给 summary，投影时直接丢弃，
 # 不算坏行、不进 rewritten。
 # next_skill（ADR-0008 修订，#48）是唯一推测字段：下一轮应使用的纯 skill 名（不带斜杠、
 # 不含参数），候选固定七项；缺失/非字符串/带斜杠/带参数/集外值均宽容投影为 ""，不整轮
@@ -704,11 +709,41 @@ def closest_fragment(value, text):
     return best
 
 
-def verify_extraction(ext, screen, raw_path):
-    """裁定 C：questions/conclusion/blocked 全部逐字摘原文。
+def cut_turn(text, anchor):
+    """断轮（Turn Cut，ADR-0013）：从回读全文里机械切出本轮段，确定性、不用模型。
+
+    优先取「去前导空白后以 ❯ 开头且含锚点」的最后一行（提示词回声形态），从该行
+    切到全文末尾——回复正文引用锚点但无 ❯ 前缀时不会误切回复开头。无 ❯ 形态回声
+    时退化为含锚点的最后一行；锚点完全找不到则整段使用（诊断不因断轮失败再丢失）。
+    锚点匹配沿用 verbatim_present（字面＋去空白折叠容错）。选中的回声行保留在段内。
+    返回 (turn_text, echo_found, cut_line)：cut_line 是 1 起切点行号；整段使用时
+    echo_found=False、cut_line=1、turn_text 逐字等于全文。
+    """
+    lines = text.splitlines(keepends=True)
+    cut = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].lstrip().startswith("❯") and verbatim_present(anchor, lines[i]):
+            cut = i
+            break
+    if cut is None:
+        for i in range(len(lines) - 1, -1, -1):
+            if verbatim_present(anchor, lines[i]):
+                cut = i
+                break
+    if cut is None:
+        return text, False, 1
+    return "".join(lines[cut:]), True, cut + 1
+
+
+def verify_extraction(ext, turn_text, turn_path, raw_path, backend):
+    """裁定 C：questions/conclusion/blocked 全部逐字摘原文（语料＝本轮原料，ADR-0013）。
     对每个非空字段值做子串校验；搜不到的标 rewritten 并附最接近片段；
     全部搜不到则 error。needs_user 是布尔判断字段、next_skill 是推测字段
-    （ADR-0008），均不参与校验。"""
+    （ADR-0008），均不参与校验。
+
+    错误载荷（#50）：hints 每个未过校验字段一条「字段名＋最接近的原文整行」
+    （closest_fragment 原样整行、零截断），另给本轮原料与回读全文路径；不再对
+    序列化 JSON 切片。message 按本轮实际抽取后端（api|pi）取值，不写死 pi。"""
     checks = [("conclusion", ext["conclusion"]), ("blocked", ext["blocked"])]
     checks += [(f"questions[{i}]", q) for i, q in enumerate(ext["questions"])]
     rewritten = {}
@@ -717,27 +752,30 @@ def verify_extraction(ext, screen, raw_path):
         if not val.strip():
             continue
         checked += 1
-        if not verbatim_present(val, screen):
-            rewritten[key] = closest_fragment(val, screen)
+        if not verbatim_present(val, turn_text):
+            rewritten[key] = closest_fragment(val, turn_text)
     if checked and len(rewritten) == checked:
+        hints = [f"{key} 未过逐字校验，最接近的原文整行：{frag}"
+                 for key, frag in rewritten.items()]
+        hints += [f"本轮原料已落盘：{turn_path}", f"回读全文已落盘：{raw_path}"]
         raise DispatchError(
             "extraction_rewritten",
-            "抽取字段全部未通过逐字校验：pi 在改写而不是抽取",
-            [f"整屏原文已落盘：{raw_path}",
-             "最接近的原文片段：" + json.dumps(rewritten, ensure_ascii=False)[:300]],
+            f"抽取字段全部未通过逐字校验：{backend} 在改写而不是抽取",
+            hints,
         )
     return rewritten
 
 
-def verify_reply(reply, screen):
-    """reply 是 pi 裁剪后的干净全文。先整体子串校验（回复本是连续整块时最强）；
-    不中再逐行校验（允许删掉穿插的杂物行）。返回未过逐字校验的行列表，全过返回 []。"""
+def verify_reply(reply, turn_text):
+    """reply 是抽取器裁剪后的干净全文（语料＝本轮原料，ADR-0013）。先整体子串校验
+    （回复本是连续整块时最强）；不中再逐行校验（允许删掉穿插的杂物行）。
+    返回未过逐字校验的行列表，全过返回 []。"""
     if not reply.strip():
         return ["(reply 为空)"]
-    if verbatim_present(reply, screen):
+    if verbatim_present(reply, turn_text):
         return []
     return [ln for ln in reply.splitlines()
-            if ln.strip() and not verbatim_present(ln, screen)]
+            if ln.strip() and not verbatim_present(ln, turn_text)]
 
 
 def identity_ok(terminal, expect_proc):
@@ -1507,19 +1545,19 @@ def parse_extraction(stdout, meta=None):
     )
 
 
-def extract_via_pi(pi_bin, args, raw_path):
+def extract_via_pi(pi_bin, args, turn_path):
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
     instruction = (
-        "整屏原文已随消息附上（@文件）。按系统提示词裁剪并抽取，"
+        "本轮原料已随消息附上（@文件）。按系统提示词裁剪并抽取，"
         "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
     )
     # 在线 few-shot（ADR-0012）：同 space 历史案例＋当前近期序列，无历史时为空、沿用原 prompt。
     injection = getattr(args, "learning_injection", "")
     if injection:
         instruction += "\n\n" + injection
-    instruction += f'\n整屏原文落盘路径：{raw_path}'
+    instruction += f'\n本轮原料落盘路径：{turn_path}'
     argv = [
         pi_bin, "-p",
         "--no-tools", "--no-session", "--no-extensions", "--no-skills",
@@ -1528,7 +1566,7 @@ def extract_via_pi(pi_bin, args, raw_path):
     ]
     if args.pi_model:
         argv += ["--model", args.pi_model]
-    argv += ["--", f"@{raw_path}", instruction]
+    argv += ["--", f"@{turn_path}", instruction]
     p = run_cmd(argv, args.extract_timeout)
     if p.returncode != 0:
         raise DispatchError(
@@ -1543,24 +1581,24 @@ def extract_via_pi(pi_bin, args, raw_path):
     return ext
 
 
-def extract_via_api(args, raw_path):
+def extract_via_api(args, turn_path):
     """直连 API 裁剪＋抽取（ADR-0005）：OpenAI 兼容 chat completions，
-    system=extract.md，user=指令＋内联整屏原文。temp 0、不流式、不重试、
+    system=extract.md，user=指令＋内联本轮原料（ADR-0013）。temp 0、不流式、不重试、
     不发 response_format；超时复用 --extract-timeout。代理决议与出口和
     webhook 同一套（ADR-0003）。失败只记状态码/类名，不读响应体，密钥/URL 零回显。"""
     base, key, model, max_tokens = api_config()
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
-    raw_text = Path(raw_path).read_text(encoding="utf-8")
+    turn_text = Path(turn_path).read_text(encoding="utf-8")
     instruction = (
-        "整屏原文已内联在本消息末尾。按系统提示词裁剪并抽取，"
+        "本轮原料已内联在本消息末尾。按系统提示词裁剪并抽取，"
         "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
     )
-    # 在线 few-shot（ADR-0012）：同 space 历史案例＋当前近期序列插在指令与整屏原文之间，
-    # 整屏原文仍居消息末尾；无历史时为空、沿用原 prompt（冷启动行为不变）。
+    # 在线 few-shot（ADR-0012）：同 space 历史案例＋当前近期序列插在指令与本轮原料之间，
+    # 本轮原料仍居消息末尾；无历史时为空、沿用原 prompt（冷启动行为不变）。
     injection = getattr(args, "learning_injection", "")
-    user_content = instruction + ("\n\n" + injection if injection else "") + "\n\n" + raw_text
+    user_content = instruction + ("\n\n" + injection if injection else "") + "\n\n" + turn_text
     body = json.dumps({
         "model": model,
         "messages": [
@@ -1602,11 +1640,12 @@ def extract_via_api(args, raw_path):
     return ext
 
 
-def extract(pi_bin, args, raw_path):
-    """抽取入口：按 LOOP_EXTRACT_BACKEND 分叉（默认 api 直连，pi 显式备选）。"""
+def extract(pi_bin, args, turn_path):
+    """抽取入口：按 LOOP_EXTRACT_BACKEND 分叉（默认 api 直连，pi 显式备选）。
+    两种后端都读本轮原料（ADR-0013），不再读含旧轮的回读全文。"""
     if resolve_extract_backend() == "api":
-        return extract_via_api(args, raw_path)
-    return extract_via_pi(pi_bin, args, raw_path)
+        return extract_via_api(args, turn_path)
+    return extract_via_pi(pi_bin, args, turn_path)
 
 
 def positive_float(s):
@@ -1625,7 +1664,7 @@ def positive_int(s):
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
-        description="loop 分发脚本：发送已放行提示词、等待落定、取回原文落盘、pi 抽取。",
+        description="loop 分发脚本：发送已放行提示词、等待落定、回读断轮落盘、抽取器抽取。",
     )
     ap.add_argument("--target", required=True, help="目标会话地址：会话名（推荐，一名一 live、"
                     "恒解析到最新 live 终端）或 t 号/machine/t7；缺失或已死时按会话名 get-or-create")
@@ -1680,7 +1719,7 @@ def parse_args(argv=None):
     ap.add_argument("--adopt-poll", type=positive_float, default=ADOPT_POLL_S,
                     help="领养复核轮询间隔秒数（默认 2）")
     ap.add_argument("--extract-timeout", type=positive_float, default=1200.0,
-                    help="pi 抽取子进程护栏秒数（默认 1200）")
+                    help="抽取子进程护栏秒数（默认 1200，api/pi 两后端共用）")
     return ap.parse_args(argv)
 
 
@@ -1755,12 +1794,15 @@ def main(argv=None):
         sha = hashlib.sha256(raw).hexdigest()
 
         runs = Path(args.loop_dir) / "runs"
-        # raw_path = 整屏原料（审计）；record_path = pi 裁剪后的干净全文（回看对象）。
+        # raw_path = 回读原料（全文逐字，审计，含被断轮切掉的旧轮）；
+        # turn_path = 本轮原料（断轮段，抽取器输入＋逐字校验语料，ADR-0013）；
+        # record_path = 抽取器裁剪后的干净全文（回看对象）。
         raw_path = runs / f"{args.release_id}.raw.md"
+        turn_path = runs / f"{args.release_id}.turn.md"
         record_path = runs / f"{args.release_id}.md"
         ledger_path = runs / f"{args.release_id}.json"
         # 结果文件是最终交付（成功与 error 都写），台账记过程；
-        # 重发拒绝仍只看台账/整屏原料落盘，结果文件存在不单独拦截。
+        # 重发拒绝仍只看台账/回读原料落盘，结果文件存在不单独拦截。
         result_path = runs / f"{args.release_id}.result.json"
         if ledger_path.exists() or raw_path.exists():
             raise DispatchError(
@@ -2066,38 +2108,45 @@ def main(argv=None):
         deadline = started + args.wall_clock
         final = wait_for_result(hc_bin, args, baseline, deadline)
 
-        # 5) 取回当前屏 + 完整性检查。
+        # 5) 回读（最近 1000 行拼接历史＋当前屏，ADR-0013）＋断轮＋完整性检查。
         read = hc_json(hc_bin, ["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)
         screen = read["text"]
         # 锚点（提示词回声首行前缀）只作信息、不阻断：本步已在 turn>基线＋落定之后，
-        # 本轮确已被处理；长任务跑完提示词回声滚出当前屏（--lines 0）是常态，
-        # 回复仍在屏底，锚点搜不到不代表回复不完整（PAW 实测多次误判后降级）。
+        # 本轮确已被处理；超过 1000 行历史时回声仍可能不可得，锚点搜不到不代表
+        # 回复不完整（PAW 实测多次误判后降级，ADR-0013 维持信息字段）。
         anchor_found = verbatim_present(anchor, screen)
-        # 折叠标记仍是硬判据：▲▼ 说明目标 TUI 藏了内容，当前屏看不到完整回复。
+        # 断轮（ADR-0013）：确定性机械切出本轮段；折叠判据与逐字校验都只对本轮段。
+        turn_text, echo_found, cut_line = cut_turn(screen, anchor)
+        # 折叠标记仍是唯一硬判据：▲▼ 说明目标 TUI 藏了内容。只查本轮段——旧轮已折叠
+        # 内容不误报本轮；整段使用（锚点找不到）时旧轮折叠仍可命中，此时阻断是诚实的。
         reasons = []
-        if "▲" in screen or "▼" in screen:
+        if "▲" in turn_text or "▼" in turn_text:
             reasons.append("fold_markers")
         complete = not reasons
         elapsed = round(time.monotonic() - started, 1)
 
-        # 6) 整屏原料逐字落盘（不加任何头尾），台账记读取元信息。
+        # 6) 双文件逐字落盘（不加任何头尾）：回读全文（审计，含旧轮）＋本轮段
+        #    （抽取器输入＋校验语料）；台账记读取元信息与断轮留痕。
         raw_path.write_text(screen, encoding="utf-8", newline="")
+        turn_path.write_text(turn_text, encoding="utf-8", newline="")
         ledger.update(
             phase="read", read_at=now_iso(),
             turn=final.get("turn"), status=status_state(final),
             elapsed_s=elapsed, chars=len(screen),
+            echo_found=echo_found, turn_cut_line=cut_line, turn_chars=len(turn_text),
             hc_read={"complete": read.get("complete"), "how": read.get("how"), "why": read.get("why")},
             complete=complete, complete_reason=reasons, anchor_found=anchor_found,
-            run_record=str(raw_path), raw_record=str(raw_path),
+            run_record=str(raw_path), raw_record=str(raw_path), turn_record=str(turn_path),
         )
         write_json_atomic(ledger_path, ledger)
 
-        # 折叠判据命中即 error，不进 pi；原文已照常落盘。锚点缺失只记信息、不阻断。
+        # 折叠判据命中即 error，不进抽取；双文件已照常落盘。锚点缺失只记信息、不阻断。
         if not complete:
             raise DispatchError(
                 "incomplete_result",
                 "完整性判据命中：" + "、".join(reasons),
-                [f"整屏原文已落盘：{raw_path}", "请用户回看原文；不按键、不自动补发"],
+                [f"回读全文已落盘：{raw_path}", f"本轮原料已落盘：{turn_path}",
+                 "请用户回看原文；不按键、不自动补发"],
             )
 
         # 7) 裁剪＋抽取（默认 API 直连，pi 备选）＋逐字校验（裁定 C），合并输出。
@@ -2117,13 +2166,14 @@ def main(argv=None):
             seq_snapshot = inj.get("sequence", [])
             if inj.get("warning") is not None:
                 ctx["learning_warning"] = inj["warning"]
-        ext = extract(pi_bin, args, raw_path)
+        ext = extract(pi_bin, args, turn_path)
         reply = ext.pop("reply")
-        rewritten = verify_extraction(ext, screen, raw_path)
-        bad_reply_lines = verify_reply(reply, screen)
+        # 逐字校验语料＝本轮原料（ADR-0013）：旧轮文本不参与通过判定。
+        rewritten = verify_extraction(ext, turn_text, turn_path, raw_path, backend)
+        bad_reply_lines = verify_reply(reply, turn_text)
         if bad_reply_lines:
-            rewritten["reply"] = closest_fragment(bad_reply_lines[0], screen)
-        # 干净全文落盘为回看对象；整屏原料另存审计。
+            rewritten["reply"] = closest_fragment(bad_reply_lines[0], turn_text)
+        # 干净全文落盘为回看对象；回读全文与本轮原料另存审计。
         record_path.write_text(reply, encoding="utf-8", newline="")
         ledger.update(rewritten=rewritten, run_record=str(record_path),
                       reply_chars=len(reply), reply_bad_lines=len(bad_reply_lines))
@@ -2152,6 +2202,7 @@ def main(argv=None):
             "chars": len(screen),
             "run_record": str(record_path),
             "raw_record": str(raw_path),
+            "turn_record": str(turn_path),
             "prompt_sha256": sha,
             "rewritten": rewritten,
             "extract_backend": backend,

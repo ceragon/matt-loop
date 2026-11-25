@@ -60,18 +60,18 @@ def main():
 
     # 4 混入瞎编 summary 不校验、不进 rewritten
     ext = dict(BASE, summary="原文里根本没有这句话")
-    rewritten = dispatch.verify_extraction(ext, SCREEN, "/fake/raw.md")
+    rewritten = dispatch.verify_extraction(ext, SCREEN, "/fake/turn.md", "/fake/raw.md", "pi")
     assert rewritten == {}, rewritten
     print("4 fabricated summary ignored by verify, rewritten empty ok")
 
     # 5 conclusion/questions/blocked 校验照旧（配一条逐字问题，避开「全部瞎编」门）
     ext = dict(BASE, conclusion="瞎编的结论", questions=["已完成该功能。"])
-    rewritten = dispatch.verify_extraction(ext, SCREEN, "/fake/raw.md")
+    rewritten = dispatch.verify_extraction(ext, SCREEN, "/fake/turn.md", "/fake/raw.md", "pi")
     assert set(rewritten) == {"conclusion"}, rewritten
     ext = {"needs_user": False, "questions": ["瞎编的问题"],
            "conclusion": "瞎编的结论", "blocked": "瞎编的弹框"}
     try:
-        dispatch.verify_extraction(ext, SCREEN, "/fake/raw.md")
+        dispatch.verify_extraction(ext, SCREEN, "/fake/turn.md", "/fake/raw.md", "pi")
         raise AssertionError("全部瞎编应 extraction_rewritten")
     except dispatch.DispatchError as e:
         assert e.kind == "extraction_rewritten", e.kind
