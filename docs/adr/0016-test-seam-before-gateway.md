@@ -4,6 +4,13 @@ status: accepted
 
 # 测试缝先于网关：`Deps` 注入加命令级 `FakeHerdr`
 
+> 补记（ADR-0020，#75）：决定 1 预留的 `run(request, deps)` 已由 ADR-0020 按预留定形，
+> `main` 退成薄壳、测试入口不变；决定 3 里 `extract` 字段的签名改为显式的
+> `deps.extract(request, turn_path, injection) -> Extraction`，取代往 `args` 上暗渡
+> 属性；决定 7 末尾「待⑤收口」的 `learning.enabled()` 环境变量洞已**部分**收口——
+> `learning.enabled(env)` 加一个参数、由管线传 `deps.env`，只改这一个函数签名，其余
+> 仍归 ⑤。「交接」一节里管线设计票接手的事项按此落地，`harness.run` 仍停在 argv 层。
+
 > 补记（ADR-0018，#74）：本 ADR 的决定 1–10 不变；但「网关之后：稳定与临时」一节里把
 > `Deps.hc_json` / `Deps.app_json`、`FakeHerdr` 的 argv 级入口、契约一致性检查器与解析
 > 测试判为**临时**的判断被推翻，三者改为**稳定**（网关封装在命令级 seam 之上，seam 不上

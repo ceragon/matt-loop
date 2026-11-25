@@ -4,6 +4,12 @@ status: accepted
 
 # herdr 领域网关：封装命令字面量，seam 不动
 
+> 补记（ADR-0020，#75）：决定 1 里「`main` 内部用 `Herdr(deps)` 构造」改为由 `run`
+> 构造（`main` 退成薄壳，不碰网关）；「交接：一轮管线」七项均已关闭，落点见 ADR-0020
+> 决定 7（领养策略、`parse_space` 复用）、决定 8（等待循环）、决定 11（失败到外部 kind
+> 的映射）、决定 12（`f.restore` 与台账、ctx 写入点）、决定 13（`learning.enabled()`
+> 环境变量洞，部分收口）。网关本身的决定不变。
+
 ## 背景
 
 评审 #53 候选③：`dispatch.py` 对 herdr 的依赖停在进程层的细节上。`hc` 与
