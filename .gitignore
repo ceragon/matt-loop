@@ -4,3 +4,6 @@ __pycache__/
 
 # loop 运行记录：含放行提示词与 agent 输出，勿提交进公开仓库
 .loop/
+
+# 本机 agent 工具的工作目录与本地设置，不入库
+.claude/
