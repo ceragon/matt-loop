@@ -184,6 +184,59 @@ def main():
     assert dict(os.environ) == before_env
     print("8c scoped_env restores on exception exit")
 
+    # 9 残留洞吸收（T5c）：注入 proxy_resolution 时作用域内替换模块级
+    #   webhook_proxy_resolution，退出无条件恢复；不注入则模块级原样不动。
+    saved_proxy = dispatch.webhook_proxy_resolution
+    marker_proxy = lambda url: ({"https": "http://proxy.invalid:1"}, "env")
+    seen4 = {}
+
+    def probe_extract4(pi_bin, args, turn_path):
+        seen4["proxy"] = dispatch.webhook_proxy_resolution
+        return dict(EXT)
+
+    w = world_with_terminal()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(base_argv(td, "harness-9"), world=w,
+                        proxy_resolution=marker_proxy, extract=probe_extract4)
+        assert r.rc == 0, r.result
+    assert seen4["proxy"] is marker_proxy
+    assert dispatch.webhook_proxy_resolution is saved_proxy
+    seen5 = {}
+
+    def probe_extract5(pi_bin, args, turn_path):
+        seen5["proxy"] = dispatch.webhook_proxy_resolution
+        return dict(EXT)
+
+    w = world_with_terminal()
+    with tempfile.TemporaryDirectory() as td:
+        harness.run(base_argv(td, "harness-9b"), world=w, extract=probe_extract5)
+    assert seen5["proxy"] is saved_proxy
+    print("9 injected proxy_resolution replaces module global in scope, restored")
+
+    # 9c 异常退出也无条件恢复：轮内抛异常（extract 探针炸）时模块全局与 os.environ
+    #   仍恢复原样，异常原样外抛（finally 覆盖，不留共享污染）。
+    before_env = dict(os.environ)
+    saved_all = (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
+                 dispatch.webhook_open, dispatch.run_cmd, dispatch.webhook_proxy_resolution)
+
+    def boom_extract(pi_bin, args, turn_path):
+        raise RuntimeError("probe boom")
+
+    w = world_with_terminal()
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            harness.run(base_argv(td, "harness-9c"), world=w,
+                        http_open=marker_open, run_cmd=marker_cmd,
+                        proxy_resolution=marker_proxy, extract=boom_extract)
+            raise AssertionError("异常须原样外抛")
+        except RuntimeError as e:
+            assert str(e) == "probe boom", e
+    assert (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
+            dispatch.webhook_open, dispatch.run_cmd,
+            dispatch.webhook_proxy_resolution) == saved_all
+    assert dict(os.environ) == before_env
+    print("9c module globals and os.environ restored on exception exit")
+
     print("all harness tests passed")
 
 
