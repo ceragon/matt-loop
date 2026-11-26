@@ -57,6 +57,12 @@ def _argv_value(argv, flag):
     return None
 
 
+def default_locate(name, probe_dirs=None):
+    """默认工具定位桩：任何名字都返回假路径。需要「缺工具」的用例在自己的
+    locate 里对目标名返回 None，其余委托这里（不重复假路径前缀）。"""
+    return "/fake/" + name
+
+
 def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
         run_cmd=None, clock=None, proxy_resolution=None):
     """装配 Deps、跑一轮 dispatch.main、整理返回码与产物。
@@ -70,8 +76,7 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
     clock = clock if clock is not None else VirtualClock()
     env_map = dict(DEFAULT_ENV)
     env_map.update(env or {})
-    locate = locate if locate is not None else (
-        lambda name, probe_dirs=None: "/fake/" + name)
+    locate = locate if locate is not None else default_locate
     extract = extract if extract is not None else (
         lambda deps, request, turn_path, injection: pipeline.Extraction(
             fields=dict(_DEFAULT_FIELDS), reply=_DEFAULT_EXT["reply"],

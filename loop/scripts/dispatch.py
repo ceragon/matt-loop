@@ -85,8 +85,10 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
     照常抽取、照常出 result，incomplete_result 退役。锚点（提示词回声首行前缀）只作信息
     anchor_found、不阻断——检查在 turn>基线＋落定之后，超过 1000 行历史时回声仍可能不可得，
     搜不到不代表回复不完整（ADR-0013）。
-  - 工具定位：hc/uv（及 backend=pi 时的 pi）先 shutil.which，PATH 找不到时自动探常见目录（~/.local/bin、
-    homebrew、nvm node bin），后台 job 缺 PATH 也能起。
+  - 工具定位：hc（任何后端都必需；backend=pi 时还有 pi）先 shutil.which，PATH 找不到时自动探常见目录
+    （~/.local/bin、homebrew、nvm node bin），后台 job 缺 PATH 也能起。uv 不每轮要求，只在解释器
+    <3.10 的自举路径里探（探不到报 python_too_old；#129/#130 的判断——ADR-0005 决定 7
+    只授权延后定位 pi）。
   - 本地记录归置：--loop-dir 默认 $TMPDIR/loop（tempfile.gettempdir()/loop），runs/ 放
     记录、releases/ 放放行提示词；随 OS 临时清理、不留持久审计，台账拒重发保护止于
     重启（放行 id 每次唯一）。PATH 由 find_tool 兜底，不需手写包装脚本。
@@ -169,8 +171,8 @@ from herdr import Herdr, HerdrFailure, NotFound  # noqa: E402,F401  （供测试
 from pipeline import (  # noqa: E402,F401  （兼容重导出：既有测试零改动，同 turn 先例）
     ADOPT_POLL_S, ADOPT_TIMEOUT_S, Prestep, PrestepPlan, Route, SpacePlan,
     check_identity, classify, gate_route, has_internal_newline, identity_ok,
-    parse_space, plan_space, prestep_specs, validate_task_name,
-    TASK_NAME_RE, RESERVED_ID_RE, SESSION_NAME_RE,
+    parse_space, plan_space, prestep_specs,
+    RESERVED_ID_RE, SESSION_NAME_RE,
 )
 from turn import (  # noqa: E402,F401
     FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE, SESSION_START_SKILLS,
@@ -188,13 +190,6 @@ NOTIFY_SUCCESS_FIELDS = (
     "complete", "complete_reason",
 )
 
-# 机械护栏（非等待策略，不属待拍板项）：
-# hc send 会等人未写完的草稿（draft_wait 默认 60 秒），护栏须大于它。
-SEND_GUARD_S = 120.0
-# hc get / hc read 都是即时查询，30 秒足够宽。
-QUERY_GUARD_S = 30.0
-# hc wait 子进程护栏 = 本次 --timeout + 余量。
-WAIT_GUARD_MARGIN_S = 30.0
 # 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
 WEBHOOK_TIMEOUT_S = 10.0
 # webhook 主出口重试退避（共 3 次：首发 + 2 次重试）；全败且用了代理时再直连兜底 1 次。
@@ -419,8 +414,6 @@ def _proxy_bypass(host):
         return False
     fns = [getattr(urllib.request, "proxy_bypass_macosx_sysconf", None),
            getattr(urllib.request, "proxy_bypass_environment", None)]
-    if all(fn is None for fn in fns):
-        fns = [getattr(urllib.request, "proxy_bypass", None)]
     for fn in fns:
         if fn is None:
             continue
@@ -745,8 +738,7 @@ def extract_via_pi(deps, request, turn_path, injection):
     if injection:
         instruction += "\n\n" + injection
     reference = echo_reference(request)
-    if reference:
-        instruction += "\n\n" + reference
+    instruction += "\n\n" + reference
     instruction += f'\n本轮原料落盘路径：{turn_path}'
     argv = [
         deps.pi_bin, "-p",
@@ -797,8 +789,7 @@ def extract_via_api(deps, request, turn_path, injection):
     if injection:
         sections.append(injection)
     reference = echo_reference(request)
-    if reference:
-        sections.append(reference)
+    sections.append(reference)
     sections.append(turn_text)
     user_content = "\n\n".join(sections)
     body = json.dumps({

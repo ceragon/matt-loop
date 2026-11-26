@@ -19,8 +19,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from errors import DispatchError  # noqa: E402
 
-# 命令护栏（与 dispatch.py 的 SEND_GUARD_S / QUERY_GUARD_S 同值；网关不 import
-# 分发脚本，避免反向依赖）。语义见 dispatch.py 常量注释。
+# 命令护栏（网关不 import 分发脚本，避免反向依赖）：hc send 会等人未写完的草稿
+# （draft_wait 默认 60 秒），护栏须大于它；hc get / hc read 是即时查询，30 秒足够宽；
+# hc wait 子进程护栏 = 本次 --timeout + 余量。
 SEND_GUARD_S = 120.0
 QUERY_GUARD_S = 30.0
 WAIT_GUARD_MARGIN_S = 30.0
@@ -157,16 +158,8 @@ class Placement:
         return self.space.get("id")
 
     @property
-    def space_name(self):
-        return self.space.get("name")
-
-    @property
     def tab_id(self):
         return self.tab.get("id")
-
-    @property
-    def tab_name(self):
-        return self.tab.get("name")
 
 
 @dataclass(frozen=True)
@@ -204,19 +197,17 @@ class Change:
     """一次 hc wait 的唤醒事实（快照；不解释等待策略）。"""
 
     terminal: str | None
-    ended: bool | None
     reason: str | None
     status: str | None
     turn: int | None
-    children: list
     raw: dict
 
     @classmethod
     def from_raw(cls, raw):
         raw = raw if isinstance(raw, dict) else {}
-        return cls(terminal=raw.get("terminal"), ended=raw.get("ended"),
+        return cls(terminal=raw.get("terminal"),
                    reason=raw.get("reason"), status=raw.get("status"),
-                   turn=raw.get("turn"), children=list(raw.get("children") or []),
+                   turn=raw.get("turn"),
                    raw=raw)
 
 
