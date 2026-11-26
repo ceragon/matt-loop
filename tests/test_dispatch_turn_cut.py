@@ -2,57 +2,80 @@
 """test_dispatch_turn_cut.py — 长回复历史回读、断轮与可读抽取失败诊断（#50，ADR-0013）。
 
 跑法：python3 tests/test_dispatch_turn_cut.py
-缝：沿用现有唯一测试缝（进程内替换 hc/herdr-app/抽取器边界，驱动 dispatch.main），
-零新增缝。只断言外部行为：result JSON、退出码、台账、落盘文件内容。
+主测试缝＝唯一 harness.run（CLI 契约，T5d/ADR-0021）：FakeHerdr 假世界摆屏幕，
+env / extract / http_open / run_cmd 注入，断言只认 rc、stdout JSON、台账、落盘产物
+（raw/turn/run/notify）与假世界日志（hc_calls 核对 --lines 1000）。
 
 覆盖（规格五组＋折叠判据组）：
   1 断轮：❯ 回声优先／回复引用锚点不误切／无 ❯ 退化锚点最后出现行／无锚点整段。
   2 作用域：折叠与逐字校验只对本轮段；折叠命中只标记 complete:false 不阻断（ADR-0019）。
   3 双文件与结果：raw/turn/run 三产物各指正确内容；台账 echo_found/切点/段字符数。
   4 错误载荷：extraction_rewritten 逐字段整行 hint、双路径、按实际后端取文案。
-  5 回归：其余纯文本 300 字符护栏不动；回读请求 --lines 1000。
+  5 回归：回读请求 --lines 1000。
   6 折叠判据（ADR-0019，#79）：实证形态两分支、U+2026 码位、回声排除、降级契约全链。
+
+T5d（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run；slice8 噪声护栏（其余纯文本
+300 字符摘录）并入 test_command_parse（命令层错误映射缝，Q3）；fold_hits 纯函数直调
+保留原位。常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
 """
-import contextlib
-import io
 import json
-import os
-import sys
 import tempfile
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
-import dispatch  # noqa: E402
-from test_dispatch_reset import PROMPT, ANCHOR, FakeHc, FakeApp  # noqa: E402
-from test_dispatch_api_extract import api_env, FakeResp  # noqa: E402
+import harness
+from harness import dispatch
+from fake_herdr import FakeHerdr
 
-# test_dispatch_reset 导入时已设 LOOP_EXTRACT_BACKEND=pi、LOOP_LEARNING=off。
-REAL_EXTRACT = dispatch.extract   # 真实抽取入口（后端输入测试用，不被桩污染）
-REAL_HC_JSON = dispatch.hc_json   # 真实 hc/app 咽喉（护栏回归用，run_round 会换桩）
-REAL_APP_JSON = dispatch.app_json
+PROMPT = "请实现某个功能\n第二行说明"
+ANCHOR = PROMPT.splitlines()[0][:24]
+KEY = "sk-test-SECRET-VALUE"
+BASE = "https://gw.example/v1"
+MODEL = "test-model"
 
 OLD = "旧轮回复第一行\n旧轮回复第二行"
 ECHO = "❯ " + ANCHOR + " …"
 NEW = "本轮回复第一行\n本轮回复第二行"
 
 
-class RecordingHc(FakeHc):
-    """记录 read 调用参数（核对 --lines 1000），其余照 FakeHc。"""
+class FakeResp:
+    def __init__(self, payload):
+        self._b = json.dumps(payload).encode("utf-8")
 
-    def __init__(self):
-        super().__init__()
-        self.reads = []
+    def read(self):
+        return self._b
 
-    def __call__(self, hc_bin, args, timeout_s):
-        if args[0] == "read":
-            self.reads.append(list(args))
-        return super().__call__(hc_bin, args, timeout_s)
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
-def run_round(screen, rid, ext, prompt=PROMPT, mock_extract=True):
-    """驱动主入口；mock_extract=True 时抽取器边界替换为返回给定 ext 的桩，
-    并记录其输入路径与内容；False 时用真实抽取入口（调用方自备网络/pi 桩与 env）。"""
+def _api_env(**kw):
+    # LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入
+    # 覆盖宿主可能导出的同名键，保住隔离（退出恢复）。T4 先例。
+    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
+         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL, "LOOP_API_MAX_TOKENS": ""}
+    d.update(kw)
+    return d
+
+
+def _world(screen):
+    """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋给定屏幕。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t99"])
+    w.screen("t99", screen)
+    return w
+
+
+def run_round(screen, rid, ext, prompt=PROMPT, mock_extract=True,
+              env=None, http_open=None, run_cmd=None):
+    """经唯一 harness.run 跑一轮完整 dispatch；mock_extract=True 时抽取依赖为返回
+    给定 ext 的桩并记录其输入路径与内容；False 时用真实抽取入口 dispatch.extract
+    （调用方自备 http_open/run_cmd 桩与 env）。返回假世界供 hc_calls 断言。"""
     with tempfile.TemporaryDirectory() as td:
         pf = Path(td) / "prompt.md"
         pf.write_text(prompt, encoding="utf-8")
@@ -62,32 +85,23 @@ def run_round(screen, rid, ext, prompt=PROMPT, mock_extract=True):
                 "--space", "main",
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
-        fake = RecordingHc()
-        fake.screen = screen
+        w = _world(screen)
         captured = {}
 
-        def fake_extract(pi_bin, args, path):
+        def recording_extract(pi_bin, args, path):
             captured["extract_path"] = str(path)
             captured["extract_input"] = Path(path).read_text(encoding="utf-8")
             return dict(ext)
 
-        dispatch.hc_json = fake
-        dispatch.app_json = FakeApp()
-        dispatch.extract = fake_extract if mock_extract else REAL_EXTRACT
-        dispatch.check_structure_and_tools = lambda: None
-        dispatch.shutil.which = lambda name: "/fake/" + name
-        dispatch.time.sleep = lambda s: None
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = dispatch.main(argv)
-        res = json.loads(buf.getvalue().strip())
-        led = json.loads((ld / "runs" / (rid + ".json")).read_text(encoding="utf-8"))
+        r = harness.run(argv, world=w, env=env,
+                        extract=recording_extract if mock_extract else dispatch.extract,
+                        http_open=http_open, run_cmd=run_cmd)
         files = {}
         for suffix in (".raw.md", ".turn.md", ".md", ".notify.json"):
             p = ld / "runs" / (rid + suffix)
             if p.exists():
                 files[suffix] = p.read_text(encoding="utf-8")
-        return rc, res, led, files, captured, fake
+        return r.rc, r.result, r.ledger, files, captured, w
 
 
 def slice1_echo_cut():
@@ -96,7 +110,7 @@ def slice1_echo_cut():
     turn = ECHO + "\n" + NEW
     ext = {"needs_user": False, "questions": [],
            "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW}
-    rc, res, led, files, cap, fake = run_round(screen, "tc-echo-1", ext)
+    rc, res, led, files, cap, w = run_round(screen, "tc-echo-1", ext)
     assert rc == 0 and res["ok"], res
     assert files[".raw.md"] == screen, "回读全文须逐字含旧轮"
     assert files[".turn.md"] == turn, "本轮原料须逐字只含断轮段（含回声行）"
@@ -111,8 +125,9 @@ def slice1_echo_cut():
     assert cap["extract_path"] == res["turn_record"], "抽取器输入须是本轮原料"
     assert cap["extract_input"] == turn
     assert res["anchor_found"] is True
-    assert fake.reads, "须有 read 调用"
-    for a in fake.reads:
+    reads = [a for a in w.hc_calls if a[0] == "read"]
+    assert reads, "须有 read 调用"
+    for a in reads:
         assert a[a.index("--lines") + 1] == "1000", a
     print("1 echo cut: turn-only segment, dual files, ledger, --lines 1000 ok")
 
@@ -124,7 +139,7 @@ def slice2_echo_priority():
     ext = {"needs_user": False, "questions": [],
            "conclusion": "本轮回复第一行", "blocked": "",
            "reply": quote + "\n" + NEW}
-    rc, res, led, files, cap, fake = run_round(screen, "tc-echo-prio", ext)
+    rc, res, led, files, cap, w = run_round(screen, "tc-echo-prio", ext)
     assert rc == 0 and res["ok"], res
     assert files[".turn.md"] == screen, "回声行在首行时本轮段＝全文（含引用行）"
     assert led["turn_cut_line"] == 1 and led["echo_found"] is True, led
@@ -138,7 +153,7 @@ def slice3_fallback_last_anchor():
     turn = ANCHOR + "\n" + NEW
     ext = {"needs_user": False, "questions": [],
            "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW}
-    rc, res, led, files, cap, fake = run_round(screen, "tc-fallback", ext)
+    rc, res, led, files, cap, w = run_round(screen, "tc-fallback", ext)
     assert rc == 0 and res["ok"], res
     assert files[".turn.md"] == turn, files
     assert led["echo_found"] is True and led["turn_cut_line"] == 3, led
@@ -151,7 +166,7 @@ def slice4_no_anchor_whole():
     screen = "没有锚点的回复\n第二行"
     ext = {"needs_user": False, "questions": [],
            "conclusion": "", "blocked": "", "reply": screen}
-    rc, res, led, files, cap, fake = run_round(screen, "tc-noanchor", ext)
+    rc, res, led, files, cap, w = run_round(screen, "tc-noanchor", ext)
     assert rc == 0 and res["ok"], res
     assert files[".turn.md"] == screen == files[".raw.md"], files
     assert led["echo_found"] is False, led
@@ -169,12 +184,12 @@ def slice5_fold_scope():
     screen = "旧轮\n… +36 lines\n" + ECHO + "\n" + NEW
     ext = {"needs_user": False, "questions": [],
            "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW}
-    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-old", ext)
+    rc, res, led, files, cap, w = run_round(screen, "tc-fold-old", ext)
     assert rc == 0 and res["ok"] and res["complete"], res
     assert "… +36 lines" in files[".raw.md"] and "… +36 lines" not in files[".turn.md"]
     # b 本轮含折叠 → 标记不阻断，抽取照跑，result/台账带标记
     screen = ECHO + "\n" + NEW + "\n… +25 lines (~2 KB)"
-    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-turn", dummy)
+    rc, res, led, files, cap, w = run_round(screen, "tc-fold-turn", dummy)
     assert rc == 0 and res["ok"], res
     assert res["complete"] is False and res["complete_reason"] == ["fold_markers"], res
     assert led["complete"] is False and led["complete_reason"] == ["fold_markers"], led
@@ -182,7 +197,7 @@ def slice5_fold_scope():
     assert "… +25 lines (~2 KB)" in files[".turn.md"]
     # c 整段使用（无锚点）＋旧轮折叠 → 诚实标记，不阻断
     screen = "旧轮\n… +36 lines\n无锚点回复"
-    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-whole", dummy)
+    rc, res, led, files, cap, w = run_round(screen, "tc-fold-whole", dummy)
     assert rc == 0 and res["ok"] and res["complete"] is False, res
     assert led["echo_found"] is False
     print("5 fold scope: old-turn pass / turn flag / whole-segment honest flag ok")
@@ -195,7 +210,7 @@ def slice6_verbatim_scope():
     ext = {"needs_user": False, "questions": ["本轮回复第一行"],
            "conclusion": old_only, "blocked": "",
            "reply": old_only + "\n" + NEW}
-    rc, res, led, files, cap, fake = run_round(screen, "tc-verbatim-scope", ext)
+    rc, res, led, files, cap, w = run_round(screen, "tc-verbatim-scope", ext)
     assert rc == 0 and res["ok"], res
     assert old_only in files[".raw.md"] and old_only not in files[".turn.md"]
     assert set(res["rewritten"]) == {"conclusion", "reply"}, res["rewritten"]
@@ -211,9 +226,8 @@ def slice7_error_payload():
     screen = ECHO + "\n" + long_line
     ext = {"needs_user": False, "questions": ["瞎编的问题"],
            "conclusion": "本轮结论：短", "blocked": "", "reply": "瞎编的回复"}
-    for backend, ctx in (("pi", contextlib.nullcontext()), ("api", api_env())):
-        with ctx:
-            rc, res, led, files, cap, fake = run_round(screen, "tc-payload-" + backend, ext)
+    for backend, env in (("pi", None), ("api", _api_env())):
+        rc, res, led, files, cap, w = run_round(screen, "tc-payload-" + backend, ext, env=env)
         assert rc == 1 and res["error"]["kind"] == "extraction_rewritten", res
         assert f"{backend} 在改写而不是抽取" in res["error"]["message"], res["error"]["message"]
         assert "rewritten" not in res["error"], "不新增结构化错误字段"
@@ -231,48 +245,6 @@ def slice7_error_payload():
     print("7 error payload: per-field full-line hints, dual paths, backend message ok")
 
 
-def slice8_noise_guards():
-    """其余纯文本 stderr/stdout 摘录的 300 字符护栏保持不变（#50 只改 JSON 截断）。"""
-    long = "噪" * 500
-    ns = lambda rc, out, err: types.SimpleNamespace(returncode=rc, stdout=out, stderr=err)
-    # hc_output：rc 0 但 stdout 非 JSON
-    dispatch.run_cmd = lambda argv, ts: ns(0, long, "")
-    try:
-        REAL_HC_JSON("/fake/hc", ["read", "t99"], 30)
-        raise AssertionError("should raise hc_output")
-    except dispatch.DispatchError as e:
-        assert e.kind == "hc_output" and e.hints == [long[:300]], e.hints
-    # HcFailure：rc 1，stderr/stdout 摘录各 300
-    dispatch.run_cmd = lambda argv, ts: ns(1, long, long)
-    try:
-        REAL_HC_JSON("/fake/hc", ["get", "t99"], 30)
-        raise AssertionError("should raise HcFailure")
-    except dispatch.HcFailure as e:
-        assert e.hints == [long[:300], long[:300]], e.hints
-    # app_output：rc 0 但 stdout 非 JSON
-    dispatch.run_cmd = lambda argv, ts: ns(0, long, "")
-    try:
-        REAL_APP_JSON("/fake/app", ["ls"], 30)
-        raise AssertionError("should raise app_output")
-    except dispatch.DispatchError as e:
-        assert e.kind == "app_output" and e.hints == [long[:300]], e.hints
-    # parse_extraction：找不到形状 JSON 时 stdout 摘录 300
-    try:
-        dispatch.parse_extraction(long)
-        raise AssertionError("should raise extraction_invalid")
-    except dispatch.DispatchError as e:
-        assert e.kind == "extraction_invalid" and e.hints[-1] == long[:300], e.hints
-    # extract_via_pi：非零退出时 stderr/stdout 摘录 300
-    dispatch.run_cmd = lambda argv, ts: ns(1, "", long)
-    pi_args = types.SimpleNamespace(extract_timeout=1200.0, pi_model=None)
-    try:
-        dispatch.extract_via_pi("/fake/pi", pi_args, "/fake/turn.md")
-        raise AssertionError("should raise extraction_failed")
-    except dispatch.DispatchError as e:
-        assert e.kind == "extraction_failed" and e.hints[-1] == long[:300], e.hints
-    print("8 noise guards: other 300-char excerpts unchanged ok")
-
-
 def slice9_backend_turn_input():
     """api 与 pi 两后端真实抽取输入都是本轮原料，不含旧轮（决策 11）。"""
     screen = OLD + "\n" + ECHO + "\n" + NEW
@@ -280,16 +252,15 @@ def slice9_backend_turn_input():
     ext = {"needs_user": False, "questions": [], "conclusion": "本轮回复第一行",
            "blocked": "", "reply": NEW, "next_skill": ""}
     payload = {"choices": [{"message": {"content": json.dumps(ext, ensure_ascii=False)}}]}
-    # api：内联 user 内容含本轮段、不含旧轮
+    # api：内联 user 内容含本轮段、不含旧轮（真实抽取链经 harness 残留洞吸收密闭跑）
     cap = {}
 
     def fake_open(req, timeout, proxies):
         cap["body"] = json.loads(req.data.decode("utf-8"))
         return FakeResp(payload)
 
-    dispatch.webhook_open = fake_open
-    with api_env():
-        rc, res, led, files, _, _ = run_round(screen, "tc-api-input", ext, mock_extract=False)
+    rc, res, led, files, _, _ = run_round(screen, "tc-api-input", ext, mock_extract=False,
+                                          env=_api_env(), http_open=fake_open)
     assert rc == 0 and res["ok"] and res["extract_backend"] == "api", res
     user = cap["body"]["messages"][1]["content"]
     assert NEW in user and ECHO in user, "本轮段须内联"
@@ -301,9 +272,8 @@ def slice9_backend_turn_input():
         pi_cap["argv"] = argv
         return types.SimpleNamespace(returncode=0, stdout=json.dumps(ext, ensure_ascii=False), stderr="")
 
-    dispatch.run_cmd = fake_run_cmd
-    with api_env(LOOP_EXTRACT_BACKEND="pi"):
-        rc, res, led, files, _, _ = run_round(screen, "tc-pi-input", ext, mock_extract=False)
+    rc, res, led, files, _, _ = run_round(screen, "tc-pi-input", ext, mock_extract=False,
+                                          env={"LOOP_EXTRACT_BACKEND": "pi"}, run_cmd=fake_run_cmd)
     assert rc == 0 and res["ok"] and res["extract_backend"] == "pi", res
     assert "@" + res["turn_record"] in pi_cap["argv"], pi_cap["argv"]
     attached = files[".turn.md"]   # run_round 已在临时目录内逐字读出
@@ -347,7 +317,7 @@ def slice11_fold_demotion_contract():
     screen = ECHO + "\n" + NEW + "\n… +36 lines"
     ext = {"needs_user": False, "questions": [],
            "conclusion": "本轮回复第一行", "blocked": "", "reply": NEW, "next_skill": ""}
-    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-notify", ext)
+    rc, res, led, files, cap, w = run_round(screen, "tc-fold-notify", ext)
     assert rc == 0 and res["ok"], res
     assert res["complete"] is False and res["complete_reason"] == ["fold_markers"], res
     assert led["complete"] is False and led["complete_reason"] == ["fold_markers"], led
@@ -359,7 +329,7 @@ def slice11_fold_demotion_contract():
     # b 命中＋抽取失败：error 对象仍带完整性标记（不丢在台账里）
     ext_bad = {"needs_user": False, "questions": [],
                "conclusion": "原文中不存在的句子", "blocked": "", "reply": NEW}
-    rc, res, led, files, cap, fake = run_round(screen, "tc-fold-extfail", ext_bad)
+    rc, res, led, files, cap, w = run_round(screen, "tc-fold-extfail", ext_bad)
     assert rc == 1 and res["error"]["kind"] == "extraction_rewritten", res
     assert res["complete"] is False and res["complete_reason"] == ["fold_markers"], res
     print("11 fold demotion: result/ledger/notify flags, error carries flag, hc complete irrelevant ok")
@@ -373,7 +343,7 @@ def main():
     slice5_fold_scope()
     slice6_verbatim_scope()
     slice7_error_payload()
-    slice8_noise_guards()
+    # slice8 噪声护栏已并入 test_command_parse（T5d，Q3：FakeHerdr 说 dict 造不出的故障）。
     slice9_backend_turn_input()
     slice10_fold_criterion()
     slice11_fold_demotion_contract()

@@ -2,53 +2,83 @@
 """test_dispatch_learning.py — next_skill 机械反馈＋space 隔离在线 few-shot（ADR-0012，#48 阶段二）。
 
 跑法：python3 tests/test_dispatch_learning.py
-缝：learning.py 公开函数/事务（临时目录真文件 I/O）＋分发脚本 CLI 契约（mock hc/app/网络）。
+缝（T5d/ADR-0021）：learning.py 公开函数/事务（临时目录真文件 I/O，纯直调保留原位）＋
+唯一 harness.run 的 CLI 契约（FakeHerdr 假世界，env / http_open 注入，真实抽取入口
+dispatch.extract 经 harness 残留洞吸收密闭跑）。断言只认 rc、stdout JSON、学习目录
+落盘产物（sequences/pending/cases/stats）与请求体。
 覆盖：
   纯机械：parse_actual_skill / classify / project_next_skill 边界。
-  只读 space 解析：resolve_space_id_for_learning 三态（不建空间）。
+  只读 space 解析：三态（不建空间）——resolve_space_id_for_learning 读模块级 app_json
+    （残留洞，harness 作用域吸收），直调探针无法注入；CLI 缝重述：学习开启时 --space
+    的解析结果落进 sequences.json 的 space 键（解析出）或 learning_warning.space_id_missing
+    （未解析出），并核对假世界日志无 space.new（只读）。
   Store：待观察创建（含空）/结算判分/统计/孤儿/跨 space 排除/折叠标记排除（ADR-0019）/id 缺失/保留期/去重/
         few-shot 选取（纠错优先、同 target 优先、限量、预算少选不截断）/损坏降级/锁超时/权限。
   e2e：两轮结算反馈、抽取失败仍带反馈、发送前失败不消耗、few-shot 注入、off 关闭、
         存储故障降级不阻断、重置前置不进序列。
+
+T5d（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run；作用域 env 走 harness.scoped_env；
+常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
 """
-import contextlib
 import fcntl
-import io
 import json
 import os
-import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
-import dispatch  # noqa: E402
-import learning  # noqa: E402
+import harness
+from harness import dispatch
+import learning
+from fake_herdr import FakeHerdr
 
-from test_dispatch_api_extract import (  # noqa: E402
-    SCREEN, EXT, FakeResp, BASE, KEY, MODEL,
-)
-from test_dispatch_reset import FakeApp, FakeHc  # noqa: E402  （FakeHc 带 refuse_nth 旋钮）
+SCREEN = "请实现某个功能\n已完成该功能。"
+EXT = {"needs_user": False, "questions": [],
+       "conclusion": "", "blocked": "", "reply": SCREEN}
+KEY = "sk-test-SECRET-VALUE"
+BASE = "https://gw.example/v1"
+MODEL = "test-model"
 
 CAND = learning.NEXT_SKILL_CANDIDATES
 
 
-@contextlib.contextmanager
+def _api_env(**kw):
+    # LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入
+    # 覆盖宿主可能导出的同名键，保住隔离（退出恢复）。T4 先例。
+    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
+         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL, "LOOP_API_MAX_TOKENS": ""}
+    d.update(kw)
+    return d
+
+
 def learning_env(directory, **kw):
-    keys = ["LOOP_LEARNING", "LOOP_LEARNING_DIR", "LOOP_EXTRACT_BACKEND",
-            "LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL"]
-    old = {k: os.environ.pop(k, None) for k in keys}
-    os.environ.update({"LOOP_LEARNING": "on", "LOOP_LEARNING_DIR": str(directory),
-                       "LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
-                       "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL})
-    os.environ.update({k: v for k, v in kw.items() if v is not None})
-    try:
-        yield
-    finally:
-        for k in keys:
-            os.environ.pop(k, None)
-            if old[k] is not None:
-                os.environ[k] = old[k]
+    """作用域 env（经 harness.scoped_env，退出无条件恢复）：学习 on＋api 后端配置。"""
+    return harness.scoped_env(_api_env(LOOP_LEARNING="on", LOOP_LEARNING_DIR=str(directory), **kw))
+
+
+def _world(screen=None):
+    """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋稳定屏幕。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t99"])
+    w.screen("t99", SCREEN if screen is None else screen)
+    return w
+
+
+def _space_world(folder_b="/proj/b"):
+    """三态解析场景：四个空间（含重名 dup）＋t99 pane 已在 sp1（领养提前返回，
+    --space 只喂学习侧只读解析）。folder_b 是 sp2 的 folder（路径态用例传真实临时目录，
+    CLI 受理要求 --space 路径是已存在目录）。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
+    w.add_space(id="sp1", name="main", folder="/proj/a")
+    w.add_space(id="sp2", name="proj", folder=folder_b)
+    w.add_space(id="sp3", name="dup", folder="/proj/c")
+    w.add_space(id="sp4", name="dup", folder="/proj/d")
+    w.add_tab("sp1", terminals=["t99"])
+    w.screen("t99", SCREEN)
+    return w
 
 
 def iso(days_ago=0):
@@ -84,7 +114,9 @@ def seed_case(store, target, space, verdict, reply="历史回复", ts=None, excl
 
 
 def run_round(td, rid, prompt, ext_obj, ldir, target="t99", space="main",
-              extra_argv=(), fail_extract=False, refuse_nth=None, screen=None):
+              extra_argv=(), fail_extract=False, refuse_nth=None, screen=None, w=None):
+    """经唯一 harness.run 跑一轮完整 dispatch（学习 on＋真实 api 抽取链＋网络出口桩）；
+    返回 (rc, result, loop_dir, captured)。refuse_nth 经假世界故障旋钮（第 n 次 send 拒发）。"""
     pf = Path(td) / (rid + ".txt")
     pf.write_text(prompt, encoding="utf-8")
     ld = Path(td) / ".loop"
@@ -92,30 +124,37 @@ def run_round(td, rid, prompt, ext_obj, ldir, target="t99", space="main",
             "--loop-dir", str(ld), "--space", space,
             "--wall-clock", "5", "--check-in", "1",
             "--settle-seconds", "0.01", "--settle-checks", "2", *extra_argv]
-    fake = FakeHc(refuse_nth=refuse_nth) if refuse_nth else FakeHc()
-    if screen is not None:
-        fake.screen = screen
-    dispatch.hc_json = fake
-    dispatch.app_json = FakeApp()
-    dispatch.check_structure_and_tools = lambda: None
-    dispatch.shutil.which = lambda name: "/fake/" + name
-    dispatch.time.sleep = lambda s: None
+    if w is None:
+        w = _world(screen)
+    if refuse_nth:
+        w.fail("send", "error", kind="status_mismatch", nth=refuse_nth)
     captured = {}
     payload = json.dumps(ext_obj, ensure_ascii=False)
 
-    def fake_open(req, timeout, proxies=None):
+    def fake_open(req, timeout, proxies):
         captured["body"] = json.loads(req.data.decode("utf-8"))
         if fail_extract:
             raise urllib_error()
         return FakeResp({"choices": [{"message": {"content": payload}}]})
 
-    dispatch.webhook_open = fake_open
-    buf = io.StringIO()
-    with learning_env(ldir):
-        with contextlib.redirect_stdout(buf):
-            rc = dispatch.main(argv)
-    res = json.loads(buf.getvalue().strip())
-    return rc, res, ld, captured
+    r = harness.run(argv, world=w,
+                    env=_api_env(LOOP_LEARNING="on", LOOP_LEARNING_DIR=str(ldir)),
+                    extract=dispatch.extract, http_open=fake_open)
+    return r.rc, r.result, ld, captured
+
+
+class FakeResp:
+    def __init__(self, payload):
+        self._b = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
 
 
 def urllib_error():
@@ -141,20 +180,35 @@ def main():
     assert learning.classify("implement", False, None, "plain_text") == "miss"
     print("1 parse_actual_skill / classify boundaries ok")
 
-    # ---- 只读 space 解析（不建空间）----
-    ls = {"spaces": [{"id": "sp1", "name": "main", "folder": "/proj/a"},
-                     {"id": "sp2", "name": "proj", "folder": "/proj/b"},
-                     {"id": "sp3", "name": "dup", "folder": "/proj/c"},
-                     {"id": "sp4", "name": "dup", "folder": "/proj/d"}]}
-    dispatch.app_json = lambda app_bin, args, ts: ls
-    assert dispatch.resolve_space_id_for_learning("/fake/app", "main") == "sp1"
-    assert dispatch.resolve_space_id_for_learning("/fake/app", "sp2") == "sp2"
-    assert dispatch.resolve_space_id_for_learning("/fake/app", "/proj/b") == "sp2"
-    assert dispatch.resolve_space_id_for_learning("/fake/app", "/proj/none") is None
-    assert dispatch.resolve_space_id_for_learning("/fake/app", "dup") is None  # 重名
-    assert dispatch.resolve_space_id_for_learning("/fake/app", "sp999") is None
-    assert dispatch.resolve_space_id_for_learning("/fake/app", "missing") is None
-    print("2 resolve_space_id_for_learning three-state read-only ok")
+    # ---- 只读 space 解析（不建空间）：CLI 缝观察学习侧三态解析（T5d）----
+    # 解析出 → sequences.json 记在该 space 键下；未解析出 → learning_warning.space_id_missing
+    # 且序列未记。假世界日志核对无 space.new（只读，不建空间）。
+    # 路径态用真实临时目录（CLI 受理要求 --space 路径是已存在目录）：b＝sp2 的 folder
+    # （唯一匹配），none＝不匹配任何 folder 的目录（零匹配）。
+    with tempfile.TemporaryDirectory() as paths:
+        folder_b = Path(paths) / "b"
+        folder_b.mkdir()
+        folder_none = Path(paths) / "none"
+        folder_none.mkdir()
+        for i, (space, want) in enumerate((("main", "sp1"), ("sp2", "sp2"),
+                                         (str(folder_b), "sp2"), (str(folder_none), None),
+                                         ("dup", None), ("sp999", None), ("missing", None))):
+            with tempfile.TemporaryDirectory() as td:
+                ldir = Path(td) / "learn"
+                w = _space_world(folder_b=str(folder_b))
+                rc, res, _, _ = run_round(td, "lrn-sp%d" % i, "请实现功能",
+                                          dict(EXT, next_skill=""), ldir, space=space, w=w)
+                assert rc == 0 and res["ok"], (space, res)
+                if want is None:
+                    assert res["learning_warning"]["reason"] == "space_id_missing", (space, res)
+                    seqs = (json.loads((ldir / "sequences.json").read_text(encoding="utf-8"))
+                            if (ldir / "sequences.json").exists() else {})
+                    assert seqs == {}, (space, "未解析出序列未记", seqs)
+                else:
+                    seqs = json.loads((ldir / "sequences.json").read_text(encoding="utf-8"))
+                    assert list(seqs) == [want], (space, seqs)
+                assert ("app", "do", "space.new") not in w.command_log, space
+    print("2 space three-state read-only resolution via CLI seam ok")
 
     # ---- Store：待观察＋结算＋统计 ----
     with tempfile.TemporaryDirectory() as td:
@@ -345,11 +399,8 @@ def main():
     # ---- enabled() ----
     with learning_env(Path("/tmp/unused")):
         assert learning.enabled() is True
-    os.environ["LOOP_LEARNING"] = "off"
-    try:
+    with harness.scoped_env({"LOOP_LEARNING": "off"}):
         assert learning.enabled() is False
-    finally:
-        os.environ.pop("LOOP_LEARNING", None)
     print("11 enabled(): off disables, other values enable ok")
 
     # ---- 冷启动：首轮（序列仅含本轮）不注入，prompt 不变；第二轮才注入序列 ----
@@ -441,35 +492,20 @@ def main():
         ldir = Path(td) / "learn"
         pf = Path(td) / "off.txt"
         pf.write_text("请实现功能", encoding="utf-8")
-        dispatch.hc_json = FakeHc()
-        dispatch.app_json = FakeApp()
-        dispatch.check_structure_and_tools = lambda: None
-        dispatch.shutil.which = lambda name: "/fake/" + name
-        dispatch.time.sleep = lambda s: None
-        dispatch.webhook_open = lambda req, timeout, proxies=None: FakeResp(
-            {"choices": [{"message": {"content": json.dumps(dict(EXT, next_skill="to-spec"))}}]})
-        old = {k: os.environ.pop(k, None) for k in ("LOOP_LEARNING", "LOOP_LEARNING_DIR")}
-        os.environ.update({"LOOP_LEARNING": "off", "LOOP_LEARNING_DIR": str(ldir),
-                           "LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
-                           "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL})
-        try:
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = dispatch.main(["--target", "t99", "--release-id", "off1",
-                                    "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
-                                    "--space", "main", "--wall-clock", "5", "--check-in", "1",
-                                    "--settle-seconds", "0.01", "--settle-checks", "2"])
-            res = json.loads(buf.getvalue().strip())
-            assert rc == 0 and res["ok"] and res["next_skill"] == "to-spec", res
-            assert "next_skill_feedback" not in res and "learning_warning" not in res
-            assert not ldir.exists()  # off 不碰学习目录
-        finally:
-            for k in ("LOOP_LEARNING", "LOOP_LEARNING_DIR", "LOOP_EXTRACT_BACKEND",
-                      "LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL"):
-                os.environ.pop(k, None)
-            for k, v in old.items():
-                if v is not None:
-                    os.environ[k] = v
+        r = harness.run(
+            ["--target", "t99", "--release-id", "off1",
+             "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
+             "--space", "main", "--wall-clock", "5", "--check-in", "1",
+             "--settle-seconds", "0.01", "--settle-checks", "2"],
+            world=_world(),
+            env=_api_env(LOOP_LEARNING="off", LOOP_LEARNING_DIR=str(ldir)),
+            extract=dispatch.extract,
+            http_open=lambda req, timeout, proxies: FakeResp(
+                {"choices": [{"message": {"content": json.dumps(dict(EXT, next_skill="to-spec"))}}]}))
+        res = r.result
+        assert r.rc == 0 and res["ok"] and res["next_skill"] == "to-spec", res
+        assert "next_skill_feedback" not in res and "learning_warning" not in res
+        assert not ldir.exists()  # off 不碰学习目录
         # 存储故障：LOOP_LEARNING_DIR 指向一个文件 → mkdir 失败 → 降级 warning，主轮仍 ok
         blocker = Path(td) / "blocker"
         blocker.write_text("x", encoding="utf-8")
