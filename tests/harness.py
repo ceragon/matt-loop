@@ -16,6 +16,9 @@ run(...) 只做一件事：装配依赖对象、调用分发脚本入口、把�
   - 默认抽取链（extract_via_api/extract_via_pi）读模块级 webhook_open/run_cmd（绕过 Deps）：
     调用方注入 http_open/run_cmd 时作用域内替换模块级 webhook_open/run_cmd，退出无条件
     恢复；随 P2 收口退役。
+  - send_webhook/_proxy_diagnostic 读模块级 webhook_proxy_resolution（绕过 Deps）：
+    调用方注入 proxy_resolution 时作用域内替换、退出无条件恢复（T5c 吸收，
+    宿主可能导出 HTTPS_PROXY，代理断言靠显式注入密闭）；随 P2 收口退役。
 """
 import contextlib
 import io
@@ -85,12 +88,14 @@ def _argv_value(argv, flag):
 
 
 def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
-        run_cmd=None, clock=None):
+        run_cmd=None, clock=None, proxy_resolution=None):
     """装配 Deps、跑一轮 dispatch.main、整理返回码与产物。
 
     world：FakeHerdr（两个命令层入口填进 Deps 的 hc_json/app_json 字段）。
     env：隔离环境变量映射（合并 DEFAULT_ENV，作用域内应用到 os.environ、退出恢复原样）。
     extract/locate/http_open/run_cmd：可选依赖覆盖；clock 缺省虚拟时钟。
+    proxy_resolution：给定时作用域内替换模块级 webhook_proxy_resolution（残留洞，
+    退出无条件恢复）；不给定行为不变。
     返回 SimpleNamespace：rc、stdout、stderr、result（stdout JSON）、
     ledger/notify（落盘 JSON，存在才读）、各产物路径与 loop_dir。
     """
@@ -109,7 +114,7 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
     # 临时产物：这些 dispatch.<名> = 赋值与 os.environ 写入随 P2/⑤ 收口残留洞后删除；
     # T4 立测试侧棘轮时本文件须进白名单（ADR-0021 决定 4），白名单只许缩小。
     saved = (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
-             dispatch.webhook_open, dispatch.run_cmd)
+             dispatch.webhook_open, dispatch.run_cmd, dispatch.webhook_proxy_resolution)
     dispatch.hc_json = world.hc_json
     dispatch.app_json = world.app_json
     dispatch.time = types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)
@@ -118,6 +123,8 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
         dispatch.webhook_open = http_open
     if run_cmd is not None:
         dispatch.run_cmd = run_cmd
+    if proxy_resolution is not None:
+        dispatch.webhook_proxy_resolution = proxy_resolution
     out, err = io.StringIO(), io.StringIO()
     try:
         with scoped_env(env_map):
@@ -125,7 +132,7 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
                 rc = dispatch.main(list(argv), deps=deps)
     finally:
         (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
-         dispatch.webhook_open, dispatch.run_cmd) = saved
+         dispatch.webhook_open, dispatch.run_cmd, dispatch.webhook_proxy_resolution) = saved
     stdout = out.getvalue()
     result = json.loads(stdout.strip()) if stdout.strip() else None
     loop_dir = _argv_value(argv, "--loop-dir")
