@@ -104,7 +104,7 @@ def translate(failure, rules):
     raise failure
 
 
-# 回读范围（ADR-0013）：台账 params 记录与网关同值。
+# 回读范围（ADR-0013）：台账 params 与网关 read/readback 的 lines 实参共用这一份。
 READ_LINES = 1000
 # 前置落定用短轮询而非 hc wait（/clear 可能不进 working）；working 时每 RESET_POLL_S 秒查一次。
 RESET_POLL_S = 2.0
@@ -827,7 +827,7 @@ def reset_settle(deps, herdr, request):
         state = g.status_state
         if state not in ("idle", "done"):
             return False
-        screen = herdr.read(request.target)
+        screen = herdr.read(request.target, READ_LINES)
         if prev is not None and screen != prev:
             return False
         prev = screen
@@ -1606,7 +1606,7 @@ def readback(state, herdr, admitted):
     """阶段 13 readback：回读＋断轮＋完整性检查，落盘 raw／turn。"""
     request = state.request
     deps = state.deps
-    read = herdr.readback(request.target)
+    read = herdr.readback(request.target, READ_LINES)
     screen = read.text
     # 锚点只作信息、不阻断（ADR-0013）。
     anchor_found = verbatim_present(admitted.anchor, screen)

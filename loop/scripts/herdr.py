@@ -25,10 +25,6 @@ from errors import DispatchError  # noqa: E402
 SEND_GUARD_S = 120.0
 QUERY_GUARD_S = 30.0
 WAIT_GUARD_MARGIN_S = 30.0
-READ_LINES = 1000
-# keep / 赠送清理的默认窗口与轮询间隔（与 --adopt-timeout/--adopt-poll 默认值同）。
-POLL_TIMEOUT_S = 30.0
-POLL_INTERVAL_S = 2.0
 
 # 区分「调用方没传」与「传了合法值 None」（original 可为 None：没有选中空间）。
 _UNSET = object()
@@ -420,11 +416,11 @@ class Herdr:
                        timeout + WAIT_GUARD_MARGIN_S, op="wait_change")
         return Change.from_raw(raw)
 
-    def read(self, target, lines=READ_LINES):
+    def read(self, target, lines):
         """回读文本；缺 text 键按输出层失败抛 HerdrFailure（不静默返回 None）。"""
         return self.readback(target, lines).text
 
-    def readback(self, target, lines=READ_LINES):
+    def readback(self, target, lines):
         """回读的文本＋完整原始结果（台账记 complete/how/why 用）。"""
         raw = self._hc(["read", target, "--lines", str(lines)],
                        QUERY_GUARD_S, op="read")
@@ -465,8 +461,11 @@ class Herdr:
         """返回 Focus 上下文管理器；传 original 则不重读当前选中（默认为自读）。"""
         return Focus(self, space, original)
 
-    def keep(self, address, within=POLL_TIMEOUT_S, poll=POLL_INTERVAL_S):
-        """terminal.keep ＋落地轮询复核；窗口耗尽抛 stage=no_pane。"""
+    def keep(self, address, within, poll):
+        """terminal.keep ＋落地轮询复核；窗口耗尽抛 stage=no_pane。
+
+        within／poll 是调用方策略（管线传 --adopt-timeout/--adopt-poll），
+        网关不藏默认值。"""
         self._app(["do", "terminal.keep", json.dumps({"terminal": address})],
                   QUERY_GUARD_S, op="keep", stage="keep_command",
                   partial={"address": address})
@@ -521,8 +520,7 @@ class Herdr:
                                "actual": actual_name})
         return tab["id"]
 
-    def discard_shell_tabs(self, space, keep_address,
-                           within=POLL_TIMEOUT_S, poll=POLL_INTERVAL_S, *,
+    def discard_shell_tabs(self, space, keep_address, within, poll, *,
                            layout=None):
         """关赠送标签页 → 轮询 hc get 等 finished → rm；**生成器**，逐条 yield 降级 warnings。
 

@@ -337,7 +337,7 @@ def keep_polling():
     w.fail("terminal.keep", "error")
     h, _ = make_herdr(w)
     try:
-        h.keep("t50")
+        h.keep("t50", within=30, poll=2)
     except HerdrFailure as e:
         assert e.stage == "keep_command" and e.kind == "app_failed"
     else:
@@ -350,7 +350,7 @@ def keep_polling():
     w.fail("ls", "error")
     h, _ = make_herdr(w)
     try:
-        h.keep("t50")
+        h.keep("t50", within=30, poll=2)
     except HerdrFailure as e:
         assert e.stage == "keep_poll" and e.kind == "app_failed"
     else:
@@ -467,7 +467,7 @@ def gift_cleanup():
 
     w, sp, gift, keep_tab = gifted_world()
     h, _ = make_herdr(w)
-    warnings = list(h.discard_shell_tabs(sp, "t50"))
+    warnings = list(h.discard_shell_tabs(sp, "t50", within=30, poll=2))
     assert warnings == []
     tabs = h.layout().raw["spaces"][0]["tabs"]
     assert [t["id"] for t in tabs] == [keep_tab]
@@ -479,7 +479,7 @@ def gift_cleanup():
     w, sp, gift, keep_tab = gifted_world()
     w.fail("tab.close", "error")
     h, _ = make_herdr(w)
-    warnings = list(h.discard_shell_tabs(sp, "t50"))
+    warnings = list(h.discard_shell_tabs(sp, "t50", within=30, poll=2))
     assert [x["reason"] for x in warnings] == ["tab_close_error"]
     assert ("hc", "get") not in w.command_log
     print("31 discard_shell_tabs: tab_close_error warning, no polling")
@@ -504,7 +504,7 @@ def gift_cleanup():
     w, sp, gift, keep_tab = gifted_world()
     w.fail("rm", "error", kind="unavailable")
     h, _ = make_herdr(w)
-    warnings = list(h.discard_shell_tabs(sp, "t50"))
+    warnings = list(h.discard_shell_tabs(sp, "t50", within=30, poll=2))
     assert [x["reason"] for x in warnings] == ["rm_error"]
     print("34 discard_shell_tabs: rm_error warning")
 
@@ -575,7 +575,8 @@ def keep_layout_and_discard_reuse():
     h, _ = make_herdr(w)
     layout = h.layout()
     before = len(w.command_log)
-    warnings = list(h.discard_shell_tabs(sp, "t50", layout=layout))
+    warnings = list(h.discard_shell_tabs(sp, "t50", within=30, poll=2,
+                                         layout=layout))
     added = w.command_log[before:]
     assert warnings == []
     assert not any(c[0] == "app" and c[1] == "ls" for c in added), added
@@ -606,7 +607,7 @@ def discard_yields_at_failure_point():
     def closes():
         return [c for c in w.command_log if c == ("app", "do", "tab.close")]
 
-    gen = h.discard_shell_tabs(sp, "t50")
+    gen = h.discard_shell_tabs(sp, "t50", within=30, poll=2)
     first = next(gen)
     assert first["reason"] == "tab_close_error"
     assert len(closes()) == 1, closes()    # 第二条 tab.close 尚未发出
