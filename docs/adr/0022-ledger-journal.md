@@ -70,6 +70,9 @@ ADR-0002（脚本做机械）与 ADR-0014（通知投影）不冲突；ADR-0020 
      webhook、stdout）留在 `emit_result`，不进 `Journal`。
    - 台账中途写失败让调用方什么都收不到，是外部契约上的洞；按地图硬约束 1 不在本图里
      修，另开独立 issue 登记。
+     > 补记（ADR-0024，#111）：该洞已经独立 issue 修复——`OSError` 仍原样冒出至 run
+     > 顶层、由顶层映射 `io_failed` 走同一 error 出口；`phase`/`fact` 行为冻结口径不变，
+     > `Journal` 设计零改动，journal 切片继承修后行为。
 4. **投影：一张有序键表，两个手写构造器**：
    - `project` 用一张有序键表覆盖 ctx 键那一段，共 21 个键，其中 `launch_sent` 与
      `adopt_reason` 标记为「仅 error」；成功投影过滤这两个键（即便它们在 ctx 里）。成功

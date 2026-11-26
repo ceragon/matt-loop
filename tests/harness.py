@@ -144,7 +144,9 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
     raw_path = runs / (rid + ".raw.md") if runs else None
 
     def read_json(p):
-        if p is not None and p.exists():
+        # is_file 而非 exists：IO 故障注入可能把产物路径变成目录（#111），
+        # 不可读即视同不存在，harness 不崩、测试照常断言外部行为。
+        if p is not None and p.is_file():
             return json.loads(p.read_text(encoding="utf-8"))
         return None
 
