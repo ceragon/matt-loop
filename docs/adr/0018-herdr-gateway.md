@@ -4,6 +4,15 @@ status: accepted
 
 # herdr 领域网关：封装命令字面量，seam 不动
 
+> 补记（#133 冗余清理）：决定 5 的操作清单在实现收敛后有细节更新，决定本身不变。
+> - `send`／`resend` 的回执不再带 `resent` 与 `turn` 字段：补发事实由管线从两个操作
+>   的返回布尔写入既有台账键 `resent`，`turn` 等命令原始事实留在 `raw`——台账与对外
+>   形状逐字不变（快照零改动）。仅测试在用的读模型字段（含 `Change.terminal`）一并删除。
+> - `keep(address, within, poll)`、`discard_shell_tabs(space, keep_address, within, poll)`
+>   的窗口／间隔与 `read(target, lines)` 的行数改为必填实参：网关不再藏只有生产不可达
+>   路径才会用到的默认值，取值由管线按 `--adopt-timeout`／`--adopt-poll`／`READ_LINES`
+>   传入，命令字面量与调用点不变。
+
 > 补记（#113 G3 在途裁决，用户批准）：`focus` 与 `discard_shell_tabs` 增加**加性**
 > 参数，默认行为不变：
 > - `focus(space, *, original=<sentinel>)`：调用方若已为策略/复核读过当前选中

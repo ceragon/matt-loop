@@ -71,3 +71,10 @@ subagent，prototype 经 handoff 文件在全新会话里开场。这些 skill �
 实跑暴露一条摩擦：新开 `agy` 会话（`turn == 0`，刚就绪无任何历史对话）首条发送 `/wayfinder` 且 `--reset=none` 时被 `reset_required` 拦下，调用方停下来二轮请示用户选 `/new`/`/clear`/`/compact`，选择 `/new` 后又白等 ~26 秒重置前置；且 SKILL.md 仅写了 `claude/grok` 示例、未写 `agy` 认 `/new`。本次校准：
 1. `reset_required` 预检移至 `hc get`＋身份检查之后（仍在写台账前），`turn == 0`（精确整数 `0`）自动豁免放行，`turn > 0` 或缺失才拒发且 message 带 `turn` 值（否决了「`turn > 0` 也按 agent 自动清」的 `auto` 方案——旧上下文清空仍须用户授权）；
 2. SKILL.md 补充「`turn > 0` 复用旧会话在 Step 1 讨放行时一并带出推荐 `--reset`」并核实补全各 agent 命令对照（顺带修正先前对 `claude` 认 `/new` 的误写）。
+
+## 修订补记（2026-11-27）
+
+`SESSION_START_SKILLS` 常量已删（#133 R4）：它只被测试引用，生产判定的唯一出处是
+`turn.py` 的 `SESSION_START_RE` 行首触发器（正则内逐字列出五项）。测试改为自带一份
+外部真值清单，改漏一处即红。决定不变——五个会话起始 skill 的口径与 `reset_required`
+预检行为都没有变化。
