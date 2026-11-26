@@ -23,7 +23,7 @@ dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取�
 
 ## 调用前
 
-本机装有 `hc`、`herdr-app`（恒可见不变量的硬依赖，**窗口必须常开**，ADR-0009）与 Python ≥ 3.10 的解释器（脚本要求 `>=3.10`）；抽取默认直连 API，需 `LOOP_API_BASE/KEY/MODEL` env（见「抽取后端」）。`pi` 只在选 pi 备选时需要；`uv` 只在解释器 `<3.10` 的自举路径里需要（见「调用」）。工具先按 PATH 找，PATH 没有时脚本自动探 `~/.local/bin`、homebrew、nvm node bin——后台 job 缺 PATH 也能起；`hc`（及选了 pi 备选时的 `pi`）探不到才报 `missing_tool`。PATH 由脚本兜底，**不需手写 export PATH 包装脚本**；后台直接用调用方自己的 bg 机制（见「交付」）。
+本机装有 `hc`、`herdr-app`（恒可见不变量的硬依赖，**窗口必须常开**，ADR-0009）与 Python ≥ 3.10 的解释器（脚本要求 `>=3.10`）；抽取默认直连 API，需 `LOOP_API_BASE/KEY/MODEL` env（见「抽取后端」）。`pi` 只在选 pi 备选时需要；`uv` 只在解释器 `<3.10` 的自举路径里需要（见「调用」；#129/#130 的判断，不是每轮必需）。工具先按 PATH 找，PATH 没有时脚本自动探 `~/.local/bin`、homebrew、nvm node bin——后台 job 缺 PATH 也能起；`hc`（及选了 pi 备选时的 `pi`）探不到才报 `missing_tool`。PATH 由脚本兜底，**不需手写 export PATH 包装脚本**；后台直接用调用方自己的 bg 机制（见「交付」）。
 
 ## 调用
 
