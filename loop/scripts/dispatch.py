@@ -714,6 +714,25 @@ def _extraction(fields, meta):
                                next_skill_invalid=meta.get("next_skill_invalid", False))
 
 
+ECHO_REFERENCE_LABEL = "【本轮发送的提示词原文】"
+ECHO_REFERENCE_NOTE = "（供逐字比对，认出回声及其软换行续行）"
+
+
+def echo_reference(request):
+    """回声参照块（#127）：抽取期重读本轮主任务提示词原文，粘贴归一后与实际发送物同源。
+
+    发送前 open_ledger 已按受理阶段的 sha 复核钉住同一性（中途变文件报 prompt_changed
+    拒发）；这里是抽取期重读，读失败映射既有 prompt_unreadable（ADR-0024 决定 2 的
+    「提示词读取」先例），不新增 error kind。参照只供认出回声及其软换行续行，不是
+    逐字校验语料（ADR-0013 补记）；api 消息里本轮原料仍居末尾，pi 侧原料是 @文件附件，
+    仍是唯一校验语料。"""
+    try:
+        text = Path(request.prompt_file).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise DispatchError("prompt_unreadable", f"读不到提示词文件：{e}", [])
+    return ECHO_REFERENCE_LABEL + ECHO_REFERENCE_NOTE + "\n" + normalize_paste(text)
+
+
 def extract_via_pi(deps, request, turn_path, injection):
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
@@ -725,6 +744,9 @@ def extract_via_pi(deps, request, turn_path, injection):
     # 在线 few-shot（ADR-0012）：同 space 历史案例＋当前近期序列，无历史时为空、沿用原 prompt。
     if injection:
         instruction += "\n\n" + injection
+    reference = echo_reference(request)
+    if reference:
+        instruction += "\n\n" + reference
     instruction += f'\n本轮原料落盘路径：{turn_path}'
     argv = [
         deps.pi_bin, "-p",
@@ -769,9 +791,16 @@ def extract_via_api(deps, request, turn_path, injection):
         "本轮原料已内联在本消息末尾。按系统提示词裁剪并抽取，"
         "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
     )
-    # 在线 few-shot（ADR-0012）：同 space 历史案例＋当前近期序列插在指令与本轮原料之间，
+    # 在线 few-shot（ADR-0012）与回声参照（#127）都插在指令与本轮原料之间，
     # 本轮原料仍居消息末尾；无历史时为空、沿用原 prompt（冷启动行为不变）。
-    user_content = instruction + ("\n\n" + injection if injection else "") + "\n\n" + turn_text
+    sections = [instruction]
+    if injection:
+        sections.append(injection)
+    reference = echo_reference(request)
+    if reference:
+        sections.append(reference)
+    sections.append(turn_text)
+    user_content = "\n\n".join(sections)
     body = json.dumps({
         "model": model,
         "messages": [

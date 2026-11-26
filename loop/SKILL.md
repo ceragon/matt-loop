@@ -84,9 +84,9 @@ python3 scripts/dispatch.py \
 
 - `LOOP_EXTRACT_BACKEND=api|pi`，默认 `api`；非法值启动即报错。
 - `api` 需三个 env **全必填、无默认**：`LOOP_API_BASE`（基址到 `/v1`，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer，零回显）、`LOOP_API_MODEL`（模型 id 原样透传）。缺任何一个**启动预检**即报 `api_not_configured`（只列变量名），不发主任务、放行 id 不消耗。与 pi 网关复用同一把钥匙时，值指过去即可（如 `LOOP_API_KEY="$PAW_GATEWAY_KEY"`），名字归 loop。
-- 请求形状：system=extract.md，user=指令＋内联本轮原料（ADR-0013）；temp 0、max_tokens 默认 32768（`LOOP_API_MAX_TOKENS` 可覆盖，非法值启动报错）、超时复用 `--extract-timeout`、不重试、不流式、不发 response_format。出网代理与 webhook 同一套决议（ADR-0003）。
+- 请求形状：system=extract.md，user=指令→few-shot 注入（如有）→回声参照→内联本轮原料居末尾（ADR-0013/#127）；回声参照为本轮发送的提示词原文（粘贴归一后），只供认出回声及其软换行续行、不是校验语料。temp 0、max_tokens 默认 32768（`LOOP_API_MAX_TOKENS` 可覆盖，非法值启动报错）、超时复用 `--extract-timeout`、不重试、不流式、不发 response_format。出网代理与 webhook 同一套决议（ADR-0003）。
 - 失败映射沿用既有 kind：HTTP → `extraction_failed`（带 `HTTP <码>`，不读响应体）；超时 → `tool_timeout`；其它网络异常 → `extraction_failed`（类名）。密钥/URL 零回显；原文已落盘，可人工重做。
-- `pi` 备选：行为照旧（@文件 附件、`--pi-model` 透传），机器上要有 pi；`api` 路径不依赖 node/pi。
+- `pi` 备选：行为照旧（@文件 附件、`--pi-model` 透传；回声参照进 instruction 文本，@文件附件不变），机器上要有 pi；`api` 路径不依赖 node/pi。
 - result 与台账带 `extract_backend`（api|pi）标明本轮走的哪条路。
 - **迁移**：旧部署没配 `LOOP_API_*` 的，跟新代码后要么配齐三个变量，要么设 `LOOP_EXTRACT_BACKEND=pi` 维持现状，否则启动即 `api_not_configured`。
 

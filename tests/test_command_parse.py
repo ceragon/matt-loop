@@ -136,8 +136,10 @@ def main():
     # extract_via_pi：非零退出时 stderr/stdout 摘录 300（经 Deps 注入 run_cmd）
     deps = deps_with(lambda argv, ts: ns(1, "", long),
                      env={"LOOP_EXTRACT_BACKEND": "pi"})
+    # prompt_file 必填（回声参照读取）；用本文件作可读提示词，内容与本用例无关。
     request = types.SimpleNamespace(
-        pi_model=None, timing=types.SimpleNamespace(extract_timeout=1200.0))
+        pi_model=None, prompt_file=__file__,
+        timing=types.SimpleNamespace(extract_timeout=1200.0))
     e = expect("extraction_failed",
                lambda: deps.extract(request, "/fake/turn.md", ""))
     assert e.hints[-1] == long[:300], e.hints
