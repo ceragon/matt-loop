@@ -1248,7 +1248,7 @@ class Admitted:
     """admit 阶段产出：本轮提示词文本、首个非空行、锚点、sha 与三个落盘路径。"""
 
     text: str
-    nonempty: tuple
+    first_line: str
     anchor: str
     sha: str
     prompt_path: Path
@@ -1354,7 +1354,7 @@ def admit(state):
     # env/now/fact 三条注入缝；关闭时 learning.open 返回 Disabled，调用点不写 if on。
     state.learning = learning.open(env=deps.env, now=deps.now, fact=state.fact,
                                    target=request.target, release_id=request.release_id)
-    return Admitted(text=text, nonempty=tuple(nonempty), anchor=anchor, sha=sha,
+    return Admitted(text=text, first_line=nonempty[0], anchor=anchor, sha=sha,
                     prompt_path=prompt_path, raw_path=raw_path,
                     turn_path=turn_path, record_path=record_path)
 
@@ -1592,7 +1592,7 @@ def send_main(state, herdr, admitted):
 
 def learning_settle(state, admitted):
     """阶段 11 learning_settle（ADR-0012）：主任务发送成功后结算上一轮预测。"""
-    state.learning.settle(admitted.nonempty[0])
+    state.learning.settle(admitted.first_line)
 
 
 def await_result(state, herdr):
