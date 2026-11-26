@@ -90,7 +90,7 @@ def main():
         assert r.rc == 0, r.result
     print("4 residual module-global paths covered by scoped injection")
 
-    # 5 env 注入到达分发脚本（隔离映射，不写 os.environ）：backend=api 缺配置
+    # 5 env 注入到达分发脚本（隔离映射作用域内应用、跑后恢复）：backend=api 缺配置
     #   必在启动预检停轮（rc 非 0 即证 env 到达）；具体业务 kind 由既有专项测试覆盖。
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
@@ -99,7 +99,60 @@ def main():
                         extract=lambda pi_bin, args, raw: dict(EXT))
         assert r.rc == 2, r.result
     assert dict(os.environ) == before_env
-    print("5 env mapping reaches dispatch without touching os.environ")
+    print("5 env mapping reaches dispatch, os.environ restored after run")
+
+    # 6 残留洞吸收：合并 env 作用域内应用到 os.environ（覆盖直读 os.environ 的读者，
+    #   如 learning.enabled），跑后恢复原样；原本不存在的键退出删除。
+    before_env = dict(os.environ)   # LOOP_PROBE_NEW 是虚构键，本就不在环境里
+    seen = {}
+
+    def probe_extract(pi_bin, args, turn_path):
+        seen["LOOP_LEARNING"] = os.environ.get("LOOP_LEARNING")
+        seen["LOOP_PROBE_NEW"] = os.environ.get("LOOP_PROBE_NEW")
+        return dict(EXT)
+
+    w = world_with_terminal()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(base_argv(td, "harness-6"), world=w,
+                        env={"LOOP_PROBE_NEW": "probe-val"}, extract=probe_extract)
+        assert r.rc == 0, r.result
+    assert seen["LOOP_LEARNING"] == "off", seen          # 默认隔离到达 os.environ 读者
+    assert seen["LOOP_PROBE_NEW"] == "probe-val", seen   # 注入键作用域内可见
+    assert "LOOP_PROBE_NEW" not in os.environ            # 原本不存在→退出删除
+    assert dict(os.environ) == before_env
+    print("6 env mapping applied to os.environ in scope, restored on exit")
+
+    # 7 残留洞吸收：注入 http_open/run_cmd 时作用域内替换模块级 webhook_open/run_cmd，
+    #   退出无条件恢复；不注入则模块级原样不动。
+    saved_open, saved_cmd = dispatch.webhook_open, dispatch.run_cmd
+    marker_open = lambda req, timeout, proxies: None
+    marker_cmd = lambda argv, timeout_s: None
+    seen2 = {}
+
+    def probe_extract2(pi_bin, args, turn_path):
+        seen2["open"] = dispatch.webhook_open
+        seen2["cmd"] = dispatch.run_cmd
+        return dict(EXT)
+
+    w = world_with_terminal()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(base_argv(td, "harness-7"), world=w,
+                        http_open=marker_open, run_cmd=marker_cmd, extract=probe_extract2)
+        assert r.rc == 0, r.result
+    assert seen2["open"] is marker_open and seen2["cmd"] is marker_cmd
+    assert dispatch.webhook_open is saved_open and dispatch.run_cmd is saved_cmd
+    seen3 = {}
+
+    def probe_extract3(pi_bin, args, turn_path):
+        seen3["open"] = dispatch.webhook_open
+        seen3["cmd"] = dispatch.run_cmd
+        return dict(EXT)
+
+    w = world_with_terminal()
+    with tempfile.TemporaryDirectory() as td:
+        harness.run(base_argv(td, "harness-7b"), world=w, extract=probe_extract3)
+    assert seen3["open"] is saved_open and seen3["cmd"] is saved_cmd
+    print("7 injected http_open/run_cmd replace module globals in scope, restored")
 
     print("all harness tests passed")
 
