@@ -104,7 +104,7 @@ def translate(failure, rules):
     raise failure
 
 
-# 回读范围（ADR-0013）：台账 params 记录与网关同值。
+# 回读范围（ADR-0013）：台账 params 与网关 read/readback 的 lines 实参共用这一份。
 READ_LINES = 1000
 # 前置落定用短轮询而非 hc wait（/clear 可能不进 working）；working 时每 RESET_POLL_S 秒查一次。
 RESET_POLL_S = 2.0
@@ -768,9 +768,10 @@ def settle(deps, herdr, request, wait_turn):
     return g
 
 
-# send（首发）与 resend（补发）是两个网关操作（ADR-0018 决定 5/8 补记、在途裁决 07），
-# 各一张小表：首发 blocked → send_refused、其余 → hc_failed；复核 get 失败原生穿透；
-# 补发的第二次复核与裸发送归 resend 表。
+# send 阶段一张小表（ADR-0020 决定 11）：首发、补发、启动命令发送共用同一 op，
+# 按 stage 区分——stage=send 首发、refused_not_done 复核、refused_before_resend／
+# resend 补发、stage=None 启动命令。首发 blocked → send_refused、其余 → hc_failed；
+# 复核 get 失败原生穿透（显式 PASS）；启动命令发送失败 → launch_failed。
 _SEND_RULES = (
     Rule("send", "send", kind="send_refused", prefix="hc send 失败：",
          hints=("未再发送；台账已记录本次尝试",), match_kind="blocked"),
@@ -778,13 +779,13 @@ _SEND_RULES = (
          hints=("未再发送；台账已记录本次尝试",)),
     Rule("send", "refused_not_done", kind="send_refused", match_kind="status_mismatch"),
     Rule("send", "refused_not_done", kind=None),
-)
-_RESEND_RULES = (
     Rule("send", "refused_before_resend", kind="send_refused",
          match_kind="status_mismatch"),
     Rule("send", "refused_before_resend", kind=None),
     Rule("send", "resend", kind="send_refused", prefix="done 补发仍失败：",
          hints=("本轮不再发送；台账已记录两次尝试",)),
+    Rule("send", None, kind="launch_failed", prefix="启动命令发送失败：",
+         hints=("主任务未发送；台账已记录本次尝试",)),
 )
 
 
@@ -808,7 +809,7 @@ def do_send(state, herdr, request, text):
     try:
         resent = herdr.resend(request.target, text)
     except HerdrFailure as e:
-        raise translate(e, _RESEND_RULES)
+        raise translate(e, _SEND_RULES)
     return resent.raw, True
 
 
@@ -826,7 +827,7 @@ def reset_settle(deps, herdr, request):
         state = g.status_state
         if state not in ("idle", "done"):
             return False
-        screen = herdr.read(request.target)
+        screen = herdr.read(request.target, READ_LINES)
         if prev is not None and screen != prev:
             return False
         prev = screen
@@ -914,11 +915,8 @@ def wait_for_agent_ready(deps, herdr, target, deadline):
                     ["主任务未发送；本轮已停止，可经用户放行后另起一轮"]))
 
 
-# 启动命令用裸 send（guard=None，stage=None）：外部 kind 是 launch_failed。
-_LAUNCH_SEND_RULES = (
-    Rule("send", None, kind="launch_failed", prefix="启动命令发送失败：",
-         hints=("主任务未发送；台账已记录本次尝试",)),
-)
+# 启动命令用裸 send（guard=None，stage=None）：外部 kind 是 launch_failed；
+# 规则本体在 send 阶段同一张 _SEND_RULES 里（stage=None 一条）。
 
 
 def send_launch_command(state, herdr, request):
@@ -929,7 +927,7 @@ def send_launch_command(state, herdr, request):
     try:
         receipt = herdr.send(request.target, request.launch, guard=None)
     except HerdrFailure as e:
-        raise translate(e, _LAUNCH_SEND_RULES)
+        raise translate(e, _SEND_RULES)
     state.fact("launch_sent", True)
     state.phase("launch_waiting_agent", launch_sent=True, launch_send=receipt.raw)
 
@@ -944,15 +942,13 @@ def wait_launch_agent(state, herdr, request):
     state.phase("launch_done", launch_done_at=now_iso())
 
 
-# 创建命名会话（hc run）与打标签：两条网关操作各归各的 (op, stage)。
-_CREATE_RULES = (
+# 创建命名会话（hc run）与打标签同属 bring_up 阶段，共用一张表（op 区分）。
+_BRING_UP_RULES = (
     Rule("create_session", "missing_address", kind="launch_failed"),
     Rule("create_session", None, kind="launch_failed",
          prefix="hc run 创建命名会话失败（{kind}）：",
          hints=("同名 live 终端存在（name_taken）时不建不 kill；"
                 "经用户放行后另起一轮或改用既有会话",)),
-)
-_LABEL_RULES = (
     Rule("label_session", None, kind="launch_failed", prefix="打 loop 标签失败：",
          hints=("终端已建（launched:true）；无标签终端下轮会被拒收编",)),
 )
@@ -970,7 +966,7 @@ def do_create(state, herdr, request):
         # 终端退出/被杀不连带杀会话（die_with_parent 默认 true 会让会话活不过一轮），跨轮持久。
         created = herdr.create_session(request.target, request.cwd)
     except HerdrFailure as e:
-        raise translate(e, _CREATE_RULES)
+        raise translate(e, _BRING_UP_RULES)
     addr = created.address
     state.fact("target_address", addr)
     state.fact("launched", True)
@@ -981,7 +977,7 @@ def do_create(state, herdr, request):
     try:
         herdr.label_session(request.target, labels)
     except HerdrFailure as e:
-        raise translate(e, _LABEL_RULES)
+        raise translate(e, _BRING_UP_RULES)
     state.phase("launch_waiting_shell")
     wait_for_shell_ready(state.deps, herdr, request.target,
                          state.deps.monotonic() + request.timing.wall_clock)
@@ -1252,7 +1248,7 @@ class Admitted:
     """admit 阶段产出：本轮提示词文本、首个非空行、锚点、sha 与三个落盘路径。"""
 
     text: str
-    nonempty: tuple
+    first_line: str
     anchor: str
     sha: str
     prompt_path: Path
@@ -1358,7 +1354,7 @@ def admit(state):
     # env/now/fact 三条注入缝；关闭时 learning.open 返回 Disabled，调用点不写 if on。
     state.learning = learning.open(env=deps.env, now=deps.now, fact=state.fact,
                                    target=request.target, release_id=request.release_id)
-    return Admitted(text=text, nonempty=tuple(nonempty), anchor=anchor, sha=sha,
+    return Admitted(text=text, first_line=nonempty[0], anchor=anchor, sha=sha,
                     prompt_path=prompt_path, raw_path=raw_path,
                     turn_path=turn_path, record_path=record_path)
 
@@ -1596,7 +1592,7 @@ def send_main(state, herdr, admitted):
 
 def learning_settle(state, admitted):
     """阶段 11 learning_settle（ADR-0012）：主任务发送成功后结算上一轮预测。"""
-    state.learning.settle(admitted.nonempty[0])
+    state.learning.settle(admitted.first_line)
 
 
 def await_result(state, herdr):
@@ -1610,7 +1606,7 @@ def readback(state, herdr, admitted):
     """阶段 13 readback：回读＋断轮＋完整性检查，落盘 raw／turn。"""
     request = state.request
     deps = state.deps
-    read = herdr.readback(request.target)
+    read = herdr.readback(request.target, READ_LINES)
     screen = read.text
     # 锚点只作信息、不阻断（ADR-0013）。
     anchor_found = verbatim_present(admitted.anchor, screen)

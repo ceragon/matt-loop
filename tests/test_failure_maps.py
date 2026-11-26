@@ -7,8 +7,8 @@
   - locate 里 session 抛的非 NotFound 失败原样穿透；
   - await_result 里未包装的 get 原样穿透。
 每个表一组表驱动用例；同一网关操作在不同阶段映射到不同外部 kind（send 在启动
-命令阶段是 launch_failed，在前置与主任务阶段是 send_refused / hc_failed）由
-不同表各自钉住。send/resend 按两操作建表（在途裁决 07）。
+命令阶段是 launch_failed，在前置与主任务阶段是 send_refused / hc_failed）由同一张
+send 阶段表按 stage 各自钉住（#133 R2）。
 """
 import harness  # noqa: F401  （把 loop/scripts 放进 sys.path）
 import pipeline
@@ -60,7 +60,8 @@ def main():
     ])
     print("1 locate: non-NotFound session failure passes through (explicit PASS) ok")
 
-    # ---- send（首发）：blocked → send_refused，其余非进程层 → hc_failed ----
+    # ---- send 阶段一张表：首发（blocked→send_refused／其余→hc_failed）、复核
+    # get 原生穿透、补发与启动命令发送共用同一张表，按 stage 区分 ----
     extra = ["未再发送；台账已记录本次尝试"]
     check(pipeline._SEND_RULES, [
         (failure("send", "send", "blocked"),
@@ -76,9 +77,9 @@ def main():
     ])
     print("2 send table: blocked->send_refused, other->hc_failed, process/native pass ok")
 
-    # ---- resend（补发，独立操作）：第二次复核与裸发送 ----
+    # ---- 补发（第二次复核与裸发送）：同一张 send 表按 stage 区分 ----
     extra = ["本轮不再发送；台账已记录两次尝试"]
-    check(pipeline._RESEND_RULES, [
+    check(pipeline._SEND_RULES, [
         (failure("send", "refused_before_resend", "status_mismatch"),
          ("send_refused", "boom", ["h1"])),
         (failure("send", "refused_before_resend", "unavailable"), None),
@@ -86,19 +87,19 @@ def main():
          ("send_refused", "done 补发仍失败：boom", ["h1"] + extra)),
         (failure("send", "resend", "missing_tool"), None),
     ])
-    print("3 resend table: refused_before_resend + resend mapped by the second op ok")
+    print("3 send table: refused_before_resend + resend mapped by the second stage ok")
 
-    # ---- 启动命令发送：launch_failed ----
-    check(pipeline._LAUNCH_SEND_RULES, [
+    # ---- 启动命令发送（裸 send，stage=None）：同一张 send 表 → launch_failed ----
+    check(pipeline._SEND_RULES, [
         (failure("send", None, "unavailable"),
          ("launch_failed", "启动命令发送失败：boom",
           ["h1", "主任务未发送；台账已记录本次尝试"])),
         (failure("send", None, "tool_timeout"), None),
     ])
-    print("4 launch-send table: launch_failed, process-layer passes ok")
+    print("4 send table: launch-send stage -> launch_failed, process-layer passes ok")
 
-    # ---- 创建命名会话（hc run）：missing_address 原样，其余带 kind 前缀 ----
-    check(pipeline._CREATE_RULES, [
+    # ---- bring_up 一张表：创建命名会话（hc run）与打 loop 标签按 op 区分 ----
+    check(pipeline._BRING_UP_RULES, [
         (failure("create_session", "missing_address", "missing_address"),
          ("launch_failed", "boom", ["h1"])),
         (failure("create_session", None, "hc_failed"),
@@ -106,17 +107,12 @@ def main():
           ["h1", "同名 live 终端存在（name_taken）时不建不 kill；"
                  "经用户放行后另起一轮或改用既有会话"])),
         (failure("create_session", None, "missing_tool"), None),
-    ])
-    print("5 create-session table: missing_address / kind-prefixed launch_failed ok")
-
-    # ---- 打 loop 标签 ----
-    check(pipeline._LABEL_RULES, [
         (failure("label_session", None, "unavailable"),
          ("launch_failed", "打 loop 标签失败：boom",
           ["h1", "终端已建（launched:true）；无标签终端下轮会被拒收编"])),
         (failure("label_session", None, "hc_output"), None),
     ])
-    print("6 label table: launch_failed, process-layer passes ok")
+    print("5 bring-up table: create-session / label by op, launch_failed ok")
 
     # ---- 等 shell / 等 agent（同 op/stage，两张表区分文案） ----
     check(pipeline._SHELL_READY_RULES, [
@@ -127,7 +123,7 @@ def main():
         (failure("session", None, "unavailable"),
          ("launch_failed", "等 agent 就绪时 hc get 失败：boom", ["h1"])),
     ])
-    print("7 shell/agent ready tables: same op/stage, distinct prefixes ok")
+    print("6 shell/agent ready tables: same op/stage, distinct prefixes ok")
 
     # ---- 重建 kill 占位者 ----
     check(pipeline._KILL_RULES, [
@@ -135,7 +131,7 @@ def main():
          ("launch_failed", "重建 kill 占位者失败：boom",
           ["h1", "占位者未死；本轮停止，经用户放行后另起一轮"])),
     ])
-    print("8 rebuild-kill table: launch_failed ok")
+    print("7 rebuild-kill table: launch_failed ok")
 
     # ---- await_result：wait_change 包装，未包装 get 原样穿透（显式 PASS 之二） ----
     check(pipeline._AWAIT_RESULT_RULES, [
@@ -145,7 +141,7 @@ def main():
         (failure("session", None, "unavailable"), None),
         (failure("session", None, "blocked"), None),
     ])
-    print("9 await-result table: wait wrapped, unwrapped get passes (explicit PASS) ok")
+    print("8 await-result table: wait wrapped, unwrapped get passes (explicit PASS) ok")
 
     # ---- 领养（app 源；hints 由调用方换成 retry，映射只给 reason/文案） ----
     check(pipeline._ADOPT_OPEN_RULES, [
@@ -164,7 +160,7 @@ def main():
         (failure("selected_space", None, "app_failed", source="app"),
          ("keep_error", "space.new 后 status 复核失败：boom", ["h1"])),
     ])
-    print("10 adopt tables: open/create/recheck map to adopt_reason + prefix ok")
+    print("9 adopt tables: open/create/recheck map to adopt_reason + prefix ok")
 
     # ---- keep 落地：三种领域失败 + 兜底 ----
     check(pipeline._KEEP_RULES, [
@@ -178,7 +174,7 @@ def main():
         (failure("keep", "something_else", "app_failed", source="app"),
          ("keep_error", "terminal.keep 失败：boom", ["h1"])),
     ])
-    print("11 keep table: keep_command/keep_poll/no_pane + catch-all ok")
+    print("10 keep table: keep_command/keep_poll/no_pane + catch-all ok")
 
     # ---- focus 进入：复核不符带「，keep 未发」后缀；其余 select_error ----
     check(pipeline._FOCUS_RULES, [
@@ -189,12 +185,12 @@ def main():
         (failure("focus", "space_verify", "app_failed", source="app"),
          ("select_error", "space.select 失败：boom", ["h1"])),
     ])
-    print("12 focus table: mismatch suffix + catch-all select_error ok")
+    print("11 focus table: mismatch suffix + catch-all select_error ok")
 
     # ---- op/stage 隔离：不属于该表的失败原样穿透（不是漏写） ----
     passed(pipeline._SEND_RULES, failure("kill", None, "unavailable"))
     passed(pipeline._ADOPT_OPEN_RULES, failure("focus", None, "app_failed", source="app"))
-    print("13 op/stage isolation: failures outside a table pass through ok")
+    print("12 op/stage isolation: failures outside a table pass through ok")
 
     print("ALL FAILURE MAP TESTS PASSED")
 

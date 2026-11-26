@@ -175,7 +175,7 @@ from pipeline import (  # noqa: E402,F401  （兼容重导出：既有测试零�
     RESERVED_ID_RE, SESSION_NAME_RE,
 )
 from turn import (  # noqa: E402,F401
-    FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE, SESSION_START_SKILLS,
+    FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE,
     closest_fragment, cut_turn, find_session_start_trigger, fold_hits,
     generate_short_task_name, normalize_paste, utf16_units, verbatim_present,
     verify_extraction, verify_reply,
@@ -200,7 +200,9 @@ WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
 # 不含参数），候选固定七项；缺失/非字符串/带斜杠/带参数/集外值均宽容投影为 ""，不整轮
 # 报错；不参与逐字校验。格式错误另记 invalid（learning.project_next_skill），供阶段二
 # 统计 invalid_prediction，不得把格式错误算作正确弃答。
-EXTRACT_FIELDS = ("needs_user", "questions", "conclusion", "blocked", "reply", "next_skill")
+# 顺序即抽取指令里的字段列举顺序（#133 R6：指令由本常量派生，见 _EXTRACT_INSTRUCTION）；
+# 结果载荷的字段序不受影响——reply 被单独取出后，其余五字段的相对顺序不变。
+EXTRACT_FIELDS = ("needs_user", "reply", "questions", "conclusion", "blocked", "next_skill")
 # 抽取后端（ADR-0005）：默认直连 API（OpenAI 兼容 chat completions），pi 为显式备选。
 # API 参数全走 env、全必填、无内置默认；密钥与 URL 零回显。
 EXTRACT_BACKENDS = ("api", "pi")
@@ -726,19 +728,46 @@ def echo_reference(request):
     return ECHO_REFERENCE_LABEL + ECHO_REFERENCE_NOTE + "\n" + normalize_paste(text)
 
 
-def extract_via_pi(deps, request, turn_path, injection):
+# 字段列举由 EXTRACT_FIELDS 派生（#133 R6），改一处不会漏另一处；字面与旧版逐字一致。
+_EXTRACT_INSTRUCTION = (
+    "按系统提示词裁剪并抽取，只输出一个 JSON 对象，"
+    f"含 {'、'.join(EXTRACT_FIELDS)} 六个字段。"
+)
+
+
+def _extract_prompt_path():
+    """抽取提示词路径；缺失映射既有 missing_prompt（ADR-0024）。两后端共用。"""
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
-    instruction = (
-        "本轮原料已随消息附上（@文件）。按系统提示词裁剪并抽取，"
-        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
-    )
-    # 在线 few-shot（ADR-0012）：同 space 历史案例＋当前近期序列，无历史时为空、沿用原 prompt。
+    return extract_md
+
+
+def _extract_sections(request, injection, delivery_note):
+    """两后端共用的消息段：投递说法＋指令→few-shot 注入（如有）→回声参照（#127）。
+
+    delivery_note 是本轮原料的投递说法：api 内联在末尾、pi 走 @文件附件（ADR-0013）；
+    原料正文本身不进返回值。
+    """
+    sections = [delivery_note + _EXTRACT_INSTRUCTION]
     if injection:
-        instruction += "\n\n" + injection
-    reference = echo_reference(request)
-    instruction += "\n\n" + reference
+        sections.append(injection)
+    sections.append(echo_reference(request))
+    return sections
+
+
+def _extraction_from_output(output):
+    """抽取器原始输出 → 六字段＋Extraction（两后端共用尾段）。"""
+    meta = {}
+    ext = parse_extraction(output, meta)
+    return _extraction(ext, meta)
+
+
+def extract_via_pi(deps, request, turn_path, injection):
+    extract_md = _extract_prompt_path()
+    # 在线 few-shot（ADR-0012）与回声参照（#127）同 api 侧共用；原料只走 @文件附件。
+    instruction = "\n\n".join(_extract_sections(
+        request, injection, "本轮原料已随消息附上（@文件）。"))
     instruction += f'\n本轮原料落盘路径：{turn_path}'
     argv = [
         deps.pi_bin, "-p",
@@ -757,9 +786,7 @@ def extract_via_pi(deps, request, turn_path, injection):
             ["原文已落盘，可人工重做抽取", (p.stderr or p.stdout).strip()[:300]],
         )
     # 研究表明 pi 模型失败时退出码可能仍为 0，所以无论退出码都要校验输出。
-    meta = {}
-    ext = parse_extraction(p.stdout, meta)
-    return _extraction(ext, meta)
+    return _extraction_from_output(p.stdout)
 
 
 def extract_via_api(deps, request, turn_path, injection):
@@ -768,9 +795,7 @@ def extract_via_api(deps, request, turn_path, injection):
     不发 response_format；超时复用 --extract-timeout。代理决议与出口和
     webhook 同一套（ADR-0003）。失败只记状态码/类名，不读响应体，密钥/URL 零回显。"""
     base, key, model, max_tokens = api_config(deps.env)
-    extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
-    if not extract_md.is_file():
-        raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
+    extract_md = _extract_prompt_path()
     # 本轮原料读失败不包：归 io_failed 顶层兜底（ADR-0024，#111）。
     turn_text = Path(turn_path).read_text(encoding="utf-8")
     # 抽取提示词读失败映射既有 missing_prompt（ADR-0024，#111）：is_file 检查后
@@ -779,17 +804,10 @@ def extract_via_api(deps, request, turn_path, injection):
         system_prompt = extract_md.read_text(encoding="utf-8")
     except OSError as e:
         raise DispatchError("missing_prompt", f"读不到抽取提示词：{extract_md}：{e}", [])
-    instruction = (
-        "本轮原料已内联在本消息末尾。按系统提示词裁剪并抽取，"
-        "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
-    )
     # 在线 few-shot（ADR-0012）与回声参照（#127）都插在指令与本轮原料之间，
     # 本轮原料仍居消息末尾；无历史时为空、沿用原 prompt（冷启动行为不变）。
-    sections = [instruction]
-    if injection:
-        sections.append(injection)
-    reference = echo_reference(request)
-    sections.append(reference)
+    sections = _extract_sections(
+        request, injection, "本轮原料已内联在本消息末尾。")
     sections.append(turn_text)
     user_content = "\n\n".join(sections)
     body = json.dumps({
@@ -827,9 +845,7 @@ def extract_via_api(deps, request, turn_path, injection):
         raise DispatchError("extraction_invalid",
                             "API 响应缺 choices[0].message.content",
                             ["原文已落盘，可人工重做抽取"])
-    meta = {}
-    ext = parse_extraction(content, meta)
-    return _extraction(ext, meta)
+    return _extraction_from_output(content)
 
 
 def extract(deps, request, turn_path, injection):

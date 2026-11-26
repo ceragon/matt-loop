@@ -15,7 +15,6 @@ from errors import DispatchError
 # 会话起始 skill（ADR-0004）：新会话必须以其中之一开场，调用时目标会话必须先重置。
 # 清单出自 /ask-matt 工作流（默认调用方已装 Matt 全套 skill）；中途 skill
 # （to-spec/to-tickets/tdd/code-review/retro 等）不在内，普通回复不触发。
-SESSION_START_SKILLS = ("wayfinder", "grill-with-docs", "implement", "implement-spec", "prototype")
 # 行首匹配：允许行前空白，命令后须不是词字符或连字符（/implementing、/implement-foo
 # 不误中，/wayfinder#7 无空格带参算调用）；implement-spec 排在 implement 前，命中时报长名。
 # 行文中提及不触发——讨论工作流的普通回复要放行；「调用独占一行」由 SKILL.md 纪律约定。

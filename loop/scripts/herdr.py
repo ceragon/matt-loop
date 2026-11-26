@@ -25,10 +25,6 @@ from errors import DispatchError  # noqa: E402
 SEND_GUARD_S = 120.0
 QUERY_GUARD_S = 30.0
 WAIT_GUARD_MARGIN_S = 30.0
-READ_LINES = 1000
-# keep / 赠送清理的默认窗口与轮询间隔（与 --adopt-timeout/--adopt-poll 默认值同）。
-POLL_TIMEOUT_S = 30.0
-POLL_INTERVAL_S = 2.0
 
 # 区分「调用方没传」与「传了合法值 None」（original 可为 None：没有选中空间）。
 _UNSET = object()
@@ -183,20 +179,17 @@ class Layout:
 
 @dataclass(frozen=True)
 class Receipt:
-    """send/resend 的回执：resent 表示本操作是否执行了补发；send 在「被拒且复核
-    为 done」时给出 first_refusal（resend 回执不重复该事实）。"""
+    """send/resend 的回执：send 在「被拒且复核为 done」时给出 first_refusal
+    （resend 回执不重复该事实）；turn 等命令原始事实留在 raw，不另设字段。"""
 
-    turn: int | None
-    resent: bool
     first_refusal: dict | None
     raw: dict
 
 
 @dataclass(frozen=True)
 class Change:
-    """一次 hc wait 的唤醒事实（快照；不解释等待策略）。"""
+    """一次 hc wait 的唤醒事实（快照；不解释等待策略）；原始键留在 raw。"""
 
-    terminal: str | None
     reason: str | None
     status: str | None
     turn: int | None
@@ -205,10 +198,8 @@ class Change:
     @classmethod
     def from_raw(cls, raw):
         raw = raw if isinstance(raw, dict) else {}
-        return cls(terminal=raw.get("terminal"),
-                   reason=raw.get("reason"), status=raw.get("status"),
-                   turn=raw.get("turn"),
-                   raw=raw)
+        return cls(reason=raw.get("reason"), status=raw.get("status"),
+                   turn=raw.get("turn"), raw=raw)
 
 
 @dataclass(frozen=True)
@@ -364,9 +355,9 @@ class Herdr:
         return session
 
     def label_session(self, target, labels):
-        """labels 是 `k=v` 序列（与分发脚本既有调用同形：`["loop=1", …]`）。"""
-        return Session.from_raw(
-            self._hc(["label", target, *labels], QUERY_GUARD_S, op="label_session"))
+        """labels 是 `k=v` 序列（与分发脚本既有调用同形：`["loop=1", …]`）。
+        返回值无人消费；标签结果经 `session()` 读回。"""
+        self._hc(["label", target, *labels], QUERY_GUARD_S, op="label_session")
 
     def send(self, target, text, guard="idle"):
         """首发 --if idle；被拒且 hc get 复核为 done 时只返回拒绝回执，不在本操作内补发。
@@ -377,13 +368,11 @@ class Herdr:
         """
         if not guard:
             raw = self._hc(["send", "--", target, text], SEND_GUARD_S, op="send")
-            return Receipt(turn=raw.get("turn"), resent=False,
-                           first_refusal=None, raw=raw)
+            return Receipt(first_refusal=None, raw=raw)
         try:
             raw = self._hc(["send", "--if", "idle", "--", target, text],
                            SEND_GUARD_S, op="send", stage="send")
-            return Receipt(turn=raw.get("turn"), resent=False,
-                           first_refusal=None, raw=raw)
+            return Receipt(first_refusal=None, raw=raw)
         except HerdrFailure as first:
             if first.kind != "status_mismatch":
                 raise
@@ -401,7 +390,7 @@ class Herdr:
                     detail=first.detail,
                     partial_facts={"first_refusal": refusal,
                                    "status": g.status_state}) from first
-            return Receipt(turn=None, resent=False, first_refusal=refusal, raw={})
+            return Receipt(first_refusal=refusal, raw={})
 
     def resend(self, target, text):
         """补发：第二次 hc get 复核（须 live 且 idle/done）后裸 send。
@@ -419,8 +408,7 @@ class Herdr:
                 partial_facts={"status": g.status_state})
         raw = self._hc(["send", "--", target, text], SEND_GUARD_S,
                        op="send", stage="resend")
-        return Receipt(turn=raw.get("turn"), resent=True,
-                       first_refusal=None, raw=raw)
+        return Receipt(first_refusal=None, raw=raw)
 
     def wait_change(self, target, timeout):
         """hc wait 原语；等目标 agent 行为的循环留在管线（决定 11）。"""
@@ -428,11 +416,11 @@ class Herdr:
                        timeout + WAIT_GUARD_MARGIN_S, op="wait_change")
         return Change.from_raw(raw)
 
-    def read(self, target, lines=READ_LINES):
+    def read(self, target, lines):
         """回读文本；缺 text 键按输出层失败抛 HerdrFailure（不静默返回 None）。"""
         return self.readback(target, lines).text
 
-    def readback(self, target, lines=READ_LINES):
+    def readback(self, target, lines):
         """回读的文本＋完整原始结果（台账记 complete/how/why 用）。"""
         raw = self._hc(["read", target, "--lines", str(lines)],
                        QUERY_GUARD_S, op="read")
@@ -445,8 +433,8 @@ class Herdr:
         return Readback(text=text, raw=raw)
 
     def kill(self, target):
-        return Session.from_raw(
-            self._hc(["kill", target], SEND_GUARD_S, op="kill"))
+        """kill 目标；返回值无人消费（结束状态经 `session()` 读回）。"""
+        self._hc(["kill", target], SEND_GUARD_S, op="kill")
 
     # ---- 空间簇 ----
 
@@ -473,8 +461,11 @@ class Herdr:
         """返回 Focus 上下文管理器；传 original 则不重读当前选中（默认为自读）。"""
         return Focus(self, space, original)
 
-    def keep(self, address, within=POLL_TIMEOUT_S, poll=POLL_INTERVAL_S):
-        """terminal.keep ＋落地轮询复核；窗口耗尽抛 stage=no_pane。"""
+    def keep(self, address, within, poll):
+        """terminal.keep ＋落地轮询复核；窗口耗尽抛 stage=no_pane。
+
+        within／poll 是调用方策略（管线传 --adopt-timeout/--adopt-poll），
+        网关不藏默认值。"""
         self._app(["do", "terminal.keep", json.dumps({"terminal": address})],
                   QUERY_GUARD_S, op="keep", stage="keep_command",
                   partial={"address": address})
@@ -529,8 +520,7 @@ class Herdr:
                                "actual": actual_name})
         return tab["id"]
 
-    def discard_shell_tabs(self, space, keep_address,
-                           within=POLL_TIMEOUT_S, poll=POLL_INTERVAL_S, *,
+    def discard_shell_tabs(self, space, keep_address, within, poll, *,
                            layout=None):
         """关赠送标签页 → 轮询 hc get 等 finished → rm；**生成器**，逐条 yield 降级 warnings。
 
