@@ -168,6 +168,18 @@ def _rates(counters):
     }
 
 
+def _stats_projection(stats):
+    """统计三面投影：全量＋最近 20 窗口（恒带样本数）＋两队列。
+
+    结算反馈与审计读模型（read_stats）共用同一份投影，避免两处各写一遍。
+    """
+    return {
+        "total": _rates(stats["total"]),
+        "recent20": _rates(_window_counters(stats["recent"])),
+        "cohorts": {k: _rates(v) for k, v in stats["cohorts"].items()},
+    }
+
+
 def _warn(reason, detail):
     return {"reason": reason, "detail": detail}
 
@@ -234,16 +246,24 @@ class LearningStore:
         except (OSError, ValueError) as e:
             raise _LearningError("corrupt_record", f"{path.name} 损坏：{type(e).__name__}")
 
-    def _write_json(self, path, obj):
+    def _atomic_write(self, path, text, label=None):
+        """tmp→chmod 0600→replace 的原子写；失败统一降级 io_error。
+
+        label 只用于告警文案（cases 的既有文案不带扩展名）；缺省取文件名。
+        """
         tmp = path.with_suffix(path.suffix + ".tmp")
         try:
             fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                f.write(text)
             os.chmod(tmp, 0o600)
             tmp.replace(path)
         except OSError as e:
-            raise _LearningError("io_error", f"写 {path.name} 失败：{type(e).__name__}")
+            raise _LearningError(
+                "io_error", f"写 {label or path.name} 失败：{type(e).__name__}")
+
+    def _write_json(self, path, obj):
+        self._atomic_write(path, json.dumps(obj, ensure_ascii=False) + "\n")
 
     def _read_cases(self):
         if not self.cases_path.exists():
@@ -265,16 +285,10 @@ class LearningStore:
         return cases
 
     def _write_cases(self, cases):
-        tmp = self.cases_path.with_suffix(".jsonl.tmp")
-        try:
-            fd = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                for c in cases:
-                    f.write(json.dumps(c, ensure_ascii=False) + "\n")
-            os.chmod(tmp, 0o600)
-            tmp.replace(self.cases_path)
-        except OSError as e:
-            raise _LearningError("io_error", f"写 cases 失败：{type(e).__name__}")
+        self._atomic_write(
+            self.cases_path,
+            "".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cases),
+            label="cases")
 
     # ---- 保留期清理（正常读写触发，无后台进程）----
 
@@ -350,7 +364,7 @@ class LearningStore:
                         skill = actual_skill if actual_type != "plain_text" else "plain_text"
                         seq.append({"skill": skill, "release_id": release_id,
                                     "ts": self._now()})
-                        sequences[space_id][target] = seq[-SEQUENCE_CAP:]
+                        # 截断统一由 _save_all → _prune 按 SEQUENCE_CAP 做。
                 else:
                     warning = _warn("space_id_missing", "space id 缺失，本轮序列/案例学习禁用")
 
@@ -431,11 +445,7 @@ class LearningStore:
                 cases.append(case)
         # 统计三面随反馈呈出（ADR-0012 §2）：全量＋最近 20 窗口（恒带样本数）＋两队列。
         # 只含计数，不含案例正文（案例正文绝不进 result/webhook）。
-        feedback["stats"] = {
-            "total": _rates(stats["total"]),
-            "recent20": _rates(_window_counters(stats["recent"])),
-            "cohorts": {k: _rates(v) for k, v in stats["cohorts"].items()},
-        }
+        feedback["stats"] = _stats_projection(stats)
         return feedback
 
     def build_injection(self, space_id, target):
@@ -538,11 +548,7 @@ class LearningStore:
                 stats.setdefault("recent", [])
                 stats.setdefault("cohorts", {"examples_0": _new_counters(),
                                              "examples_gt0": _new_counters()})
-                return {
-                    "total": _rates(stats["total"]),
-                    "recent20": _rates(_window_counters(stats["recent"])),
-                    "cohorts": {k: _rates(v) for k, v in stats["cohorts"].items()},
-                }
+                return _stats_projection(stats)
         except Exception:
             return {"total": _rates(_new_counters()),
                     "recent20": _rates(_new_counters()), "cohorts": {}}
