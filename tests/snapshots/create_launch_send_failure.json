@@ -1,0 +1,110 @@
+{
+ "scenario": "create_launch_send_failure",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-launch-err-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_failed\", \"message\": \"启动命令发送失败：send refused（故障旋钮）\", \"hints\": [\"主任务未发送；台账已记录本次尝试\"]}, \"task_name\": \"loop-451060d9\", \"extract_backend\": \"pi\", \"target_address\": \"t100\", \"launched\": true, \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-launch-err-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_failed\", \"message\": \"启动命令发送失败：send refused（故障旋钮）\", \"hints\": [\"主任务未发送；台账已记录本次尝试\"]}, \"task_name\": \"loop-451060d9\", \"extract_backend\": \"pi\", \"target_address\": \"t100\", \"launched\": true, \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-launch-err-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_failed\", \"message\": \"启动命令发送失败：send refused（故障旋钮）\", \"hints\": [\"主任务未发送；台账已记录本次尝试\"]}, \"task_name\": \"loop-451060d9\", \"extract_backend\": \"pi\", \"target_address\": \"t100\", \"launched\": true, \"space\": \"main\"}",
+ "ledger_final": {
+  "release_id": "snap-launch-err-1",
+  "task_name": "loop-451060d9",
+  "target": "claude-matt-loop",
+  "prompt_path": "<TMP>/prompt.md",
+  "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+  "anchor": "请实现某个功能",
+  "reset": "none",
+  "target_model": null,
+  "launch": "claude --dangerously-skip-permissions",
+  "cwd": "/proj",
+  "display_name": "LoopEng_测试任务",
+  "space": "main",
+  "rebuild": false,
+  "target_address": "t100",
+  "workspace": null,
+  "params": {
+   "wall_clock": 5.0,
+   "check_in": 1.0,
+   "settle_seconds": 0.01,
+   "settle_checks": 2,
+   "lines": 1000,
+   "extract_timeout": 1200.0,
+   "extract_backend": "pi"
+  },
+  "phase": "error:launch_failed",
+  "created_at": "<TS>",
+  "launched": true,
+  "error": {
+   "kind": "launch_failed",
+   "message": "启动命令发送失败：send refused（故障旋钮）"
+  },
+  "failed_at": "<TS>"
+ },
+ "phase_sequence": [
+  "launch_running",
+  "launch_labeling",
+  "launch_waiting_shell",
+  "launch_sending",
+  "error:launch_failed"
+ ],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "hc run",
+   "phase": "launch_running",
+   "changes": {
+    "release_id": "snap-launch-err-1",
+    "task_name": "loop-451060d9",
+    "target": "claude-matt-loop",
+    "prompt_path": "<TMP>/prompt.md",
+    "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+    "anchor": "请实现某个功能",
+    "reset": "none",
+    "target_model": null,
+    "launch": "claude --dangerously-skip-permissions",
+    "cwd": "/proj",
+    "display_name": "LoopEng_测试任务",
+    "space": "main",
+    "rebuild": false,
+    "target_address": null,
+    "workspace": null,
+    "params": {
+     "wall_clock": 5.0,
+     "check_in": 1.0,
+     "settle_seconds": 0.01,
+     "settle_checks": 2,
+     "lines": 1000,
+     "extract_timeout": 1200.0,
+     "extract_backend": "pi"
+    },
+    "phase": "launch_running",
+    "created_at": "<TS>"
+   }
+  },
+  {
+   "command": "hc label",
+   "phase": "launch_labeling",
+   "changes": {
+    "target_address": "t100",
+    "phase": "launch_labeling",
+    "launched": true
+   }
+  },
+  {
+   "command": "hc get",
+   "phase": "launch_waiting_shell",
+   "changes": {
+    "phase": "launch_waiting_shell"
+   }
+  },
+  {
+   "command": "hc send",
+   "phase": "launch_sending",
+   "changes": {
+    "phase": "launch_sending"
+   }
+  }
+ ]
+}

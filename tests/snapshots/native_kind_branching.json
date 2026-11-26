@@ -1,0 +1,16 @@
+{
+ "scenario": "native_kind_branching",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-native-branch-1\", \"target\": \"t99\", \"error\": {\"kind\": \"unavailable\", \"message\": \"get refused（故障旋钮）\", \"hints\": []}, \"task_name\": \"loop-801426d6\", \"extract_backend\": \"pi\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-native-branch-1\", \"target\": \"t99\", \"error\": {\"kind\": \"unavailable\", \"message\": \"get refused（故障旋钮）\", \"hints\": []}, \"task_name\": \"loop-801426d6\", \"extract_backend\": \"pi\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-native-branch-1\", \"target\": \"t99\", \"error\": {\"kind\": \"unavailable\", \"message\": \"get refused（故障旋钮）\", \"hints\": []}, \"task_name\": \"loop-801426d6\", \"extract_backend\": \"pi\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  }
+ ]
+}

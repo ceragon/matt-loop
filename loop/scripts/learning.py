@@ -50,17 +50,28 @@ LOCK_TIMEOUT_S = 5.0
 _SLASH_RE = re.compile(r"^\s*/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
-def enabled():
-    """LOOP_LEARNING=off 关闭；其他值（含未设）默认开启（ADR-0012 §5.5）。"""
-    return os.environ.get("LOOP_LEARNING", "").strip().lower() != "off"
+def enabled(env=None):
+    """LOOP_LEARNING=off 关闭；其他值（含未设）默认开启（ADR-0012 §5.5）。
+
+    env 是可注入的环境映射（默认 os.environ；管线传 deps.env，收掉直读洞）。
+    """
+    _env = os.environ if env is None else env
+    return _env.get("LOOP_LEARNING", "").strip().lower() != "off"
 
 
-def learning_dir():
-    override = os.environ.get("LOOP_LEARNING_DIR", "").strip()
+def learning_dir(env=None):
+    """学习存储目录（ADR-0012 §5.1，ADR-0023 决定 3）：LOOP_LEARNING_DIR → XDG_DATA_HOME →
+    `$HOME/.local/share`。env 是可注入环境映射（默认 os.environ；管线传 deps.env），
+    用 `env["HOME"]` 取代 `Path.home()`，harness 不写 os.environ 即可指定目录。"""
+    _env = os.environ if env is None else env
+    override = (_env.get("LOOP_LEARNING_DIR") or "").strip()
     if override:
         return Path(override).expanduser()
-    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
-    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    xdg = (_env.get("XDG_DATA_HOME") or "").strip()
+    if xdg:
+        base = Path(xdg).expanduser()
+    else:
+        base = Path(_env.get("HOME") or "~").expanduser() / ".local" / "share"
     return base / "matt-loop" / "learning"
 
 
@@ -173,9 +184,11 @@ class _LearningError(Exception):
 class LearningStore:
     """本地学习存储的短临界区事务集合。每个公开方法自捕异常、降级 warning，绝不外抛。"""
 
-    def __init__(self, directory=None, lock_timeout=LOCK_TIMEOUT_S):
+    def __init__(self, directory=None, lock_timeout=LOCK_TIMEOUT_S, now=None):
         self.dir = Path(directory) if directory is not None else learning_dir()
         self.lock_timeout = lock_timeout
+        # 事件时间戳经注入（ADR-0023 决定 3）：默认现行 now_iso；锁等待仍是真实时间。
+        self._now = now or now_iso
         self.cases_path = self.dir / "cases.jsonl"
         self.pending_path = self.dir / "pending.json"
         self.sequences_path = self.dir / "sequences.json"
@@ -335,7 +348,8 @@ class LearningStore:
                     seq = sequences.setdefault(space_id, {}).setdefault(target, [])
                     if not any(e.get("release_id") == release_id for e in seq):
                         skill = actual_skill if actual_type != "plain_text" else "plain_text"
-                        seq.append({"skill": skill, "release_id": release_id, "ts": now_iso()})
+                        seq.append({"skill": skill, "release_id": release_id,
+                                    "ts": self._now()})
                         sequences[space_id][target] = seq[-SEQUENCE_CAP:]
                 else:
                     warning = _warn("space_id_missing", "space id 缺失，本轮序列/案例学习禁用")
@@ -373,7 +387,7 @@ class LearningStore:
         cohort = "examples_0" if pred.get("examples_used", 0) == 0 else "examples_gt0"
         _bump(stats["cohorts"].setdefault(cohort, _new_counters()), sample)
         stats["recent"].append({
-            "ts": now_iso(), "verdict": verdict, "invalid": invalid, "covered": covered,
+            "ts": self._now(), "verdict": verdict, "invalid": invalid, "covered": covered,
             "actual_type": actual_type, "examples_used": pred.get("examples_used", 0),
             "sequence_used": bool(pred.get("sequence_used")),
         })
@@ -401,7 +415,7 @@ class LearningStore:
                 "space_id": pred.get("space_id"),
                 "predict_release_id": pred.get("release_id"),
                 "actual_release_id": release_id,
-                "ts": now_iso(),
+                "ts": self._now(),
                 "predicted_at": pred.get("ts"),
                 "verdict": verdict,
                 "invalid": invalid,
@@ -507,7 +521,7 @@ class LearningStore:
                         "invalid": bool(invalid), "reply": reply,
                         "sequence": list(sequence or []),
                         "examples_used": examples_used,
-                        "sequence_used": bool(sequence_used), "ts": now_iso(),
+                        "sequence_used": bool(sequence_used), "ts": self._now(),
                         "complete": bool(complete),
                     })
                 self._save_all(cases, pending, sequences, stats)
@@ -534,6 +548,107 @@ class LearningStore:
         except Exception:
             return {"total": _rates(_new_counters()),
                     "recent20": _rates(_new_counters()), "cohorts": {}}
+
+
+# ---------------------------------------------------------------- 学习会话（ADR-0023）
+
+
+# `begin` 拿不到 space id 时的唯一文案（与基线 main 内联的那条逐字一致，ADR-0023 决定 5）。
+_SPACE_ID_MISSING = {
+    "reason": "space_id_missing",
+    "detail": "--space 未能只读解析出唯一 space id，本轮序列/案例/few-shot 禁用",
+}
+
+
+class LearningSession:
+    """一轮学习接入的四个动词（ADR-0023 决定 1/2/6）：`LearningStore` 之上的一层薄包装。
+
+    新增的只有三件事：持有 space id、持有注入元数据、把事务结果搬进 `fact`。事务逻辑与
+    存储格式不动；动词永不外抛（吸收仍在 `LearningStore` 的每方法 catch-all 里），也
+    不返回 feedback / warning——只在值非空时写 `fact(..., ledger=False)`，后写覆盖先写。
+    会话一轮一个、不复用。
+    """
+
+    def __init__(self, store, fact, target, release_id):
+        self._store = store
+        self._fact = fact
+        self._target = target
+        self._release_id = release_id
+        self.space_id = None
+        # inject() 存下的注入元数据（决定 6）；未调用或失败时取现状初值。
+        self.sequence = []
+        self.examples_used = 0
+        self.sequence_used = False
+
+    def begin(self, resolve_space):
+        """解析 space id；回调返回 None 时写 space_id_missing 并记 None。"""
+        self.space_id = resolve_space()
+        if self.space_id is None:
+            self._warn(dict(_SPACE_ID_MISSING))
+
+    def settle(self, first_line):
+        """主任务发送成功后结算上一轮同 target 预测。"""
+        result = self._store.settle_and_record(
+            self._target, self._release_id, self.space_id, first_line)
+        if result.get("feedback") is not None:
+            self._fact("next_skill_feedback", result["feedback"], ledger=False)
+        if result.get("warning") is not None:
+            self._warn(result["warning"])
+
+    def inject(self):
+        """抽取前取注入文本；元数据存会话实例供 record 消费。"""
+        result = self._store.build_injection(self.space_id, self._target)
+        self.sequence = result.get("sequence", [])
+        self.examples_used = result.get("examples_used", 0)
+        self.sequence_used = result.get("sequence_used", False)
+        if result.get("warning") is not None:
+            self._warn(result["warning"])
+        return result.get("text", "")
+
+    def record(self, extraction, complete):
+        """成功抽取后创建待观察（含空预测）：预测/无效标记/reply 取自 Extraction。"""
+        result = self._store.record_prediction(
+            self._target, self._release_id, self.space_id,
+            extraction.fields.get("next_skill", ""), extraction.next_skill_invalid,
+            extraction.reply, self.sequence, self.examples_used, self.sequence_used,
+            complete=complete)
+        if result.get("warning") is not None:
+            self._warn(result["warning"])
+
+    def _warn(self, warning):
+        self._fact("learning_warning", warning, ledger=False)
+
+
+class Disabled:
+    """`LOOP_LEARNING=off` 的空对象（ADR-0023 决定 4）：四动词全是空操作。
+
+    `begin` 不调回调，所以关闭时零 `ls`、零 `require_app`；`inject()` 返回 ""。
+    与 `LearningSession` 不共享基类（鸭子类型），防漂移靠 parity 测试。
+    """
+
+    def begin(self, resolve_space):
+        pass
+
+    def settle(self, first_line):
+        pass
+
+    def inject(self):
+        return ""
+
+    def record(self, extraction, complete):
+        pass
+
+
+def open(env=None, now=None, fact=None, *, target, release_id):
+    """构造一轮的学习接入（ADR-0023 决定 3/4）：off → `Disabled`，否则 `LearningSession`。
+
+    env / now / fact 是三条注入缝（`deps.env` / `deps.now` / `state.fact`）；target 与
+    release_id 是本轮的配对键（会话持有，四个动词不再各传一遍）。
+    """
+    if not enabled(env):
+        return Disabled()
+    return LearningSession(
+        LearningStore(directory=learning_dir(env), now=now), fact, target, release_id)
 
 
 def _window_counters(recent):

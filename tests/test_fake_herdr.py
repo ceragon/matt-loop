@@ -15,18 +15,18 @@ from harness import dispatch
 def raises(kind, fn):
     try:
         fn()
-    except dispatch.HcFailure as e:
+    except dispatch.HerdrFailure as e:
         assert e.kind == kind, (e.kind, kind)
         return e
-    raise AssertionError("预期 HcFailure(%s) 未抛" % kind)
+    raise AssertionError("预期 HerdrFailure(%s) 未抛" % kind)
 
 
 def app_raises(fn):
     try:
         fn()
-    except dispatch.AppFailure as e:
+    except dispatch.HerdrFailure as e:
         return e
-    raise AssertionError("预期 AppFailure 未抛")
+    raise AssertionError("预期 HerdrFailure 未抛")
 
 
 def main():
@@ -180,7 +180,7 @@ def main():
     assert entry["terminal"] == "t50" and entry["pane"]
     print("10 keep lands pane into selected space")
 
-    # 11 space.select：改选中；未知 id → AppFailure
+    # 11 space.select：改选中；未知 id → HerdrFailure
     w = FakeHerdr()
     sp1 = w.add_space(name="main")
     sp2 = w.add_space(name="side")

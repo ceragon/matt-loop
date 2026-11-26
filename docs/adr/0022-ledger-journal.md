@@ -4,6 +4,14 @@ status: accepted
 
 # 台账 journal：台账文件独立成 `Journal`，结果投影留在 `RunState`
 
+> 补记（#113 ④journal 实施前提订正，team-lead 批准；**前提订正**，非新决定）：
+> 决定 2「现行代码里这种调用本不存在」属前提笔误——预检期领养（existing/revive
+> 分流）在台账 `open` 前确实调用 `state.phase("adopting")` / `state.phase("adopt_done")`，
+> 只是被基线 `ledger=None` 的 no-op 守卫吞掉。编程错误的 raise 落在 `Journal.phase`
+> 层（open 前调用抛 `RuntimeError`，Journal 单测钉死）；`RunState.phase` 保留 open 前
+> no-op 守卫、open 后委托 `Journal.phase`，以守住基线预检期零写入行为与「管线调用点
+> 不动」。接口与外部契约零变化。
+
 ## 背景
 
 评审 #53 候选④：台账（`runs/<放行id>.json`）的写入散在 `main()` 与 `do_send`、

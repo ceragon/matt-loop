@@ -1,0 +1,26 @@
+{
+ "scenario": "static_reset_required",
+ "rc": 2,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-reset-req-1\", \"target\": \"t99\", \"error\": {\"kind\": \"reset_required\", \"message\": \"提示词第 1 行调用会话起始 skill /wayfinder，目标当前 turn=5（非全新空会话）：必须先重置目标会话，--reset=none 拒发\", \"hints\": [\"补 --reset new/clear/compact（agy/pi 认 new，claude 认 clear，codex 认 new/clear）后用同一放行 id 重试\", \"清单与边界见 SKILL.md「会话起始 skill」；工作流出处 /ask-matt\"]}, \"task_name\": \"loop-ca7cc9c7\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-reset-req-1\", \"target\": \"t99\", \"error\": {\"kind\": \"reset_required\", \"message\": \"提示词第 1 行调用会话起始 skill /wayfinder，目标当前 turn=5（非全新空会话）：必须先重置目标会话，--reset=none 拒发\", \"hints\": [\"补 --reset new/clear/compact（agy/pi 认 new，claude 认 clear，codex 认 new/clear）后用同一放行 id 重试\", \"清单与边界见 SKILL.md「会话起始 skill」；工作流出处 /ask-matt\"]}, \"task_name\": \"loop-ca7cc9c7\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-reset-req-1\", \"target\": \"t99\", \"error\": {\"kind\": \"reset_required\", \"message\": \"提示词第 1 行调用会话起始 skill /wayfinder，目标当前 turn=5（非全新空会话）：必须先重置目标会话，--reset=none 拒发\", \"hints\": [\"补 --reset new/clear/compact（agy/pi 认 new，claude 认 clear，codex 认 new/clear）后用同一放行 id 重试\", \"清单与边界见 SKILL.md「会话起始 skill」；工作流出处 /ask-matt\"]}, \"task_name\": \"loop-ca7cc9c7\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "app status",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "app ls",
+   "phase": null,
+   "changes": null
+  }
+ ]
+}

@@ -1,0 +1,190 @@
+{
+ "scenario": "revive_success",
+ "rc": 0,
+ "stdout": "{\"ok\": true, \"phase\": \"done\", \"release_id\": \"snap-revive-1\", \"task_name\": \"loop-2e357f3e\", \"target\": \"claude-matt-loop\", \"reset\": \"none\", \"turn\": 8, \"status\": \"idle\", \"complete\": true, \"complete_reason\": [], \"anchor_found\": true, \"elapsed_s\": 0.0, \"chars\": 15, \"run_record\": \"<TMP>/.loop/runs/snap-revive-1.md\", \"raw_record\": \"<TMP>/.loop/runs/snap-revive-1.raw.md\", \"turn_record\": \"<TMP>/.loop/runs/snap-revive-1.turn.md\", \"prompt_sha256\": \"9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf\", \"rewritten\": {}, \"extract_backend\": \"pi\", \"needs_user\": false, \"questions\": [], \"conclusion\": \"\", \"blocked\": \"\", \"next_skill\": \"\", \"target_address\": \"t50\", \"workspace\": \"adopted\", \"display_name\": \"LoopEng_测试任务\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": true, \"phase\": \"done\", \"release_id\": \"snap-revive-1\", \"task_name\": \"loop-2e357f3e\", \"target\": \"claude-matt-loop\", \"reset\": \"none\", \"turn\": 8, \"status\": \"idle\", \"complete\": true, \"complete_reason\": [], \"anchor_found\": true, \"elapsed_s\": 0.0, \"chars\": 15, \"run_record\": \"<TMP>/.loop/runs/snap-revive-1.md\", \"raw_record\": \"<TMP>/.loop/runs/snap-revive-1.raw.md\", \"turn_record\": \"<TMP>/.loop/runs/snap-revive-1.turn.md\", \"prompt_sha256\": \"9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf\", \"rewritten\": {}, \"extract_backend\": \"pi\", \"needs_user\": false, \"questions\": [], \"conclusion\": \"\", \"blocked\": \"\", \"next_skill\": \"\", \"target_address\": \"t50\", \"workspace\": \"adopted\", \"display_name\": \"LoopEng_测试任务\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": true, \"release_id\": \"snap-revive-1\", \"target\": \"claude-matt-loop\", \"needs_user\": false, \"questions\": [], \"conclusion\": \"\", \"blocked\": \"\", \"rewritten\": {}, \"run_record\": \"<TMP>/.loop/runs/snap-revive-1.md\", \"elapsed_s\": 0.0, \"next_skill\": \"\", \"complete\": true, \"complete_reason\": []}",
+ "ledger_final": {
+  "release_id": "snap-revive-1",
+  "task_name": "loop-2e357f3e",
+  "target": "claude-matt-loop",
+  "prompt_path": "<TMP>/prompt.md",
+  "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+  "anchor": "请实现某个功能",
+  "reset": "none",
+  "target_model": null,
+  "launch": "claude --dangerously-skip-permissions",
+  "cwd": "/proj",
+  "display_name": "LoopEng_测试任务",
+  "space": "main",
+  "rebuild": false,
+  "target_address": "t50",
+  "workspace": "adopted",
+  "params": {
+   "wall_clock": 5.0,
+   "check_in": 1.0,
+   "settle_seconds": 0.01,
+   "settle_checks": 2,
+   "lines": 1000,
+   "extract_timeout": 1200.0,
+   "extract_backend": "pi"
+  },
+  "phase": "done",
+  "created_at": "<TS>",
+  "launch_sent": true,
+  "launch_send": {
+   "turn": 7
+  },
+  "launch_done_at": "<TS>",
+  "naming_done_at": "<TS>",
+  "sent_at": "<TS>",
+  "send": {
+   "turn": 7
+  },
+  "resent": false,
+  "read_at": "<TS>",
+  "turn": 8,
+  "status": "idle",
+  "elapsed_s": 0.0,
+  "chars": 15,
+  "echo_found": true,
+  "turn_cut_line": 1,
+  "turn_chars": 15,
+  "hc_read": {
+   "complete": true,
+   "how": "screen",
+   "why": null
+  },
+  "complete": true,
+  "complete_reason": [],
+  "anchor_found": true,
+  "run_record": "<TMP>/.loop/runs/snap-revive-1.md",
+  "raw_record": "<TMP>/.loop/runs/snap-revive-1.raw.md",
+  "turn_record": "<TMP>/.loop/runs/snap-revive-1.turn.md",
+  "rewritten": {},
+  "reply_chars": 15,
+  "reply_bad_lines": 0,
+  "done_at": "<TS>"
+ },
+ "phase_sequence": [
+  "launch_sending",
+  "launch_waiting_agent",
+  "naming",
+  "naming_done",
+  "sent_waiting",
+  "done"
+ ],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "app status",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "app ls",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "hc send",
+   "phase": "launch_sending",
+   "changes": {
+    "release_id": "snap-revive-1",
+    "task_name": "loop-2e357f3e",
+    "target": "claude-matt-loop",
+    "prompt_path": "<TMP>/prompt.md",
+    "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+    "anchor": "请实现某个功能",
+    "reset": "none",
+    "target_model": null,
+    "launch": "claude --dangerously-skip-permissions",
+    "cwd": "/proj",
+    "display_name": "LoopEng_测试任务",
+    "space": "main",
+    "rebuild": false,
+    "target_address": "t50",
+    "workspace": "adopted",
+    "params": {
+     "wall_clock": 5.0,
+     "check_in": 1.0,
+     "settle_seconds": 0.01,
+     "settle_checks": 2,
+     "lines": 1000,
+     "extract_timeout": 1200.0,
+     "extract_backend": "pi"
+    },
+    "phase": "launch_sending",
+    "created_at": "<TS>"
+   }
+  },
+  {
+   "command": "hc get",
+   "phase": "launch_waiting_agent",
+   "changes": {
+    "phase": "launch_waiting_agent",
+    "launch_sent": true,
+    "launch_send": {
+     "turn": 7
+    }
+   }
+  },
+  {
+   "command": "app ls",
+   "phase": "naming",
+   "changes": {
+    "phase": "naming",
+    "launch_done_at": "<TS>"
+   }
+  },
+  {
+   "command": "app do tab.rename",
+   "phase": "naming",
+   "changes": {}
+  },
+  {
+   "command": "app ls",
+   "phase": "naming",
+   "changes": {}
+  },
+  {
+   "command": "hc send",
+   "phase": "naming_done",
+   "changes": {
+    "phase": "naming_done",
+    "naming_done_at": "<TS>"
+   }
+  },
+  {
+   "command": "hc wait",
+   "phase": "sent_waiting",
+   "changes": {
+    "phase": "sent_waiting",
+    "sent_at": "<TS>",
+    "send": {
+     "turn": 7
+    },
+    "resent": false
+   }
+  },
+  {
+   "command": "hc get",
+   "phase": "sent_waiting",
+   "changes": {}
+  },
+  {
+   "command": "hc get",
+   "phase": "sent_waiting",
+   "changes": {}
+  },
+  {
+   "command": "hc read",
+   "phase": "sent_waiting",
+   "changes": {}
+  }
+ ]
+}

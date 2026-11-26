@@ -8,16 +8,17 @@ dispatch.extract 经 harness 残留洞吸收密闭跑）。断言只认 rc、std
 落盘产物（sequences/pending/cases/stats）与请求体。
 覆盖：
   纯机械：parse_actual_skill / classify / project_next_skill 边界。
-  只读 space 解析：三态（不建空间）——resolve_space_id_for_learning 读模块级 app_json
-    （残留洞，harness 作用域吸收），直调探针无法注入；CLI 缝重述：学习开启时 --space
-    的解析结果落进 sequences.json 的 space 键（解析出）或 learning_warning.space_id_missing
-    （未解析出），并核对假世界日志无 space.new（只读）。
+  只读 space 解析：三态（不建空间）——⑤ 接线后 learning_prepare 的回调经网关
+    layout() 只读投影，学习开启时 --space 的解析结果落进 sequences.json 的 space 键
+    （解析出）或 learning_warning.space_id_missing（未解析出），并核对假世界日志无
+    space.new（只读）。
   Store：待观察创建（含空）/结算判分/统计/孤儿/跨 space 排除/折叠标记排除（ADR-0019）/id 缺失/保留期/去重/
         few-shot 选取（纠错优先、同 target 优先、限量、预算少选不截断）/损坏降级/锁超时/权限。
   e2e：两轮结算反馈、抽取失败仍带反馈、发送前失败不消耗、few-shot 注入、off 关闭、
         存储故障降级不阻断、重置前置不进序列。
 
-T5d（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run；作用域 env 走 harness.scoped_env；
+T5d（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run；env 走 Deps.env（⑤ 收口后
+learning.enabled/learning_dir 均吃注入 env，不再作用域改写 os.environ）；
 R（#104）：共享常量与 api_env/FakeResp 迁 helpers 单一出处（EXT 经 EXT5 别名）；
 _world(screen=None)/_space_world 变体留本地。
 """
@@ -36,11 +37,6 @@ from helpers import SCREEN, api_env, FakeResp
 from helpers import EXT5 as EXT   # 五字段旧形状（helpers 单一出处）
 
 CAND = learning.NEXT_SKILL_CANDIDATES
-
-
-def learning_env(directory, **kw):
-    """作用域 env（经 harness.scoped_env，退出无条件恢复）：学习 on＋api 后端配置。"""
-    return harness.scoped_env(api_env(LOOP_LEARNING="on", LOOP_LEARNING_DIR=str(directory), **kw))
 
 
 def _world(screen=None):
@@ -369,12 +365,11 @@ def main():
         assert (store4.pending_path.stat().st_mode & 0o777) == 0o600
         print("10 store: corrupt degrade / lock timeout / perms 0700-0600 ok")
 
-    # ---- enabled() ----
-    with learning_env(Path("/tmp/unused")):
-        assert learning.enabled() is True
-    with harness.scoped_env({"LOOP_LEARNING": "off"}):
-        assert learning.enabled() is False
-    print("11 enabled(): off disables, other values enable ok")
+    # ---- enabled(env)：⑤ 收口后吃注入 env，不直读 os.environ ----
+    assert learning.enabled({"LOOP_LEARNING": "on"}) is True
+    assert learning.enabled({"LOOP_LEARNING": "off"}) is False
+    assert learning.enabled({}) is True
+    print("11 enabled(env): off disables, other values enable ok")
 
     # ---- 冷启动：首轮（序列仅含本轮）不注入，prompt 不变；第二轮才注入序列 ----
     with tempfile.TemporaryDirectory() as td:
@@ -498,6 +493,40 @@ def main():
         events = seqs["sp1"]["t99"]
         assert len(events) == 1 and events[0]["skill"] == "plain_text", events
         print("16 e2e: reset pre-step not in sequence, main first-line is ground truth ok")
+
+    # ---- 锁不跨抽取（ADR-0012 / ADR-0023 决定 7）：假 extract 被调时对 .lock
+    #      做一次非阻塞 flock 必须立刻拿到（真实文件锁，不虚拟化）。能拿到＝
+    #      settle/inject 的短临界区在抽取前已释放、record 的锁在抽取后才开。
+    with tempfile.TemporaryDirectory() as td:
+        ldir = Path(td) / "learn"
+        probed = []
+
+        def probe_extract(deps, request, turn_path, injection):
+            lock_path = ldir / ".lock"
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # 拿不到抛 BlockingIOError
+                probed.append("acquired")
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
+            return harness.pipeline.Extraction(
+                fields={k: v for k, v in EXT.items() if k != "reply"},
+                reply=EXT["reply"], next_skill_invalid=False)
+
+        pf = Path(td) / "probe.txt"
+        pf.write_text("请实现功能", encoding="utf-8")
+        r = harness.run(
+            ["--target", "t99", "--release-id", "lock1", "--prompt-file", str(pf),
+             "--loop-dir", str(Path(td) / ".loop"), "--space", "main",
+             "--wall-clock", "5", "--check-in", "1", "--settle-seconds", "0.01",
+             "--settle-checks", "2"],
+            world=_world(),
+            env=api_env(LOOP_LEARNING="on", LOOP_LEARNING_DIR=str(ldir)),
+            extract=probe_extract)
+        assert r.rc == 0 and r.result["ok"], r.result
+        assert probed == ["acquired"], probed
+    print("17 lock not held across extract: non-blocking flock acquired in extract ok")
 
     print("ALL LEARNING TESTS PASSED")
 

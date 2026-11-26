@@ -1,0 +1,16 @@
+{
+ "scenario": "static_launch_required",
+ "rc": 2,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-launch-req-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_required\", \"message\": \"目标会话不存在或已死，创建需要 --launch（＋--cwd）\", \"hints\": [\"补 --launch <shell 启动命令> --cwd <目录> 后用同一放行 id 重试（零发送、id 不消耗）\", \"创建参数（会话名、启动命令、cwd、显示名）须随放行一并贴出，见 SKILL.md\"]}, \"task_name\": \"loop-c7729832\", \"extract_backend\": \"pi\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-launch-req-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_required\", \"message\": \"目标会话不存在或已死，创建需要 --launch（＋--cwd）\", \"hints\": [\"补 --launch <shell 启动命令> --cwd <目录> 后用同一放行 id 重试（零发送、id 不消耗）\", \"创建参数（会话名、启动命令、cwd、显示名）须随放行一并贴出，见 SKILL.md\"]}, \"task_name\": \"loop-c7729832\", \"extract_backend\": \"pi\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-launch-req-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_required\", \"message\": \"目标会话不存在或已死，创建需要 --launch（＋--cwd）\", \"hints\": [\"补 --launch <shell 启动命令> --cwd <目录> 后用同一放行 id 重试（零发送、id 不消耗）\", \"创建参数（会话名、启动命令、cwd、显示名）须随放行一并贴出，见 SKILL.md\"]}, \"task_name\": \"loop-c7729832\", \"extract_backend\": \"pi\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  }
+ ]
+}

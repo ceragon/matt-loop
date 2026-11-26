@@ -34,7 +34,7 @@ from unittest import mock
 import harness
 from harness import dispatch
 from fake_herdr import FakeHerdr
-from helpers import PROMPT, SCREEN
+from helpers import PROMPT, SCREEN, extraction
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -119,7 +119,7 @@ def run_round(rid, ext=None, opener=None, env_on=True, extra_argv=(), w=None, ho
             argv, world=w if w is not None else _world(),
             env={"LOOP_WEBHOOK_URL": URL if env_on else None,
                  "LOOP_WEBHOOK_SECRET": SECRET if env_on else None},
-            extract=lambda pi_bin, args, raw: dict(ext if ext is not None else EXT),
+            extract=lambda deps, request, turn_path, injection: extraction(ext if ext is not None else EXT),
             http_open=opener,
             proxy_resolution=proxy_res if proxy_res is not None else (lambda url: ({}, "none")),
             clock=clock)

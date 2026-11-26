@@ -4,6 +4,44 @@ status: accepted
 
 # herdr 领域网关：封装命令字面量，seam 不动
 
+> 补记（#113 G3 在途裁决，用户批准）：`focus` 与 `discard_shell_tabs` 增加**加性**
+> 参数，默认行为不变：
+> - `focus(space, *, original=<sentinel>)`：调用方若已为策略/复核读过当前选中
+>   （基线 `adopt` 的 A/D 句），传入即跳过 `__enter__` 内部那次 `selected_space()`
+>   （一条 `app status`），直接 select＋复核；该值同时作还原目标。不传（哨兵）时
+>   内部自读，行为与既有完全一致。`original=None` 是合法值（无选中空间），故用
+>   哨兵区分「未传」与「传 None」。进入复核不符时，还原结局也挂到 `cm.restore`
+>   （此前只还原不保留结局），供管线按现行落点记账。
+> - `keep()` 的回执 `Placement` 带上落地那次 `Layout`；`discard_shell_tabs(...,
+>   *, layout=None)` 传入即复用该树、不再内部自读 `ls`，不传时行为不变。
+> - `discard_shell_tabs` 改为**生成器**（原返回列表）：每条 warning 在其发生点
+>   （该条失败命令之后、下一条清理命令之前）yield，管线在 for 循环体里逐条
+>   `gift_warning` 立即落盘再推进。基线 `gift_warning` 是「每条告警立即写 ctx＋
+>   台账＋原子落盘」，与 `tab.close`/轮询/`rm` 命令交错；整体返回后统一补写会
+>   延后写点（同一 tab 多地址逐条 rm 失败、多 tab 清理的中间态告警会丢取证）。
+>   生成器让写点回到每条告警的发生点，网关仍对台账失明（决定 7）。消费形态
+>   （for 循环逐条落盘）是契约的一部分，P3/journal 不得改回列表。
+>
+> 动因：命令序列与台账写入时序是冻结契约。网关内部自读会让 `adopt` 多发命令，
+> 且把基线「读 original（D 句）→ 写 `space_selected`/`phase=space_selecting` →
+> select」之间那条台账写点的缝吞掉；`discard_shell_tabs` 再自读一棵树也会多一条
+> `app ls`（基线复用 keep 落地轮询的 `ls2`）。这些都被 S 快照与既有 main 级测试
+> 逐字钉死。加性参数让管线把早先读到的事实传回网关，网关的「恒还原」护栏与
+> 领域语义不变，外部 kind/文案/台账/命令序列逐字保留。用户已批准（#113 G3 在途
+> 裁决）。
+
+> 补记（#113 G2 在途裁决）：决定 5 把「`--if idle` 被拒且 done 才补发一次」收进
+> `send`，与决定 7「台账内容与写入时序不变」冲突——基线 `do_send` 在两次 `hc get`
+> 复核之间落盘 `phase="resending"`＋`first_refusal`，单操作收编必吞这个中间态。
+> 按决定 8「宁可多一个操作，不在单个操作内部吞掉一个台账 phase」，拆成两个操作：
+> `send(target, text, guard)` 到「被拒且第一次复核为 done」即返回回执
+> （`first_refusal` 非空、`raw` 为空），**不在操作内部补发**；`resend(target, text)`
+> 做第二次复核（非 live 或非 idle/done 抛 `StatusMismatch`，
+> stage=`refused_before_resend`）＋裸 send。台账写入由管线在两个操作之间完成，
+> 外部 kind、文案、hints、`first_refusal` 内容逐字不变。用户已批准此新决定
+> （#113 在途裁决）。Considered Options 中「按决定 8 切分后没有哪个台账写入需要
+> 发生在单个操作内部」的前提被本次实施证伪，予以订正。
+
 > 补记（ADR-0020，#75）：决定 1 里「`main` 内部用 `Herdr(deps)` 构造」改为由 `run`
 > 构造（`main` 退成薄壳，不碰网关）；「交接：一轮管线」七项均已关闭，落点见 ADR-0020
 > 决定 7（领养策略、`parse_space` 复用）、决定 8（等待循环）、决定 11（失败到外部 kind
@@ -173,6 +211,8 @@ adapter（真进程与 `FakeHerdr`），并经 ADR-0016 验证。把 seam 上移
   比统一 `None` 更不易出错。
 - **网关收 `progress` 回调、直接写台账**：否——台账收敛归候选④，网关不预支其形状；
   且按决定 8 切分后没有哪个台账写入需要发生在单个操作内部。
+  （后半句已被 #113 G2 在途裁决证伪并订正：`send` 的补发必须拆成两个操作，台账
+  写入发生在两次复核之间——见顶部补记。）
 - **`select` 与 `restore` 两个显式操作**：否——「恒还原」交给调用方写 `finally` 等于把
   不变量重新泄漏出去。
 - **故障键改成领域操作名**：否——见「对 ADR-0016 的修订」。

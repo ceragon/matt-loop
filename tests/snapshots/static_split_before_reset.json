@@ -1,0 +1,10 @@
+{
+ "scenario": "static_split_before_reset",
+ "rc": 2,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-split-1\", \"target\": \"t99\", \"error\": {\"kind\": \"split_required\", \"message\": \"提示词第 1 行调用会话起始 skill /wayfinder，含内部换行（尾部换行不算）：Claude Code 折叠超体积/多行粘贴致 slash 命令不展开，命令行必须单独单行一轮\", \"hints\": [\"改提示词文件为单行命令（只带短参数）后用同一放行 id 重试（零发送、id 不消耗）\", \"长正文请用户重新放行、新 id 下一轮发；纪律与证据见 SKILL.md「会话起始 skill」（ADR-0017）\"]}, \"task_name\": \"loop-e9be9170\", \"extract_backend\": \"pi\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-split-1\", \"target\": \"t99\", \"error\": {\"kind\": \"split_required\", \"message\": \"提示词第 1 行调用会话起始 skill /wayfinder，含内部换行（尾部换行不算）：Claude Code 折叠超体积/多行粘贴致 slash 命令不展开，命令行必须单独单行一轮\", \"hints\": [\"改提示词文件为单行命令（只带短参数）后用同一放行 id 重试（零发送、id 不消耗）\", \"长正文请用户重新放行、新 id 下一轮发；纪律与证据见 SKILL.md「会话起始 skill」（ADR-0017）\"]}, \"task_name\": \"loop-e9be9170\", \"extract_backend\": \"pi\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-split-1\", \"target\": \"t99\", \"error\": {\"kind\": \"split_required\", \"message\": \"提示词第 1 行调用会话起始 skill /wayfinder，含内部换行（尾部换行不算）：Claude Code 折叠超体积/多行粘贴致 slash 命令不展开，命令行必须单独单行一轮\", \"hints\": [\"改提示词文件为单行命令（只带短参数）后用同一放行 id 重试（零发送、id 不消耗）\", \"长正文请用户重新放行、新 id 下一轮发；纪律与证据见 SKILL.md「会话起始 skill」（ADR-0017）\"]}, \"task_name\": \"loop-e9be9170\", \"extract_backend\": \"pi\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": []
+}

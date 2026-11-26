@@ -23,7 +23,7 @@ proxy_resolution / clock 注入，断言只认 rc、stdout JSON、result.json �
 T5c（ADR-0021，#99）：9–13 原 send_webhook 直调上移 CLI 缝（完整轮＋flaky http_open＋
 经既有 clock= 参数自带记录时钟，滤掉落定静置前缀后退避子序列精确对照，原全序列断言等强）。
 14 是 build_opener 单元探针（测真实 webhook_open 适配器本身），保留直调；替换手法改对
-宿主模块 urllib.request 的作用域 mock.patch.object＋harness.scoped_env，退出无条件恢复
+宿主模块 urllib.request 的作用域 mock.patch.object，退出无条件恢复
 （ADR-0016 决定 7 残留洞纪律）。R（#104）：共享常量与 world 构造器迁 helpers 单一出处；FakeResp（b"ok" 版）留本地。
 """
 import json
@@ -36,7 +36,7 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from helpers import PROMPT, EXT, world
+from helpers import PROMPT, EXT, world, extraction
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -86,7 +86,7 @@ def run_round(rid, opener, *, env=(URL, SECRET), w=None, proxy_res=None,
         return harness.run(
             argv, world=w if w is not None else world(),
             env={"LOOP_WEBHOOK_URL": env[0], "LOOP_WEBHOOK_SECRET": env[1]},
-            extract=lambda pi_bin, args, raw: dict(EXT),
+            extract=lambda deps, request, turn_path, injection: extraction(EXT),
             http_open=opener,
             proxy_resolution=proxy_res if proxy_res is not None else (lambda url: ({}, "none")),
             clock=clock)
@@ -310,7 +310,7 @@ def main():
     assert len(posted) == 4 and [p[2] for p in posted] == [proxy, proxy, proxy, {}], posted
     print("13 proxy + direct both fail: primary detail preserved + attempts/fallback fields ok")
 
-    # 14 webhook_open(..., {}) 即使环境设了 HTTPS_PROXY 也强制 ProxyHandler({}) 跳过代理
+    # 14 webhook_open(..., {}) 传空 proxies 时构造 ProxyHandler({}) 强制直连（不回退读环境）
     #   （单元探针：测真实 webhook_open 适配器本身；对宿主模块作用域替换，退出恢复）
     built = []
 
@@ -322,14 +322,13 @@ def main():
         built.append(handlers)
         return FakeOpener()
 
-    with harness.scoped_env({"HTTPS_PROXY": "http://envproxy.corp:8080"}), \
-         mock.patch.object(urllib.request, "build_opener", capture_build):
+    with mock.patch.object(urllib.request, "build_opener", capture_build):
         req = urllib.request.Request(URL, data=b"{}", method="POST")
         dispatch.webhook_open(req, 5.0, {})
         assert len(built) == 1 and len(built[0]) == 1
         assert isinstance(built[0][0], urllib.request.ProxyHandler)
         assert built[0][0].proxies == {}, built[0][0].proxies
-    print("14 webhook_open(..., {}) builds ProxyHandler({}) ignoring HTTPS_PROXY env ok")
+    print("14 webhook_open(..., {}) builds ProxyHandler({}) forcing direct ok")
 
     print("all webhook tests passed")
 

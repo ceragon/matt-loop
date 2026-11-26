@@ -1,0 +1,116 @@
+{
+ "scenario": "native_kind_wait_get",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-native-wait-1\", \"target\": \"t99\", \"error\": {\"kind\": \"unavailable\", \"message\": \"get refused（故障旋钮）\", \"hints\": [], \"elapsed_s\": 0.0}, \"task_name\": \"loop-6110c52c\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-native-wait-1\", \"target\": \"t99\", \"error\": {\"kind\": \"unavailable\", \"message\": \"get refused（故障旋钮）\", \"hints\": [], \"elapsed_s\": 0.0}, \"task_name\": \"loop-6110c52c\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-native-wait-1\", \"target\": \"t99\", \"error\": {\"kind\": \"unavailable\", \"message\": \"get refused（故障旋钮）\", \"hints\": [], \"elapsed_s\": 0.0}, \"task_name\": \"loop-6110c52c\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\"}",
+ "ledger_final": {
+  "release_id": "snap-native-wait-1",
+  "task_name": "loop-6110c52c",
+  "target": "t99",
+  "prompt_path": "<TMP>/prompt.md",
+  "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+  "anchor": "请实现某个功能",
+  "reset": "none",
+  "target_model": null,
+  "launch": null,
+  "cwd": null,
+  "display_name": null,
+  "space": "main",
+  "rebuild": false,
+  "target_address": "t99",
+  "workspace": "adopted",
+  "params": {
+   "wall_clock": 5.0,
+   "check_in": 1.0,
+   "settle_seconds": 0.01,
+   "settle_checks": 2,
+   "lines": 1000,
+   "extract_timeout": 1200.0,
+   "extract_backend": "pi"
+  },
+  "phase": "error:unavailable",
+  "created_at": "<TS>",
+  "sent_at": "<TS>",
+  "send": {
+   "turn": 5
+  },
+  "resent": false,
+  "error": {
+   "kind": "unavailable",
+   "message": "get refused（故障旋钮）"
+  },
+  "failed_at": "<TS>"
+ },
+ "phase_sequence": [
+  "sending",
+  "sent_waiting",
+  "error:unavailable"
+ ],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "app status",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "app ls",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "hc send",
+   "phase": "sending",
+   "changes": {
+    "release_id": "snap-native-wait-1",
+    "task_name": "loop-6110c52c",
+    "target": "t99",
+    "prompt_path": "<TMP>/prompt.md",
+    "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+    "anchor": "请实现某个功能",
+    "reset": "none",
+    "target_model": null,
+    "launch": null,
+    "cwd": null,
+    "display_name": null,
+    "space": "main",
+    "rebuild": false,
+    "target_address": "t99",
+    "workspace": "adopted",
+    "params": {
+     "wall_clock": 5.0,
+     "check_in": 1.0,
+     "settle_seconds": 0.01,
+     "settle_checks": 2,
+     "lines": 1000,
+     "extract_timeout": 1200.0,
+     "extract_backend": "pi"
+    },
+    "phase": "sending",
+    "created_at": "<TS>"
+   }
+  },
+  {
+   "command": "hc wait",
+   "phase": "sent_waiting",
+   "changes": {
+    "phase": "sent_waiting",
+    "sent_at": "<TS>",
+    "send": {
+     "turn": 5
+    },
+    "resent": false
+   }
+  },
+  {
+   "command": "hc get",
+   "phase": "sent_waiting",
+   "changes": {}
+  }
+ ]
+}

@@ -1,0 +1,16 @@
+{
+ "scenario": "occupied_reported",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-occupied-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"session_occupied\", \"message\": \"会话名 claude-matt-loop 被占用：t60 前台=grok turn=3 状态=idle（无 loop 标签，拒收编）\", \"hints\": [\"呈报占位者给用户；确需重建须经用户显式授权后带 --rebuild（只杀 idle/done）\", \"或换 --target 到另一命名会话；不建不 kill、零发送、id 不消耗\"]}, \"task_name\": \"loop-01587adc\", \"extract_backend\": \"pi\", \"target_address\": \"t60\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-occupied-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"session_occupied\", \"message\": \"会话名 claude-matt-loop 被占用：t60 前台=grok turn=3 状态=idle（无 loop 标签，拒收编）\", \"hints\": [\"呈报占位者给用户；确需重建须经用户显式授权后带 --rebuild（只杀 idle/done）\", \"或换 --target 到另一命名会话；不建不 kill、零发送、id 不消耗\"]}, \"task_name\": \"loop-01587adc\", \"extract_backend\": \"pi\", \"target_address\": \"t60\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-occupied-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"session_occupied\", \"message\": \"会话名 claude-matt-loop 被占用：t60 前台=grok turn=3 状态=idle（无 loop 标签，拒收编）\", \"hints\": [\"呈报占位者给用户；确需重建须经用户显式授权后带 --rebuild（只杀 idle/done）\", \"或换 --target 到另一命名会话；不建不 kill、零发送、id 不消耗\"]}, \"task_name\": \"loop-01587adc\", \"extract_backend\": \"pi\", \"target_address\": \"t60\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  }
+ ]
+}

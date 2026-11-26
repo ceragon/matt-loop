@@ -1,0 +1,16 @@
+{
+ "scenario": "rebuild_misuse",
+ "rc": 2,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-rebuild-misuse-1\", \"target\": \"t99\", \"error\": {\"kind\": \"bad_args\", \"message\": \"--target t99 不是合法会话名（1–32 位 a-z0-9-_），无法创建\", \"hints\": [\"--target 推荐传会话名（<kind>-<repo> 或 bot slug）；t 号是保留地址、不能作名字\"]}, \"task_name\": \"loop-4abe49b4\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-rebuild-misuse-1\", \"target\": \"t99\", \"error\": {\"kind\": \"bad_args\", \"message\": \"--target t99 不是合法会话名（1–32 位 a-z0-9-_），无法创建\", \"hints\": [\"--target 推荐传会话名（<kind>-<repo> 或 bot slug）；t 号是保留地址、不能作名字\"]}, \"task_name\": \"loop-4abe49b4\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-rebuild-misuse-1\", \"target\": \"t99\", \"error\": {\"kind\": \"bad_args\", \"message\": \"--target t99 不是合法会话名（1–32 位 a-z0-9-_），无法创建\", \"hints\": [\"--target 推荐传会话名（<kind>-<repo> 或 bot slug）；t 号是保留地址、不能作名字\"]}, \"task_name\": \"loop-4abe49b4\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  }
+ ]
+}

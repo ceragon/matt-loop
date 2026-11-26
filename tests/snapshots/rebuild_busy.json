@@ -1,0 +1,16 @@
+{
+ "scenario": "rebuild_busy",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-rebuild-busy-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"rebuild_busy\", \"message\": \"占位者状态是 working，不是 idle/done，拒杀\", \"hints\": [\"等占位者落定或请用户到屏幕前处理；kill 只在 idle/done 时执行\"]}, \"task_name\": \"loop-562f12c8\", \"extract_backend\": \"pi\", \"target_address\": \"t60\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-rebuild-busy-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"rebuild_busy\", \"message\": \"占位者状态是 working，不是 idle/done，拒杀\", \"hints\": [\"等占位者落定或请用户到屏幕前处理；kill 只在 idle/done 时执行\"]}, \"task_name\": \"loop-562f12c8\", \"extract_backend\": \"pi\", \"target_address\": \"t60\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-rebuild-busy-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"rebuild_busy\", \"message\": \"占位者状态是 working，不是 idle/done，拒杀\", \"hints\": [\"等占位者落定或请用户到屏幕前处理；kill 只在 idle/done 时执行\"]}, \"task_name\": \"loop-562f12c8\", \"extract_backend\": \"pi\", \"target_address\": \"t60\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  }
+ ]
+}
