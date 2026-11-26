@@ -56,6 +56,55 @@ DISPLAY_NAME_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 # 输出层失败（run_cmd 的 missing_tool/tool_timeout 与 hc_json 的 hc_output）原样穿透。
 # 网关把这些也收进 HerdrFailure，这里按 kind 恢复逐字穿透（G2，ADR-0018 决定 9）。
 _HC_PASSTHROUGH_KINDS = frozenset({"missing_tool", "tool_timeout", "hc_output"})
+
+
+# ---------------------------------------------------------------- 失败映射小表
+
+
+# 同一网关操作在不同阶段映射到不同外部 kind（ADR-0020 决定 11）：不做全局大表，
+# 每个阶段就近放一张小规则表，全管线共用 translate 拼文案，保证 .kind、hints 与现状
+# 逐字一致。规则按 (op, stage) 匹配；stage=ANY_STAGE 是该表兜底；kind=None 是显式
+# PASS（原样重抛，而不是漏写）。
+ANY_STAGE = "*"
+
+
+@dataclass(frozen=True)
+class Rule:
+    """一条失败映射规则：网关失败 → 外部 kind＋文案前缀/后缀＋附加 hints。"""
+
+    op: str
+    stage: str | None
+    kind: str | None = None        # 外部 kind；None 表示 PASS
+    prefix: str = ""               # 文案前缀（可含 {kind}）
+    suffix: str = ""
+    hints: tuple = ()
+    match_kind: str | None = None  # 只在该原生 kind 上生效；否则继续下一条
+
+
+def translate(failure, rules):
+    """按规则表把网关失败映射成外部 DispatchError（ADR-0020 决定 11）。
+
+    未命中任何规则、命中 PASS、或 hc 源进程层失败（missing_tool/tool_timeout/
+    hc_output）时原样重抛——与基线 `_HC_PASSTHROUGH_KINDS` 守卫逐字一致；app 源
+    不套这条（基线领养/命名从不放过进程层 kind）。
+    """
+    for rule in rules:
+        if rule.op != failure.op:
+            continue
+        if rule.stage != ANY_STAGE and rule.stage != failure.stage:
+            continue
+        if rule.match_kind is not None and failure.kind != rule.match_kind:
+            continue
+        if rule.kind is None:
+            raise failure
+        if failure.source == "hc" and failure.kind in _HC_PASSTHROUGH_KINDS:
+            raise failure
+        message = rule.prefix.format(kind=failure.kind) + failure.message + rule.suffix
+        return DispatchError(rule.kind, message,
+                             list(failure.hints) + list(rule.hints))
+    raise failure
+
+
 # 回读范围（ADR-0013）：台账 params 记录与网关同值。
 READ_LINES = 1000
 # 前置落定用短轮询而非 hc wait（/clear 可能不进 working）；working 时每 RESET_POLL_S 秒查一次。
@@ -183,7 +232,16 @@ class RunState:
         self.reset_sent = False
         self.model_sent = False
         self.learning_on = False
+        self.learning_store = None
+        self.learning_space_id = None
         self.error = None        # 顶层捕获的 DispatchError，供 project(False) 取
+        # 阶段间传递（ADR-0020 决定 5）：分流结果、落定会话、主任务 turn 基线、回读文本。
+        self.route = None
+        self.session = None
+        self.final = None
+        self.baseline = None
+        self.screen = None
+        self.turn_text = None
         # 成功载荷里的轮次标量（run 在 finish 前填）
         self.final_turn = None
         self.final_status = None
@@ -615,6 +673,22 @@ def dialog_error(session):
     )
 
 
+# await_result 阶段：wait_change 包装成 hc_failed；未包装的 get 是显式 PASS
+# （ADR-0020 决定 11 的第二处原生 kind 穿透）。
+_AWAIT_RESULT_RULES = (
+    Rule("wait_change", None, kind="hc_failed", prefix="hc wait 失败："),
+    Rule("session", None, kind=None),
+)
+
+
+def _await_session(herdr, target):
+    """await_result 里的 hc get：失败按原生 kind 穿透（显式 PASS 规则）。"""
+    try:
+        return herdr.session(target)
+    except HerdrFailure as e:
+        raise translate(e, _AWAIT_RESULT_RULES)
+
+
 def wait_for_result(deps, herdr, request, baseline, deadline):
     """hc wait 循环：状态变化即醒、到点 check-in、墙钟兜底。
     返回落定复核通过后的 Session。"""
@@ -630,9 +704,7 @@ def wait_for_result(deps, herdr, request, baseline, deadline):
         try:
             w = herdr.wait_change(request.target, t)
         except HerdrFailure as e:
-            if e.kind in _HC_PASSTHROUGH_KINDS:
-                raise
-            raise DispatchError("hc_failed", f"hc wait 失败：{e.message}", e.hints)
+            raise translate(e, _AWAIT_RESULT_RULES)
         if w.reason == "exit":
             raise DispatchError(
                 "target_exited",
@@ -649,7 +721,7 @@ def wait_for_result(deps, herdr, request, baseline, deadline):
             state = w.status
             if state == "blocked":
                 # 未包装的原生 kind 穿透（ADR-0018 决定 2/9）：get 失败按原 kind 抛出。
-                raise dialog_error(herdr.session(request.target))
+                raise dialog_error(_await_session(herdr, request.target))
             if state == "error":
                 raise DispatchError("target_error", "目标自报 error", ["到目标会话屏幕前查看"])
             if state in ("idle", "done") and (w.turn or 0) > baseline:
@@ -660,7 +732,7 @@ def wait_for_result(deps, herdr, request, baseline, deadline):
             # working、或 turn 未过基线：继续等
             continue
         # timeout（check-in）及其他 reason：用 hc get 兜底核对一次
-        g = herdr.session(request.target)
+        g = _await_session(herdr, request.target)
         if g.state != "live":
             raise DispatchError("target_exited", "目标终端已结束", ["hc get 查看 reason"])
         state = g.status_state
@@ -679,7 +751,7 @@ def settle(deps, herdr, request, wait_turn):
     状态仍 idle/done 且 turn 不变才算落定。回到 working 等则返回 None 继续等。"""
     for _ in range(request.timing.settle_checks):
         deps.sleep(request.timing.settle_seconds)
-        g = herdr.session(request.target)
+        g = _await_session(herdr, request.target)
         if g.state != "live":
             raise DispatchError("target_exited", "落定复核时目标终端已结束", [])
         state = g.status_state
@@ -692,6 +764,26 @@ def settle(deps, herdr, request, wait_turn):
     return g
 
 
+# send（首发）与 resend（补发）是两个网关操作（ADR-0018 决定 5/8 补记、在途裁决 07），
+# 各一张小表：首发 blocked → send_refused、其余 → hc_failed；复核 get 失败原生穿透；
+# 补发的第二次复核与裸发送归 resend 表。
+_SEND_RULES = (
+    Rule("send", "send", kind="send_refused", prefix="hc send 失败：",
+         hints=("未再发送；台账已记录本次尝试",), match_kind="blocked"),
+    Rule("send", "send", kind="hc_failed", prefix="hc send 失败：",
+         hints=("未再发送；台账已记录本次尝试",)),
+    Rule("send", "refused_not_done", kind="send_refused", match_kind="status_mismatch"),
+    Rule("send", "refused_not_done", kind=None),
+)
+_RESEND_RULES = (
+    Rule("send", "refused_before_resend", kind="send_refused",
+         match_kind="status_mismatch"),
+    Rule("send", "refused_before_resend", kind=None),
+    Rule("send", "resend", kind="send_refused", prefix="done 补发仍失败：",
+         hints=("本轮不再发送；台账已记录两次尝试",)),
+)
+
+
 def do_send(state, herdr, request, text):
     """--if idle 首发；被拒（status_mismatch）且 hc get 复核为 done 才补发一次。
     返回 (send, resent)。前置与主任务共用同一套发送护栏（裁定 6）：
@@ -702,17 +794,7 @@ def do_send(state, herdr, request, text):
     try:
         receipt = herdr.send(request.target, text, guard="idle")
     except HerdrFailure as e:
-        if e.stage == "send":
-            if e.kind in _HC_PASSTHROUGH_KINDS:
-                raise
-            kind = "send_refused" if e.kind == "blocked" else "hc_failed"
-            raise DispatchError(kind, f"hc send 失败：{e.message}",
-                                e.hints + ["未再发送；台账已记录本次尝试"])
-        if e.stage == "refused_not_done":
-            if e.kind != "status_mismatch":
-                raise       # 复核 get 失败：原生 kind 穿透
-            raise DispatchError("send_refused", e.message, e.hints)
-        raise
+        raise translate(e, _SEND_RULES)
     if receipt.first_refusal is None:
         return receipt.raw, False
     # 被拒且复核 done：先记账后补发（基线在两次 get 复核之间写盘）。
@@ -722,16 +804,7 @@ def do_send(state, herdr, request, text):
     try:
         resent = herdr.resend(request.target, text)
     except HerdrFailure as e:
-        if e.stage == "refused_before_resend":
-            if e.kind != "status_mismatch":
-                raise       # 第二次复核 get 失败：原生 kind 穿透
-            raise DispatchError("send_refused", e.message, e.hints)
-        if e.stage == "resend":
-            if e.kind in _HC_PASSTHROUGH_KINDS:
-                raise
-            raise DispatchError("send_refused", f"done 补发仍失败：{e.message}",
-                                e.hints + ["本轮不再发送；台账已记录两次尝试"])
-        raise
+        raise translate(e, _RESEND_RULES)
     return resent.raw, True
 
 
@@ -784,6 +857,15 @@ def wait_for_reset(deps, herdr, request, deadline):
         deps.sleep(RESET_POLL_S)  # working：短轮询
 
 
+# 等 shell / 等 agent 的 get 同是 (session, None)，文案不同，故各一张小表。
+_SHELL_READY_RULES = (
+    Rule("session", None, kind="launch_failed", prefix="等 shell 就绪时 hc get 失败："),
+)
+_AGENT_READY_RULES = (
+    Rule("session", None, kind="launch_failed", prefix="等 agent 就绪时 hc get 失败："),
+)
+
+
 def wait_for_shell_ready(deps, herdr, target, deadline):
     """创建后等 shell 就绪：短轮询 hc get 至 state live＋前台是 shell。
     刚 run 完名字可能短暂未解析（not_found 继续等）；终端结束/超时→launch_failed。"""
@@ -797,9 +879,7 @@ def wait_for_shell_ready(deps, herdr, target, deadline):
             deps.sleep(RESET_POLL_S)
             continue
         except HerdrFailure as e:
-            if e.kind in _HC_PASSTHROUGH_KINDS:
-                raise
-            raise DispatchError("launch_failed", f"等 shell 就绪时 hc get 失败：{e.message}", e.hints)
+            raise translate(e, _SHELL_READY_RULES)
         if g.state != "live":
             raise DispatchError("launch_failed", "新终端 shell 就绪前已结束",
                                 ["hc get 查看 reason；经用户放行后另起一轮"])
@@ -822,9 +902,7 @@ def wait_for_agent_ready(deps, herdr, target, deadline):
             raise DispatchError("launch_failed", "agent 启动期间终端已结束（名字失解析）",
                                 ["hc get 按 t 号查看 reason；经用户放行后另起一轮"])
         except HerdrFailure as e:
-            if e.kind in _HC_PASSTHROUGH_KINDS:
-                raise
-            raise DispatchError("launch_failed", f"等 agent 就绪时 hc get 失败：{e.message}", e.hints)
+            raise translate(e, _AGENT_READY_RULES)
         if g.state != "live":
             raise DispatchError("launch_failed", "agent 启动期间终端已结束",
                                 ["hc get 查看 reason；经用户放行后另起一轮"])
@@ -838,6 +916,13 @@ def wait_for_agent_ready(deps, herdr, target, deadline):
         deps.sleep(RESET_POLL_S)
 
 
+# 启动命令用裸 send（guard=None，stage=None）：外部 kind 是 launch_failed。
+_LAUNCH_SEND_RULES = (
+    Rule("send", None, kind="launch_failed", prefix="启动命令发送失败：",
+         hints=("主任务未发送；台账已记录本次尝试",)),
+)
+
+
 def send_launch_command(state, herdr, request):
     """启动前置发送（创建/复活共用）：shell 不是 agent、不报 idle，用裸 send（不带 --if）。
     启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽。
@@ -846,10 +931,7 @@ def send_launch_command(state, herdr, request):
     try:
         receipt = herdr.send(request.target, request.launch, guard=None)
     except HerdrFailure as e:
-        if e.kind in _HC_PASSTHROUGH_KINDS:
-            raise
-        raise DispatchError("launch_failed", f"启动命令发送失败：{e.message}",
-                            e.hints + ["主任务未发送；台账已记录本次尝试"])
+        raise translate(e, _LAUNCH_SEND_RULES)
     state.fact("launch_sent", True)
     state.phase("launch_waiting_agent", launch_sent=True, launch_send=receipt.raw)
 
@@ -864,6 +946,20 @@ def wait_launch_agent(state, herdr, request):
     state.phase("launch_done", launch_done_at=now_iso())
 
 
+# 创建命名会话（hc run）与打标签：两条网关操作各归各的 (op, stage)。
+_CREATE_RULES = (
+    Rule("create_session", "missing_address", kind="launch_failed"),
+    Rule("create_session", None, kind="launch_failed",
+         prefix="hc run 创建命名会话失败（{kind}）：",
+         hints=("同名 live 终端存在（name_taken）时不建不 kill；"
+                "经用户放行后另起一轮或改用既有会话",)),
+)
+_LABEL_RULES = (
+    Rule("label_session", None, kind="launch_failed", prefix="打 loop 标签失败：",
+         hints=("终端已建（launched:true）；无标签终端下轮会被拒收编",)),
+)
+
+
 def do_create(state, herdr, request):
     """创建前置（ADR-0009，单形态 shell 包装）：hc run --bg --keep --no-parent --name
     --cwd -- zsh -l→打 loop=1＋loop-agent=<expect-proc> 标签→等 shell 就绪→send 启动命令。
@@ -876,13 +972,7 @@ def do_create(state, herdr, request):
         # 终端退出/被杀不连带杀会话（die_with_parent 默认 true 会让会话活不过一轮），跨轮持久。
         created = herdr.create_session(request.target, request.cwd)
     except HerdrFailure as e:
-        if e.stage == "missing_address":
-            raise DispatchError("launch_failed", e.message, e.hints)
-        if e.kind in _HC_PASSTHROUGH_KINDS:
-            raise
-        raise DispatchError("launch_failed", f"hc run 创建命名会话失败（{e.kind}）：{e.message}",
-                            e.hints + ["同名 live 终端存在（name_taken）时不建不 kill；"
-                                       "经用户放行后另起一轮或改用既有会话"])
+        raise translate(e, _CREATE_RULES)
     addr = created.address
     state.fact("target_address", addr)
     state.fact("launched", True)
@@ -893,10 +983,7 @@ def do_create(state, herdr, request):
     try:
         herdr.label_session(request.target, labels)
     except HerdrFailure as e:
-        if e.kind in _HC_PASSTHROUGH_KINDS:
-            raise
-        raise DispatchError("launch_failed", f"打 loop 标签失败：{e.message}",
-                            e.hints + ["终端已建（launched:true）；无标签终端下轮会被拒收编"])
+        raise translate(e, _LABEL_RULES)
     state.phase("launch_waiting_shell")
     wait_for_shell_ready(state.deps, herdr, request.target,
                          state.deps.monotonic() + request.timing.wall_clock)
@@ -932,6 +1019,33 @@ def apply_display_name(state, herdr, address, display_name):
         state.phase(None, display_name_warning=warning)
     else:
         state.phase("naming_done", naming_done_at=now_iso())
+
+
+# 领养：网关 stage → 外部 adopt_reason（外部 kind 恒为 adopt_failed）。同一 (op, stage)
+# 在不同调用点文案不同，故按调用点分表；hints 由调用方换成 retry（基线如此）。
+_ADOPT_OPEN_RULES = (
+    Rule("selected_space", None, kind="app_closed",
+         prefix="herdr-app 没开或不可达，领养失败："),
+    Rule("layout", None, kind="app_closed", prefix="herdr-app ls 失败，领养失败："),
+)
+_ADOPT_CREATE_RULES = (
+    Rule("create_space", "missing_space", kind="keep_error"),
+    Rule("create_space", None, kind="keep_error", prefix="space.new 失败："),
+)
+_ADOPT_RECHECK_RULES = (
+    Rule("selected_space", None, kind="keep_error",
+         prefix="space.new 后 status 复核失败："),
+)
+_KEEP_RULES = (
+    Rule("keep", "keep_command", kind="keep_error", prefix="terminal.keep 失败："),
+    Rule("keep", "keep_poll", kind="app_closed", prefix="keep 后 herdr-app ls 失败："),
+    Rule("keep", "no_pane", kind="no_pane"),
+    Rule("keep", ANY_STAGE, kind="keep_error", prefix="terminal.keep 失败："),
+)
+_FOCUS_RULES = (
+    Rule("focus", "focus_select_mismatch", kind="select_error", suffix="，keep 未发"),
+    Rule("focus", ANY_STAGE, kind="select_error", prefix="space.select 失败："),
+)
 
 
 def adopt(state, herdr, address, precheck):
@@ -992,15 +1106,8 @@ def adopt(state, herdr, address, precheck):
         # 基线的外部 kind/文案。
         try:
             placement = herdr.keep(address, within=adopt_timeout, poll=adopt_poll)
-        except DispatchError as e:
-            stage = getattr(e, "stage", None)
-            if stage == "keep_command":
-                fail("keep_error", f"terminal.keep 失败：{e.message}", retry)
-            if stage == "keep_poll":
-                fail("app_closed", f"keep 后 herdr-app ls 失败：{e.message}", retry)
-            if stage == "no_pane":
-                fail("no_pane", e.message, retry)
-            fail("keep_error", f"terminal.keep 失败：{e.message}", retry)
+        except HerdrFailure as e:
+            fail_mapped(e, _KEEP_RULES)
         # pane 已经本轮 keep 落地即如实报（#46：后续任一步失败——清理/等就绪——
         # 都不再掩盖「已可见」这一部分状态）。
         state.fact("pane_adopted", True)
@@ -1019,15 +1126,20 @@ def adopt(state, herdr, address, precheck):
 
     retry = (["打开 herdr-app 后用同一放行 id 重试（零发送、id 未消耗）"] if precheck
              else ["已建终端保留；打开 herdr-app 后用新放行 id 重试，走既有路径补领养修复"])
+
+    def fail_mapped(failure, rules):
+        mapped = translate(failure, rules)
+        fail(mapped.kind, mapped.message, retry)
+
     state.phase("adopting")
     try:
         original_space = herdr.selected_space()
-    except DispatchError as e:
-        fail("app_closed", f"herdr-app 没开或不可达，领养失败：{e.message}", retry)
+    except HerdrFailure as e:
+        fail_mapped(e, _ADOPT_OPEN_RULES)
     try:
         layout = herdr.layout()
-    except DispatchError as e:
-        fail("app_closed", f"herdr-app ls 失败，领养失败：{e.message}", retry)
+    except HerdrFailure as e:
+        fail_mapped(e, _ADOPT_OPEN_RULES)
     if layout.placement(address) is not None:
         state.fact("workspace", "adopted")
         state.phase("adopt_done", workspace="adopted")
@@ -1053,18 +1165,16 @@ def adopt(state, herdr, address, precheck):
     if plan.kind == "create":
         try:
             space_target = herdr.create_space(plan.name, plan.folder)
-        except DispatchError as e:
-            if getattr(e, "stage", None) == "missing_space":
-                fail("keep_error", e.message, retry)
-            fail("keep_error", f"space.new 失败：{e.message}", retry)
+        except HerdrFailure as e:
+            fail_mapped(e, _ADOPT_CREATE_RULES)
         state.fact("space_created", True)
         state.phase(None, space_created=True)
         # 建后复核当前 shown：零空间时新空间即被显示（真实 app 语义），有空间时
         # focus:false 保持原 shown——目标==shown 则下面不 select。
         try:
             original_space = herdr.selected_space()
-        except DispatchError as e:
-            fail("keep_error", f"space.new 后 status 复核失败：{e.message}", retry)
+        except HerdrFailure as e:
+            fail_mapped(e, _ADOPT_RECHECK_RULES)
     # select 目标空间＋status 复核选中（命令成功不算数），不符即 select_error 停轮
     # （keep 不发，落点不会漂）。复核不符也先走还原护栏——select 可能已生效只是
     # 复核抖动，焦点不被留在目标空间。目标==当前 shown 不 select（不抢视图）。
@@ -1093,7 +1203,8 @@ def adopt(state, herdr, address, precheck):
                 if getattr(e, "stage", None) == "focus_select_mismatch":
                     record_restore(focus_cm)
                     restore_recorded = True
-                    fail("select_error", e.message + "，keep 未发", retry)
+                if isinstance(e, HerdrFailure):
+                    fail_mapped(e, _FOCUS_RULES)
                 fail("select_error", f"space.select 失败：{e.message}", retry)
         else:
             placement = keep_and_verify()
@@ -1136,38 +1247,32 @@ def io_failed_error(e, ledger_opened):
     return DispatchError("io_failed", f"本地 IO 失败（{type(e).__name__}）：{e}", hints)
 
 
-# ---------------------------------------------------------------- 一轮
+# ---------------------------------------------------------------- 一轮（15 阶段）
 
 
-def run(request, deps):
-    """跑完一轮，返回 Outcome；永不外抛 DispatchError（ADR-0020 决定 2）。
+@dataclass(frozen=True)
+class Admitted:
+    """admit 阶段产出：本轮提示词文本、首个非空行、锚点、sha 与三个落盘路径。"""
 
-    只捕 DispatchError；非预期异常照旧冒泡。中途本地 IO 的 OSError 顶层兜底
-    映射 io_failed（ADR-0024），走同一 error 出口。
+    text: str
+    nonempty: tuple
+    anchor: str
+    sha: str
+    prompt_path: Path
+    raw_path: Path
+    turn_path: Path
+    record_path: Path
+
+
+def admit(state):
+    """阶段 1 admit：全部静态闸，次序即契约（ADR-0020 决定 3）。
+
+    `--launch`/`--cwd` 成对 → 显示名机械校验 → `--space` 机械校验 →
+    结构与工具 → 抽取后端预检 → 放行 id → 任务名 → 提示词读取 → 锚点/sha →
+    路径构造 → duplicate_release → split_required。首个命中即停。
     """
-    state = RunState(request, deps)
-    try:
-        return _run(state)
-    except DispatchError as e:
-        return _error_outcome(state, e)
-    except OSError as e:
-        return _error_outcome(state, io_failed_error(e, state.ledger_opened))
-
-
-def _error_outcome(state, e):
-    """统一 error 出口：尽力写终态台账（Journal.fail 内部吞 OSError）、部分状态机械带出。"""
-    state.journal.fail(e.kind, e.message)
-    state.error = e
-    return Outcome(e.returncode, state.project(False), state.result_path, state.notify_path)
-
-
-def _run(state):
-    """一轮的直线编排；失败以 DispatchError 上抛，由 run 顶层统一转 error Outcome。"""
     request = state.request
     deps = state.deps
-    herdr = Herdr(deps)
-
-    # ---- admit：静态闸（次序即契约，ADR-0020 决定 3） ----
     # 创建参数成对校验（ADR-0009）：--launch 与 --cwd 同时必填、无默认。
     if bool(request.launch) != bool(request.cwd):
         raise DispatchError("bad_args", "--launch 与 --cwd 须同时传（创建参数成对、无默认）",
@@ -1253,25 +1358,57 @@ def _run(state):
                 ["改提示词文件为单行命令（只带短参数）后用同一放行 id 重试（零发送、id 不消耗）",
                  "长正文请用户重新放行、新 id 下一轮发；纪律与证据见 SKILL.md「会话起始 skill」（ADR-0017）"],
                 returncode=2)
-    deps.hc_bin = deps.locate("hc")
-    deps.pi_bin = deps.locate("pi") if state.backend == "pi" else None
-    if not deps.hc_bin:
+    return Admitted(text=text, nonempty=tuple(nonempty), anchor=anchor, sha=sha,
+                    prompt_path=prompt_path, raw_path=raw_path,
+                    turn_path=turn_path, record_path=record_path)
+
+
+# locate 阶段：非 NotFound 的 session 失败原样穿透（ADR-0020 决定 11 的第一处显式 PASS）。
+_LOCATE_RULES = (
+    Rule("session", None, kind=None),
+)
+
+
+def _require_tools(state, herdr):
+    """hc（及 pi 备选后端时的 pi）查找；missing_tool 先后与文案逐字不变。
+
+    网关 `require_hc` 的文案与基线不同；外部契约优先，这里保持基线的
+    message/hints（kind 仍是 missing_tool，不经 HerdrFailure 层级）。
+    """
+    deps = state.deps
+    try:
+        herdr.require_hc()
+    except DispatchError:
         raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 hc", [])
+    deps.pi_bin = deps.locate("pi") if state.backend == "pi" else None
     if state.backend == "pi" and not deps.pi_bin:
         raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 pi",
                             ["某些机器非交互 shell 的 PATH 里没有 node；"
                              "脚本已探 ~/.local/bin、homebrew、nvm node bin 仍未果"])
 
-    # ---- locate/分流（ADR-0009 / ADR-0020 决定 4） ----
+
+def locate(state, herdr):
+    """阶段 2 locate：工具查找 → hc get → classify → gate_route（分流只发生一次）。"""
+    request = state.request
+    _require_tools(state, herdr)
     try:
         g = herdr.session(request.target)
     except NotFound:
         g = None
+    except HerdrFailure as e:
+        raise translate(e, _LOCATE_RULES)   # 显式 PASS：原生 kind 原样外泄
     if g is not None and g.state == "live" and g.address:
         state.fact("target_address", g.address)
     route = classify(g, request)
     gate_route(route, g, request)
-    fresh = route.is_fresh
+    state.route = route
+    state.session = g
+
+
+def preflight(state, herdr):
+    """阶段 3 preflight：revive 与 existing 先做恒可见领养（台账未开）；existing 再核 idle。"""
+    request = state.request
+    route = state.route
     if route.is_fresh:
         if route is Route.revive:
             # 复活同样过预检 pane 闸（US26：app 没开时所有轮次停摆，无隐性例外）；
@@ -1281,8 +1418,8 @@ def _run(state):
         # 身份已在分流核过（identity_ok）。恒可见（ADR-0009）：既有路径每轮预检
         # （写台账前）核 pane，缺则补领养（park 等造成的可见性漂移自愈）；补不成→
         # adopt_failed，零发送、id 不消耗、同 id 重试。
-        adopt(state, herdr, g.address or request.target, True)
-        st = g.status_state
+        adopt(state, herdr, state.session.address or request.target, True)
+        st = state.session.status_state
         if st not in ("idle", "done"):
             raise DispatchError(
                 "not_idle",
@@ -1290,11 +1427,14 @@ def _run(state):
                 ["--if idle 只认 idle；等目标落定或请用户处理后再来"],
             )
 
-    # ---- discipline（ADR-0004）：会话起始 skill 须在空会话或重置后运行 ----
-    if request.reset == "none" and not fresh:
-        hit = find_session_start_trigger(text)
+
+def discipline(state, admitted):
+    """阶段 4 discipline（ADR-0004）：会话起始 skill 须在空会话或重置后运行。"""
+    request = state.request
+    if request.reset == "none" and not state.route.is_fresh:
+        hit = find_session_start_trigger(admitted.text)
         if hit is not None:
-            turn = g.turn
+            turn = state.session.turn
             is_fresh = isinstance(turn, int) and not isinstance(turn, bool) and turn == 0
             if not is_fresh:
                 skill, lineno = hit
@@ -1311,22 +1451,25 @@ def _run(state):
                      "清单与边界见 SKILL.md「会话起始 skill」；工作流出处 /ask-matt"],
                     returncode=2)
 
-    # ---- open_ledger：发送前再核文件未变，先记账后发送 ----
+
+def open_ledger(state, admitted):
+    """阶段 5 open_ledger：发送前再核文件未变，写首版台账（消耗放行 id 的唯一动作）。"""
+    request = state.request
     # 复核读失败映射既有 prompt_unreadable（ADR-0024）：提示词中途消失保持既有语义。
     try:
-        recheck = prompt_path.read_bytes()
+        recheck = admitted.prompt_path.read_bytes()
     except OSError as e:
         raise DispatchError("prompt_unreadable", f"读不到提示词文件：{e}", [])
-    if hashlib.sha256(recheck).hexdigest() != sha:
+    if hashlib.sha256(recheck).hexdigest() != admitted.sha:
         raise DispatchError("prompt_changed", "提示词文件在预检期间被改动，不发送", [])
     # Journal.open 是消耗放行 id 的唯一动作：runs 目录在 open 里建、首版落盘。
     state.journal.open({
         "release_id": request.release_id,
         "task_name": state.task_name,
         "target": request.target,
-        "prompt_path": str(prompt_path),
-        "prompt_sha256": sha,
-        "anchor": anchor,
+        "prompt_path": str(admitted.prompt_path),
+        "prompt_sha256": admitted.sha,
+        "anchor": admitted.anchor,
         "reset": request.reset,
         "target_model": request.target_model,
         "launch": request.launch,
@@ -1350,7 +1493,18 @@ def _run(state):
         "created_at": now_iso(),
     })
 
-    # ---- bring_up：Route 三选一 ----
+
+# 重建 kill 占位者。
+_KILL_RULES = (
+    Rule("kill", None, kind="launch_failed", prefix="重建 kill 占位者失败：",
+         hints=("占位者未死；本轮停止，经用户放行后另起一轮",)),
+)
+
+
+def bring_up(state, herdr):
+    """阶段 6 bring_up：Route 三选一（create/rebuild 前置链、revive 原地复活、existing 空）。"""
+    request = state.request
+    route = state.route
     if route in (Route.create, Route.rebuild):
         if route is Route.rebuild:
             # 强制重建（ADR-0009，用户显式授权）：只杀 idle/done 占位者（预检已核）。
@@ -1358,10 +1512,7 @@ def _run(state):
             try:
                 herdr.kill(request.target)
             except HerdrFailure as e:
-                if e.kind in _HC_PASSTHROUGH_KINDS:
-                    raise
-                raise DispatchError("launch_failed", f"重建 kill 占位者失败：{e.message}",
-                                    e.hints + ["占位者未死；本轮停止，经用户放行后另起一轮"])
+                raise translate(e, _KILL_RULES)
             state.fact("rebuilt", True)
             state.fact("rebuilt_old_target", state.facts.get("target_address"))
             state.phase(None, rebuilt=True,
@@ -1375,27 +1526,38 @@ def _run(state):
         send_launch_command(state, herdr, request)
         wait_launch_agent(state, herdr, request)
 
-    # ---- name_tab（ADR-0010）：领养复核 pane 落地后、前置/主任务发送前 ----
+
+def name_tab(state, herdr):
+    """阶段 7 name_tab（ADR-0010）：领养复核 pane 落地后、前置/主任务发送前。"""
+    request = state.request
     if request.display_name is not None:
         apply_display_name(state, herdr, state.facts.get("target_address"),
                            request.display_name)
 
-    # ---- learning_prepare（ADR-0012）：开启时只读把 --space 解析成 space id ----
+
+def learning_prepare(state, herdr):
+    """阶段 8 learning_prepare（ADR-0012）：开启时只读把 --space 解析成 space id。"""
+    request = state.request
+    deps = state.deps
     state.learning_on = learning.enabled(deps.env)
-    learning_store = None
-    learning_space_id = None
+    state.learning_store = None
+    state.learning_space_id = None
     if state.learning_on:
-        learning_store = learning.LearningStore()
+        state.learning_store = learning.LearningStore()
         herdr.require_app()
-        learning_space_id = resolve_space_id_for_learning(herdr, request.space)
-        if learning_space_id is None:
+        state.learning_space_id = resolve_space_id_for_learning(herdr, request.space)
+        if state.learning_space_id is None:
             state.fact("learning_warning", {
                 "reason": "space_id_missing",
                 "detail": "--space 未能只读解析出唯一 space id，本轮序列/案例/few-shot 禁用"},
                 ledger=False)
 
-    # ---- send_prestep（ADR-0020 决定 6）：重置 → 切模型 ----
-    plan = prestep_specs(request, route)
+
+def send_prestep(state, herdr):
+    """阶段 9 send_prestep（ADR-0020 决定 6）：重置 → 切模型（0 到 2 次发送）。"""
+    request = state.request
+    deps = state.deps
+    plan = prestep_specs(request, state.route)
     if plan.reset_skipped is not None:
         state.fact("reset_skipped", plan.reset_skipped)
         state.phase(None, reset_skipped=plan.reset_skipped)
@@ -1417,96 +1579,166 @@ def _run(state):
                            deps.monotonic() + request.timing.wall_clock)
             state.phase("model_done", model_done_at=now_iso())
 
-    # ---- send_main：墙钟从主任务发送成功起计，不重置 ----
+
+def send_main(state, herdr, admitted):
+    """阶段 10 send_main：墙钟从主任务发送成功起计，不重置。"""
+    deps = state.deps
+    request = state.request
     state.started = deps.monotonic()
-    send, resent = do_send(state, herdr, request, text)
-    baseline = send["turn"]
+    send, resent = do_send(state, herdr, request, admitted.text)
+    state.baseline = send["turn"]
     state.phase("sent_waiting", sent_at=now_iso(), send=send, resent=resent)
 
-    # ---- learning_settle（ADR-0012）：主任务发送成功后结算上一轮预测 ----
+
+def learning_settle(state, admitted):
+    """阶段 11 learning_settle（ADR-0012）：主任务发送成功后结算上一轮预测。"""
+    request = state.request
     if state.learning_on:
-        lr = learning_store.settle_and_record(request.target, request.release_id,
-                                              learning_space_id, nonempty[0])
+        lr = state.learning_store.settle_and_record(
+            request.target, request.release_id, state.learning_space_id,
+            admitted.nonempty[0])
         if lr.get("feedback") is not None:
             state.fact("next_skill_feedback", lr["feedback"], ledger=False)
         if lr.get("warning") is not None:
             state.fact("learning_warning", lr["warning"], ledger=False)
 
-    # ---- await_result ----
-    deadline = state.started + request.timing.wall_clock
-    final = wait_for_result(deps, herdr, request, baseline, deadline)
 
-    # ---- readback：回读＋断轮＋完整性检查 ----
+def await_result(state, herdr):
+    """阶段 12 await_result：hc wait 事件循环加落定复核。"""
+    request = state.request
+    deadline = state.started + request.timing.wall_clock
+    state.final = wait_for_result(state.deps, herdr, request, state.baseline, deadline)
+
+
+def readback(state, herdr, admitted):
+    """阶段 13 readback：回读＋断轮＋完整性检查，落盘 raw／turn。"""
+    request = state.request
+    deps = state.deps
     read = herdr.readback(request.target)
     screen = read.text
     # 锚点只作信息、不阻断（ADR-0013）。
-    anchor_found = verbatim_present(anchor, screen)
-    turn_text, echo_found, cut_line = cut_turn(screen, anchor)
-    reasons = ["fold_markers"] if fold_hits(turn_text, text) else []
+    anchor_found = verbatim_present(admitted.anchor, screen)
+    turn_text, echo_found, cut_line = cut_turn(screen, admitted.anchor)
+    reasons = ["fold_markers"] if fold_hits(turn_text, admitted.text) else []
     complete = not reasons
     elapsed = round(deps.monotonic() - state.started, 1)
-    raw_path.write_text(screen, encoding="utf-8", newline="")
-    turn_path.write_text(turn_text, encoding="utf-8", newline="")
+    admitted.raw_path.write_text(screen, encoding="utf-8", newline="")
+    admitted.turn_path.write_text(turn_text, encoding="utf-8", newline="")
+    state.screen = screen
+    state.turn_text = turn_text
+    state.complete = complete
+    state.complete_reason = reasons
+    state.anchor_found = anchor_found
+    state.elapsed = elapsed
+    state.chars = len(screen)
     state.phase(
         "read", read_at=now_iso(),
-        turn=final.turn, status=final.status_state,
+        turn=state.final.turn, status=state.final.status_state,
         elapsed_s=elapsed, chars=len(screen),
         echo_found=echo_found, turn_cut_line=cut_line, turn_chars=len(turn_text),
         hc_read={"complete": read.raw.get("complete"), "how": read.raw.get("how"),
                  "why": read.raw.get("why")},
         complete=complete, complete_reason=reasons, anchor_found=anchor_found,
-        run_record=str(raw_path), raw_record=str(raw_path), turn_record=str(turn_path),
+        run_record=str(admitted.raw_path), raw_record=str(admitted.raw_path),
+        turn_record=str(admitted.turn_path),
     )
 
-    # ---- extract_verify：裁剪＋抽取＋逐字校验 ----
+
+def extract_verify(state, admitted):
+    """阶段 14 extract_verify：裁剪＋抽取＋逐字校验；⑤ 在此注入并记录预测。"""
+    request = state.request
+    deps = state.deps
     state.phase("extracting")
     examples_used = 0
     sequence_used = False
     seq_snapshot = []
     injection = ""
     if state.learning_on:
-        inj = learning_store.build_injection(learning_space_id, request.target)
+        inj = state.learning_store.build_injection(state.learning_space_id, request.target)
         injection = inj.get("text", "")
         examples_used = inj.get("examples_used", 0)
         sequence_used = inj.get("sequence_used", False)
         seq_snapshot = inj.get("sequence", [])
         if inj.get("warning") is not None:
             state.fact("learning_warning", inj["warning"], ledger=False)
-    extraction = deps.extract(request, turn_path, injection)
+    extraction = deps.extract(request, admitted.turn_path, injection)
     reply = extraction.reply
     fields = extraction.fields
     # 逐字校验语料＝本轮原料（ADR-0013）：旧轮文本不参与通过判定。
-    rewritten = verify_extraction(fields, turn_text, turn_path, raw_path, state.backend)
-    bad_reply_lines = verify_reply(reply, turn_text)
+    rewritten = verify_extraction(fields, state.turn_text, admitted.turn_path,
+                                  admitted.raw_path, state.backend)
+    bad_reply_lines = verify_reply(reply, state.turn_text)
     if bad_reply_lines:
-        rewritten["reply"] = closest_fragment(bad_reply_lines[0], turn_text)
-    record_path.write_text(reply, encoding="utf-8", newline="")
+        rewritten["reply"] = closest_fragment(bad_reply_lines[0], state.turn_text)
+    admitted.record_path.write_text(reply, encoding="utf-8", newline="")
     state.fact("rewritten", rewritten)
-    state.fact("run_record", str(record_path))
+    state.fact("run_record", str(admitted.record_path))
     state.fact("reply_chars", len(reply))
     state.fact("reply_bad_lines", len(bad_reply_lines))
     # 创建待观察预测（ADR-0012）：每轮成功抽取都创建（含空预测）。
     if state.learning_on:
-        pr = learning_store.record_prediction(
-            request.target, request.release_id, learning_space_id,
+        pr = state.learning_store.record_prediction(
+            request.target, request.release_id, state.learning_space_id,
             fields.get("next_skill", ""), extraction.next_skill_invalid,
-            reply, seq_snapshot, examples_used, sequence_used, complete=complete)
+            reply, seq_snapshot, examples_used, sequence_used, complete=state.complete)
         if pr.get("warning") is not None:
             state.fact("learning_warning", pr["warning"], ledger=False)
-
-    # ---- finish ----
-    state.final_turn = final.turn
-    state.final_status = final.status_state
-    state.complete = complete
-    state.complete_reason = reasons
-    state.anchor_found = anchor_found
-    state.elapsed = elapsed
-    state.chars = len(screen)
-    state.record_path = record_path
-    state.raw_path = raw_path
-    state.turn_path = turn_path
-    state.prompt_sha = sha
     state.rewritten = rewritten
     state.ext_fields = fields
+    state.record_path = admitted.record_path
+
+
+def finish(state, admitted):
+    """阶段 15 finish：投影出 Outcome。"""
+    state.final_turn = state.final.turn
+    state.final_status = state.final.status_state
+    state.raw_path = admitted.raw_path
+    state.turn_path = admitted.turn_path
+    state.prompt_sha = admitted.sha
     state.phase("done", done_at=now_iso())
     return Outcome(0, state.project(True), state.result_path, state.notify_path)
+
+
+def run(request, deps):
+    """跑完一轮，返回 Outcome；永不外抛 DispatchError（ADR-0020 决定 2）。
+
+    只捕 DispatchError；非预期异常照旧冒泡。中途本地 IO 的 OSError 顶层兜底
+    映射 io_failed（ADR-0024），走同一 error 出口。
+    """
+    state = RunState(request, deps)
+    try:
+        return _run(state)
+    except DispatchError as e:
+        return _error_outcome(state, e)
+    except OSError as e:
+        return _error_outcome(state, io_failed_error(e, state.ledger_opened))
+
+
+def _error_outcome(state, e):
+    """统一 error 出口：尽力写终态台账（Journal.fail 内部吞 OSError）、部分状态机械带出。"""
+    state.journal.fail(e.kind, e.message)
+    state.error = e
+    return Outcome(e.returncode, state.project(False), state.result_path, state.notify_path)
+
+
+def _run(state):
+    """一轮的直线编排；15 个具名阶段次序一步不动（ADR-0020 决定 5）。
+
+    分流只发生一次（locate 的 Route），此后五路共用同一条直线。
+    """
+    herdr = Herdr(state.deps)
+    admitted = admit(state)
+    locate(state, herdr)
+    preflight(state, herdr)
+    discipline(state, admitted)
+    open_ledger(state, admitted)
+    bring_up(state, herdr)
+    name_tab(state, herdr)
+    learning_prepare(state, herdr)
+    send_prestep(state, herdr)
+    send_main(state, herdr, admitted)
+    learning_settle(state, admitted)
+    await_result(state, herdr)
+    readback(state, herdr, admitted)
+    extract_verify(state, admitted)
+    return finish(state, admitted)
