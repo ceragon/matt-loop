@@ -1,0 +1,159 @@
+{
+ "scenario": "create_agent_timeout",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-agent-timeout-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_failed\", \"message\": \"等 agent 就绪超时（启动命令已发）\", \"hints\": [\"主任务未发送；本轮已停止，可经用户放行后另起一轮\"]}, \"task_name\": \"loop-46a86328\", \"extract_backend\": \"pi\", \"target_address\": \"t100\", \"launched\": true, \"launch_sent\": true, \"workspace\": \"adopted\", \"pane_adopted\": true, \"space\": \"main\", \"space_selected\": \"sp1\", \"space_landed\": \"sp1\", \"space_restore\": \"not_needed\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-agent-timeout-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_failed\", \"message\": \"等 agent 就绪超时（启动命令已发）\", \"hints\": [\"主任务未发送；本轮已停止，可经用户放行后另起一轮\"]}, \"task_name\": \"loop-46a86328\", \"extract_backend\": \"pi\", \"target_address\": \"t100\", \"launched\": true, \"launch_sent\": true, \"workspace\": \"adopted\", \"pane_adopted\": true, \"space\": \"main\", \"space_selected\": \"sp1\", \"space_landed\": \"sp1\", \"space_restore\": \"not_needed\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-agent-timeout-1\", \"target\": \"claude-matt-loop\", \"error\": {\"kind\": \"launch_failed\", \"message\": \"等 agent 就绪超时（启动命令已发）\", \"hints\": [\"主任务未发送；本轮已停止，可经用户放行后另起一轮\"]}, \"task_name\": \"loop-46a86328\", \"extract_backend\": \"pi\", \"target_address\": \"t100\", \"launched\": true, \"launch_sent\": true, \"workspace\": \"adopted\", \"pane_adopted\": true, \"space\": \"main\", \"space_selected\": \"sp1\", \"space_landed\": \"sp1\", \"space_restore\": \"not_needed\"}",
+ "ledger_final": {
+  "release_id": "snap-agent-timeout-1",
+  "task_name": "loop-46a86328",
+  "target": "claude-matt-loop",
+  "prompt_path": "<TMP>/prompt.md",
+  "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+  "anchor": "请实现某个功能",
+  "reset": "none",
+  "target_model": null,
+  "launch": "claude --dangerously-skip-permissions",
+  "cwd": "/proj",
+  "display_name": "LoopEng_测试任务",
+  "space": "main",
+  "rebuild": false,
+  "target_address": "t100",
+  "workspace": "adopted",
+  "params": {
+   "wall_clock": 0.3,
+   "check_in": 1.0,
+   "settle_seconds": 0.01,
+   "settle_checks": 2,
+   "lines": 1000,
+   "extract_timeout": 1200.0,
+   "extract_backend": "pi"
+  },
+  "phase": "error:launch_failed",
+  "created_at": "<TS>",
+  "launched": true,
+  "launch_sent": true,
+  "launch_send": {
+   "turn": 0
+  },
+  "space_selected": "sp1",
+  "space_restore": "not_needed",
+  "pane_adopted": true,
+  "space_landed": "sp1",
+  "error": {
+   "kind": "launch_failed",
+   "message": "等 agent 就绪超时（启动命令已发）"
+  },
+  "failed_at": "<TS>"
+ },
+ "phase_sequence": [
+  "launch_running",
+  "launch_labeling",
+  "launch_waiting_shell",
+  "launch_sending",
+  "adopting",
+  "launch_waiting_agent",
+  "error:launch_failed"
+ ],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "hc run",
+   "phase": "launch_running",
+   "changes": {
+    "release_id": "snap-agent-timeout-1",
+    "task_name": "loop-46a86328",
+    "target": "claude-matt-loop",
+    "prompt_path": "<TMP>/prompt.md",
+    "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+    "anchor": "请实现某个功能",
+    "reset": "none",
+    "target_model": null,
+    "launch": "claude --dangerously-skip-permissions",
+    "cwd": "/proj",
+    "display_name": "LoopEng_测试任务",
+    "space": "main",
+    "rebuild": false,
+    "target_address": null,
+    "workspace": null,
+    "params": {
+     "wall_clock": 0.3,
+     "check_in": 1.0,
+     "settle_seconds": 0.01,
+     "settle_checks": 2,
+     "lines": 1000,
+     "extract_timeout": 1200.0,
+     "extract_backend": "pi"
+    },
+    "phase": "launch_running",
+    "created_at": "<TS>"
+   }
+  },
+  {
+   "command": "hc label",
+   "phase": "launch_labeling",
+   "changes": {
+    "target_address": "t100",
+    "phase": "launch_labeling",
+    "launched": true
+   }
+  },
+  {
+   "command": "hc get",
+   "phase": "launch_waiting_shell",
+   "changes": {
+    "phase": "launch_waiting_shell"
+   }
+  },
+  {
+   "command": "hc send",
+   "phase": "launch_sending",
+   "changes": {
+    "phase": "launch_sending"
+   }
+  },
+  {
+   "command": "app status",
+   "phase": "adopting",
+   "changes": {
+    "phase": "adopting",
+    "launch_sent": true,
+    "launch_send": {
+     "turn": 0
+    }
+   }
+  },
+  {
+   "command": "app ls",
+   "phase": "adopting",
+   "changes": {}
+  },
+  {
+   "command": "app do terminal.keep",
+   "phase": "adopting",
+   "changes": {
+    "space_selected": "sp1",
+    "space_restore": "not_needed"
+   }
+  },
+  {
+   "command": "app ls",
+   "phase": "adopting",
+   "changes": {}
+  },
+  {
+   "command": "hc get",
+   "phase": "launch_waiting_agent",
+   "changes": {
+    "workspace": "adopted",
+    "phase": "launch_waiting_agent",
+    "pane_adopted": true,
+    "space_landed": "sp1"
+   }
+  }
+ ]
+}

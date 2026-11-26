@@ -1,0 +1,16 @@
+{
+ "scenario": "find_app_bin_missing_tool",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-missing-app-1\", \"target\": \"t99\", \"error\": {\"kind\": \"missing_tool\", \"message\": \"PATH 与常见目录里都找不到 herdr-app\", \"hints\": [\"恒可见不变量要求 herdr-app；装上后重试\"]}, \"task_name\": \"loop-7b9a43f6\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-missing-app-1\", \"target\": \"t99\", \"error\": {\"kind\": \"missing_tool\", \"message\": \"PATH 与常见目录里都找不到 herdr-app\", \"hints\": [\"恒可见不变量要求 herdr-app；装上后重试\"]}, \"task_name\": \"loop-7b9a43f6\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-missing-app-1\", \"target\": \"t99\", \"error\": {\"kind\": \"missing_tool\", \"message\": \"PATH 与常见目录里都找不到 herdr-app\", \"hints\": [\"恒可见不变量要求 herdr-app；装上后重试\"]}, \"task_name\": \"loop-7b9a43f6\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  }
+ ]
+}

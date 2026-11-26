@@ -1,0 +1,26 @@
+{
+ "scenario": "existing_not_idle",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-not-idle-1\", \"target\": \"t99\", \"error\": {\"kind\": \"not_idle\", \"message\": \"目标状态是 working，不是 idle/done，不发送\", \"hints\": [\"--if idle 只认 idle；等目标落定或请用户处理后再来\"]}, \"task_name\": \"loop-5c46feae\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-not-idle-1\", \"target\": \"t99\", \"error\": {\"kind\": \"not_idle\", \"message\": \"目标状态是 working，不是 idle/done，不发送\", \"hints\": [\"--if idle 只认 idle；等目标落定或请用户处理后再来\"]}, \"task_name\": \"loop-5c46feae\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-not-idle-1\", \"target\": \"t99\", \"error\": {\"kind\": \"not_idle\", \"message\": \"目标状态是 working，不是 idle/done，不发送\", \"hints\": [\"--if idle 只认 idle；等目标落定或请用户处理后再来\"]}, \"task_name\": \"loop-5c46feae\", \"extract_backend\": \"pi\", \"target_address\": \"t99\", \"workspace\": \"adopted\", \"space\": \"main\"}",
+ "ledger_final": null,
+ "phase_sequence": [],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "app status",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "app ls",
+   "phase": null,
+   "changes": null
+  }
+ ]
+}

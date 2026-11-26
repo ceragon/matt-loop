@@ -1,0 +1,10 @@
+{
+ "scenario": "static_duplicate_release",
+ "rc": 1,
+ "stdout": "{\"ok\": false, \"release_id\": \"snap-dup-1\", \"target\": \"t99\", \"error\": {\"kind\": \"duplicate_release\", \"message\": \"放行 id snap-dup-1 已有台账或原文落盘，一个放行只跑一轮\", \"hints\": [\"查看台账确认上次结果；要重发须经用户重新放行、用新 id\"]}, \"task_name\": \"loop-23897dbd\", \"extract_backend\": \"pi\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": false, \"release_id\": \"snap-dup-1\", \"target\": \"t99\", \"error\": {\"kind\": \"duplicate_release\", \"message\": \"放行 id snap-dup-1 已有台账或原文落盘，一个放行只跑一轮\", \"hints\": [\"查看台账确认上次结果；要重发须经用户重新放行、用新 id\"]}, \"task_name\": \"loop-23897dbd\", \"extract_backend\": \"pi\", \"space\": \"main\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": false, \"release_id\": \"snap-dup-1\", \"target\": \"t99\", \"error\": {\"kind\": \"duplicate_release\", \"message\": \"放行 id snap-dup-1 已有台账或原文落盘，一个放行只跑一轮\", \"hints\": [\"查看台账确认上次结果；要重发须经用户重新放行、用新 id\"]}, \"task_name\": \"loop-23897dbd\", \"extract_backend\": \"pi\", \"space\": \"main\"}",
+ "ledger_final": {},
+ "phase_sequence": [],
+ "commands": []
+}

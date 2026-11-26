@@ -1,0 +1,252 @@
+{
+ "scenario": "rebuild_success",
+ "rc": 0,
+ "stdout": "{\"ok\": true, \"phase\": \"done\", \"release_id\": \"snap-rebuild-1\", \"task_name\": \"loop-b252f050\", \"target\": \"claude-matt-loop\", \"reset\": \"none\", \"turn\": 1, \"status\": \"idle\", \"complete\": true, \"complete_reason\": [], \"anchor_found\": true, \"elapsed_s\": 0.0, \"chars\": 15, \"run_record\": \"<TMP>/.loop/runs/snap-rebuild-1.md\", \"raw_record\": \"<TMP>/.loop/runs/snap-rebuild-1.raw.md\", \"turn_record\": \"<TMP>/.loop/runs/snap-rebuild-1.turn.md\", \"prompt_sha256\": \"9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf\", \"rewritten\": {}, \"extract_backend\": \"pi\", \"needs_user\": false, \"questions\": [], \"conclusion\": \"\", \"blocked\": \"\", \"next_skill\": \"\", \"target_address\": \"t101\", \"launched\": true, \"rebuilt\": true, \"rebuilt_old_target\": \"t60\", \"workspace\": \"adopted\", \"pane_adopted\": true, \"display_name\": \"LoopEng_测试任务\", \"space\": \"main\", \"space_selected\": \"sp1\", \"space_landed\": \"sp1\", \"space_restore\": \"not_needed\", \"webhook\": \"off\"}\n",
+ "result_file": "{\"ok\": true, \"phase\": \"done\", \"release_id\": \"snap-rebuild-1\", \"task_name\": \"loop-b252f050\", \"target\": \"claude-matt-loop\", \"reset\": \"none\", \"turn\": 1, \"status\": \"idle\", \"complete\": true, \"complete_reason\": [], \"anchor_found\": true, \"elapsed_s\": 0.0, \"chars\": 15, \"run_record\": \"<TMP>/.loop/runs/snap-rebuild-1.md\", \"raw_record\": \"<TMP>/.loop/runs/snap-rebuild-1.raw.md\", \"turn_record\": \"<TMP>/.loop/runs/snap-rebuild-1.turn.md\", \"prompt_sha256\": \"9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf\", \"rewritten\": {}, \"extract_backend\": \"pi\", \"needs_user\": false, \"questions\": [], \"conclusion\": \"\", \"blocked\": \"\", \"next_skill\": \"\", \"target_address\": \"t101\", \"launched\": true, \"rebuilt\": true, \"rebuilt_old_target\": \"t60\", \"workspace\": \"adopted\", \"pane_adopted\": true, \"display_name\": \"LoopEng_测试任务\", \"space\": \"main\", \"space_selected\": \"sp1\", \"space_landed\": \"sp1\", \"space_restore\": \"not_needed\", \"webhook\": \"off\"}\n",
+ "notify_file": "{\"ok\": true, \"release_id\": \"snap-rebuild-1\", \"target\": \"claude-matt-loop\", \"needs_user\": false, \"questions\": [], \"conclusion\": \"\", \"blocked\": \"\", \"rewritten\": {}, \"run_record\": \"<TMP>/.loop/runs/snap-rebuild-1.md\", \"elapsed_s\": 0.0, \"next_skill\": \"\", \"complete\": true, \"complete_reason\": []}",
+ "ledger_final": {
+  "release_id": "snap-rebuild-1",
+  "task_name": "loop-b252f050",
+  "target": "claude-matt-loop",
+  "prompt_path": "<TMP>/prompt.md",
+  "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+  "anchor": "请实现某个功能",
+  "reset": "none",
+  "target_model": null,
+  "launch": "claude --dangerously-skip-permissions",
+  "cwd": "/proj",
+  "display_name": "LoopEng_测试任务",
+  "space": "main",
+  "rebuild": true,
+  "target_address": "t101",
+  "workspace": "adopted",
+  "params": {
+   "wall_clock": 5.0,
+   "check_in": 1.0,
+   "settle_seconds": 0.01,
+   "settle_checks": 2,
+   "lines": 1000,
+   "extract_timeout": 1200.0,
+   "extract_backend": "pi"
+  },
+  "phase": "done",
+  "created_at": "<TS>",
+  "rebuilt": true,
+  "rebuilt_old_target": "t60",
+  "launched": true,
+  "launch_sent": true,
+  "launch_send": {
+   "turn": 0
+  },
+  "space_selected": "sp1",
+  "space_restore": "not_needed",
+  "pane_adopted": true,
+  "space_landed": "sp1",
+  "launch_done_at": "<TS>",
+  "naming_done_at": "<TS>",
+  "sent_at": "<TS>",
+  "send": {
+   "turn": 0
+  },
+  "resent": false,
+  "read_at": "<TS>",
+  "turn": 1,
+  "status": "idle",
+  "elapsed_s": 0.0,
+  "chars": 15,
+  "echo_found": true,
+  "turn_cut_line": 1,
+  "turn_chars": 15,
+  "hc_read": {
+   "complete": true,
+   "how": "screen",
+   "why": null
+  },
+  "complete": true,
+  "complete_reason": [],
+  "anchor_found": true,
+  "run_record": "<TMP>/.loop/runs/snap-rebuild-1.md",
+  "raw_record": "<TMP>/.loop/runs/snap-rebuild-1.raw.md",
+  "turn_record": "<TMP>/.loop/runs/snap-rebuild-1.turn.md",
+  "rewritten": {},
+  "reply_chars": 15,
+  "reply_bad_lines": 0,
+  "done_at": "<TS>"
+ },
+ "phase_sequence": [
+  "rebuild_killing",
+  "launch_running",
+  "launch_labeling",
+  "launch_waiting_shell",
+  "launch_sending",
+  "adopting",
+  "launch_waiting_agent",
+  "naming",
+  "naming_done",
+  "sent_waiting",
+  "done"
+ ],
+ "commands": [
+  {
+   "command": "hc get",
+   "phase": null,
+   "changes": null
+  },
+  {
+   "command": "hc kill",
+   "phase": "rebuild_killing",
+   "changes": {
+    "release_id": "snap-rebuild-1",
+    "task_name": "loop-b252f050",
+    "target": "claude-matt-loop",
+    "prompt_path": "<TMP>/prompt.md",
+    "prompt_sha256": "9986955dd4e1357b17df184714fab7e93be2b544e45c349cdea1dd6383cde4bf",
+    "anchor": "请实现某个功能",
+    "reset": "none",
+    "target_model": null,
+    "launch": "claude --dangerously-skip-permissions",
+    "cwd": "/proj",
+    "display_name": "LoopEng_测试任务",
+    "space": "main",
+    "rebuild": true,
+    "target_address": "t60",
+    "workspace": null,
+    "params": {
+     "wall_clock": 5.0,
+     "check_in": 1.0,
+     "settle_seconds": 0.01,
+     "settle_checks": 2,
+     "lines": 1000,
+     "extract_timeout": 1200.0,
+     "extract_backend": "pi"
+    },
+    "phase": "rebuild_killing",
+    "created_at": "<TS>"
+   }
+  },
+  {
+   "command": "hc run",
+   "phase": "launch_running",
+   "changes": {
+    "phase": "launch_running",
+    "rebuilt": true,
+    "rebuilt_old_target": "t60"
+   }
+  },
+  {
+   "command": "hc label",
+   "phase": "launch_labeling",
+   "changes": {
+    "target_address": "t101",
+    "phase": "launch_labeling",
+    "launched": true
+   }
+  },
+  {
+   "command": "hc get",
+   "phase": "launch_waiting_shell",
+   "changes": {
+    "phase": "launch_waiting_shell"
+   }
+  },
+  {
+   "command": "hc send",
+   "phase": "launch_sending",
+   "changes": {
+    "phase": "launch_sending"
+   }
+  },
+  {
+   "command": "app status",
+   "phase": "adopting",
+   "changes": {
+    "phase": "adopting",
+    "launch_sent": true,
+    "launch_send": {
+     "turn": 0
+    }
+   }
+  },
+  {
+   "command": "app ls",
+   "phase": "adopting",
+   "changes": {}
+  },
+  {
+   "command": "app do terminal.keep",
+   "phase": "adopting",
+   "changes": {
+    "space_selected": "sp1",
+    "space_restore": "not_needed"
+   }
+  },
+  {
+   "command": "app ls",
+   "phase": "adopting",
+   "changes": {}
+  },
+  {
+   "command": "hc get",
+   "phase": "launch_waiting_agent",
+   "changes": {
+    "workspace": "adopted",
+    "phase": "launch_waiting_agent",
+    "pane_adopted": true,
+    "space_landed": "sp1"
+   }
+  },
+  {
+   "command": "app ls",
+   "phase": "naming",
+   "changes": {
+    "phase": "naming",
+    "launch_done_at": "<TS>"
+   }
+  },
+  {
+   "command": "app do tab.rename",
+   "phase": "naming",
+   "changes": {}
+  },
+  {
+   "command": "app ls",
+   "phase": "naming",
+   "changes": {}
+  },
+  {
+   "command": "hc send",
+   "phase": "naming_done",
+   "changes": {
+    "phase": "naming_done",
+    "naming_done_at": "<TS>"
+   }
+  },
+  {
+   "command": "hc wait",
+   "phase": "sent_waiting",
+   "changes": {
+    "phase": "sent_waiting",
+    "sent_at": "<TS>",
+    "send": {
+     "turn": 0
+    },
+    "resent": false
+   }
+  },
+  {
+   "command": "hc get",
+   "phase": "sent_waiting",
+   "changes": {}
+  },
+  {
+   "command": "hc get",
+   "phase": "sent_waiting",
+   "changes": {}
+  },
+  {
+   "command": "hc read",
+   "phase": "sent_waiting",
+   "changes": {}
+  }
+ ]
+}
