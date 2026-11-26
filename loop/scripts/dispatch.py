@@ -200,7 +200,9 @@ WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
 # 不含参数），候选固定七项；缺失/非字符串/带斜杠/带参数/集外值均宽容投影为 ""，不整轮
 # 报错；不参与逐字校验。格式错误另记 invalid（learning.project_next_skill），供阶段二
 # 统计 invalid_prediction，不得把格式错误算作正确弃答。
-EXTRACT_FIELDS = ("needs_user", "questions", "conclusion", "blocked", "reply", "next_skill")
+# 顺序即抽取指令里的字段列举顺序（#133 R6：指令由本常量派生，见 _EXTRACT_INSTRUCTION）；
+# 结果载荷的字段序不受影响——reply 被单独取出后，其余五字段的相对顺序不变。
+EXTRACT_FIELDS = ("needs_user", "reply", "questions", "conclusion", "blocked", "next_skill")
 # 抽取后端（ADR-0005）：默认直连 API（OpenAI 兼容 chat completions），pi 为显式备选。
 # API 参数全走 env、全必填、无内置默认；密钥与 URL 零回显。
 EXTRACT_BACKENDS = ("api", "pi")
@@ -726,9 +728,10 @@ def echo_reference(request):
     return ECHO_REFERENCE_LABEL + ECHO_REFERENCE_NOTE + "\n" + normalize_paste(text)
 
 
+# 字段列举由 EXTRACT_FIELDS 派生（#133 R6），改一处不会漏另一处；字面与旧版逐字一致。
 _EXTRACT_INSTRUCTION = (
     "按系统提示词裁剪并抽取，只输出一个 JSON 对象，"
-    "含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
+    f"含 {'、'.join(EXTRACT_FIELDS)} 六个字段。"
 )
 
 

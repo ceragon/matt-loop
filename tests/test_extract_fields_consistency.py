@@ -2,12 +2,16 @@
 """test_extract_fields_consistency.py — 抽取字段清单跨文件一致性守卫（#133 R6）。
 
 跑法：python3 tests/test_extract_fields_consistency.py
-守住三处互相独立的声明不漂移：
+守住以下声明不漂移：
+  0 抽取指令 `_EXTRACT_INSTRUCTION` 里点名的字段集 == dispatch.EXTRACT_FIELDS
+    （指令已由该常量派生，本断言防止将来改回手抄字面后漂移）；
   1 prompts/extract.md「输出」节声明的六字段 == dispatch.EXTRACT_FIELDS；
   2 通知白名单里由抽取派生的字段 == EXTRACT_FIELDS 去掉 reply（reply 在通知里
     由 run_record 取代，run_record 必须在场）；
   3 逐字校验面：verify_extraction 只校验选段字段（conclusion/blocked/questions），
     reply 走 verify_reply，needs_user / next_skill 两个非逐字字段豁免。
+pipeline.py / turn.py 没有独立的字段清单声明：前者只在 docstring 说明既有结果载荷，
+后者的逐字校验字段已由第 3 条覆盖。
 断言只认外部可观察面（提示词文本、常量、纯函数行为），不锁内部结构。
 """
 import re
@@ -29,6 +33,11 @@ def prompt_fields():
     return tuple(re.findall(r"^- `([a-z_]+)`（", section, re.MULTILINE))
 
 
+def instruction_fields():
+    """抽取指令里点名的字段标识符（JSON 是大写，不会被这条正则收进来）。"""
+    return re.findall(r"[a-z_]+", dispatch._EXTRACT_INSTRUCTION)
+
+
 def rewritten(**over):
     """conclusion 恒放一段原文里有的字，保证至少一个被校验字段通过——这样探针
     字段失败时返回 rewritten，而不是触发「全部未过校验」整轮报错。"""
@@ -38,6 +47,13 @@ def rewritten(**over):
 
 
 def main():
+    # 0 抽取指令点名的字段集 == 抽取输出形状门用的字段集
+    named = instruction_fields()
+    assert len(named) == 6, named
+    assert set(named) == set(dispatch.EXTRACT_FIELDS), (
+        named, dispatch.EXTRACT_FIELDS)
+    print("0 extract instruction fields == EXTRACT_FIELDS ok")
+
     # 1 提示词声明的字段集 == 抽取输出形状门用的字段集
     declared = prompt_fields()
     assert len(declared) == 6, declared
