@@ -2,8 +2,10 @@
 """test_dispatch_next_skill.py — next_skill 预测字段测试（ADR-0008 修订，#48 阶段一）。
 
 跑法：python3 tests/test_dispatch_next_skill.py
-缝：分发脚本 CLI 契约（进程内 import dispatch，mock hc/网络，不打真实 agent）＋
-    learning.project_next_skill 纯函数＋extract.md 文本契约。
+主测试缝＝唯一 harness.run（CLI 契约，T5d/ADR-0021）：FakeHerdr 假世界摆场景，
+env / http_open / run_cmd 注入，真实抽取入口 dispatch.extract 经 harness 残留洞吸收
+密闭跑；断言只认 rc、stdout JSON、result.json 落盘产物与请求体/argv。
+纯函数（learning.project_next_skill / parse_extraction / verify_extraction）直调保留原位。
 覆盖：
   1 project_next_skill：七项原样、"" 合法弃答；缺失/非字符串/带斜杠/带参数/集外 → ""＋invalid。
   2 parse：合法 next_skill 透传；缺失/非字符串投影 ""；meta 记 invalid；ext 恒六字段。
@@ -13,25 +15,63 @@
   6 e2e api：缺预测 → next_skill="" 且 ok=true（宽容投影）。
   7 e2e pi：同形状透传；pi 指令含六字段。
   8 extract.md：next_skill 规格、唯一例外、七候选、预测优先级在位。
+
+T5d（ADR-0021，#99）：e2e 用例迁 FakeHerdr＋harness.run；常量与助手本文件自带，
+不 import 供应方文件（去重债归 R）。
 """
-import contextlib
-import io
 import json
-import sys
 import tempfile
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
-import dispatch  # noqa: E402
-import learning  # noqa: E402
+import harness
+from harness import dispatch
+import learning
+from fake_herdr import FakeHerdr
 
-from test_dispatch_api_extract import (  # noqa: E402
-    PROMPT, SCREEN, EXT, FakeHc, FakeResp, api_env, env,
-)
-from test_dispatch_reset import FakeApp  # noqa: E402
+PROMPT = "请实现某个功能\n第二行说明"
+ANCHOR = PROMPT.splitlines()[0][:24]
+SCREEN = ANCHOR + "\n已完成该功能。"
+EXT = {"needs_user": False, "questions": [],
+       "conclusion": "", "blocked": "", "reply": SCREEN}
+KEY = "sk-test-SECRET-VALUE"
+BASE = "https://gw.example/v1"
+MODEL = "test-model"
 
 BASE_EXT = dict(EXT)  # 五字段旧形状（conclusion=""、reply=SCREEN）
+
+
+class FakeResp:
+    def __init__(self, payload):
+        self._b = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _api_env(**kw):
+    # LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入
+    # 覆盖宿主可能导出的同名键，保住隔离（退出恢复）。T4 先例。
+    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
+         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL, "LOOP_API_MAX_TOKENS": ""}
+    d.update(kw)
+    return d
+
+
+def _world():
+    """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋稳定屏幕。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t99"])
+    w.screen("t99", SCREEN)
+    return w
 
 
 def parse_ok(obj, meta=None):
@@ -39,7 +79,8 @@ def parse_ok(obj, meta=None):
 
 
 def run_round(td, rid, ext_obj, backend):
-    """跑一轮完整 dispatch（mock hc＋抽取出口）；返回 (rc, result, loop_dir, captured)。"""
+    """经唯一 harness.run 跑一轮完整 dispatch（真实抽取链＋网络/子进程出口桩）；
+    返回 (rc, result, loop_dir, captured)。"""
     pf = Path(td) / "prompt.md"
     pf.write_text(PROMPT, encoding="utf-8")
     ld = Path(td) / ".loop"
@@ -48,28 +89,21 @@ def run_round(td, rid, ext_obj, backend):
             "--space", "main",
             "--wall-clock", "5", "--check-in", "1",
             "--settle-seconds", "0.01", "--settle-checks", "2"]
-    dispatch.hc_json = FakeHc()
-    dispatch.app_json = FakeApp()
-    dispatch.check_structure_and_tools = lambda: None
-    dispatch.shutil.which = lambda name: "/fake/" + name
-    dispatch.time.sleep = lambda s: None
     captured = {}
     payload = json.dumps(ext_obj, ensure_ascii=False)
     if backend == "api":
-        def fake_open(req, timeout, proxies=None):
+        def fake_open(req, timeout, proxies):
             captured["body"] = json.loads(req.data.decode("utf-8"))
             return FakeResp({"choices": [{"message": {"content": payload}}]})
-        dispatch.webhook_open = fake_open
+        r = harness.run(argv, world=_world(), env=_api_env(),
+                        extract=dispatch.extract, http_open=fake_open)
     else:
         def fake_run(argv_, timeout):
             captured["argv"] = argv_
             return types.SimpleNamespace(returncode=0, stdout=payload, stderr="")
-        dispatch.run_cmd = fake_run
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        rc = dispatch.main(argv)
-    res = json.loads(buf.getvalue().strip())
-    return rc, res, ld, captured
+        r = harness.run(argv, world=_world(), env={"LOOP_EXTRACT_BACKEND": "pi"},
+                        extract=dispatch.extract, run_cmd=fake_run)
+    return r.rc, r.result, ld, captured
 
 
 def main():
@@ -127,41 +161,38 @@ def main():
     print("4 fabricated next_skill exempt from verbatim; all-fabricated gate unchanged ok")
 
     # 5 e2e api：带预测 → result/结果文件逐字带 next_skill、无 next_command；指令六字段
-    with api_env():
-        with tempfile.TemporaryDirectory() as td:
-            rc, res, ld, cap = run_round(
-                td, "ns-api-1", dict(BASE_EXT, next_skill="to-spec"), "api")
-            assert rc == 0 and res["ok"], res
-            assert res["next_skill"] == "to-spec", res
-            assert "next_command" not in res, res
-            assert res["rewritten"] == {}, res
-            on_disk = json.loads((ld / "runs" / "ns-api-1.result.json")
-                                 .read_text(encoding="utf-8"))
-            assert on_disk == res and on_disk["next_skill"] == "to-spec"
-            user_msg = cap["body"]["messages"][1]["content"]
-            assert "next_skill" in user_msg and "六个字段" in user_msg
-            assert "next_command" not in user_msg
+    with tempfile.TemporaryDirectory() as td:
+        rc, res, ld, cap = run_round(
+            td, "ns-api-1", dict(BASE_EXT, next_skill="to-spec"), "api")
+        assert rc == 0 and res["ok"], res
+        assert res["next_skill"] == "to-spec", res
+        assert "next_command" not in res, res
+        assert res["rewritten"] == {}, res
+        on_disk = json.loads((ld / "runs" / "ns-api-1.result.json")
+                             .read_text(encoding="utf-8"))
+        assert on_disk == res and on_disk["next_skill"] == "to-spec"
+        user_msg = cap["body"]["messages"][1]["content"]
+        assert "next_skill" in user_msg and "六个字段" in user_msg
+        assert "next_command" not in user_msg
     print("5 e2e api: next_skill in result/file verbatim, no next_command, six fields ok")
 
     # 6 e2e api：缺预测 → "" 且 ok
-    with api_env():
-        with tempfile.TemporaryDirectory() as td:
-            rc, res, ld, _ = run_round(td, "ns-api-2", BASE_EXT, "api")
-            assert rc == 0 and res["ok"], res
-            assert res["next_skill"] == "", res
+    with tempfile.TemporaryDirectory() as td:
+        rc, res, ld, _ = run_round(td, "ns-api-2", BASE_EXT, "api")
+        assert rc == 0 and res["ok"], res
+        assert res["next_skill"] == "", res
     print("6 e2e api: missing prediction -> empty string, round ok ok")
 
     # 7 e2e pi：同形状透传；pi 指令含六字段
-    with env(LOOP_EXTRACT_BACKEND="pi"):
-        with tempfile.TemporaryDirectory() as td:
-            rc, res, ld, cap = run_round(
-                td, "ns-pi-1", dict(BASE_EXT, next_skill="implement"), "pi")
-            assert rc == 0 and res["ok"], res
-            assert res["next_skill"] == "implement", res
-            assert res["extract_backend"] == "pi", res
-            instr = " ".join(cap["argv"])
-            assert "next_skill" in instr and "六个字段" in instr
-            assert "next_command" not in instr
+    with tempfile.TemporaryDirectory() as td:
+        rc, res, ld, cap = run_round(
+            td, "ns-pi-1", dict(BASE_EXT, next_skill="implement"), "pi")
+        assert rc == 0 and res["ok"], res
+        assert res["next_skill"] == "implement", res
+        assert res["extract_backend"] == "pi", res
+        instr = " ".join(cap["argv"])
+        assert "next_skill" in instr and "六个字段" in instr
+        assert "next_command" not in instr
     print("7 e2e pi: passthrough + six-field instruction ok")
 
     # 8 extract.md 规格、例外、七候选、优先级在位

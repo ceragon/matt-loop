@@ -24,25 +24,18 @@ TESTS_DIR = Path(__file__).resolve().parent
 _ENV_WRITE_METHODS = frozenset({"update", "pop", "setdefault", "clear"})
 
 # 文件级白名单：filename -> (理由, 退役切片)。只许缩小，不许新增；陈旧条目自检必红。
-# 首版以实际扫描推导（T4）：未迁消费方＋三个供应方残留兼容面＋harness 残留洞＋
-# test_command_parse 作用域 run_cmd 替换。T5 按文件迁消费方时逐条删；R 清空改无条件断言。
+# 首版以实际扫描推导（T4）；T5a–T5d 已把 16 个消费方按文件迁完、逐条删（21→15→11→8→5）。
+# 终态 5 条均带明确退役切片；R 删供应方残留兼容面、清空列表改无条件断言。
 WHITELIST = {
-    # 三个供应方：残留兼容面（run_case/旧桩的 dispatch.<名> 赋值＋import 期 os.environ 写入），
-    # 供约 16 个未迁消费方跨文件 import 活着。最后一个消费方迁完时删（R）。
+    # 三个供应方：残留兼容面（run_case/旧桩的 dispatch.<名> 赋值＋import 期 os.environ 写入）。
+    # 消费方已全部迁完（T5a–T5d）、兼容面无消费方引用（仅供应方之间转口）；随 R 删旧桩时删条。
     "test_dispatch_reset.py": ("供应方残留兼容面：run_case 全局赋值＋import 期环境写入", "R"),
     "test_dispatch_get_or_create.py": ("供应方残留兼容面：run_case 全局赋值＋import 期环境写入", "R"),
     "test_dispatch_api_extract.py": ("供应方残留兼容面：env/api_env 的 os.environ 写入（供消费方）", "R"),
     # harness：残留洞作用域内替换（模块全局＋os.environ 应用＋webhook_open/run_cmd），退出恢复。
     "harness.py": ("残留洞作用域内替换（模块全局/os.environ/webhook_open/run_cmd）", "P2/⑤"),
-    # 命令解析测试：作用域 run_cmd 替换喂真实错误信封。
-    "test_command_parse.py": ("作用域 run_cmd 替换（错误信封解析测试）", "G1/P2"),
-    # 3 个未迁消费方：旧式 dispatch.<名> 赋值与 os.environ 写入，T5 按文件迁 FakeHerdr/harness 时逐条删
-    # （T5a 已迁 6 个：launch/anchor_path/no_summary/target_model/reset_discipline/split_required；
-    #  T5b 已迁 4 个：adopt/display_name/lifecycle/space；
-    #  T5c 已迁 3 个：notify/webhook/webhook_diag）。
-    "test_dispatch_learning.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
-    "test_dispatch_next_skill.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
-    "test_dispatch_turn_cut.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
+    # 命令解析测试：作用域 run_cmd 替换喂真实错误信封＋噪声护栏摘录（T5d 并入）。
+    "test_command_parse.py": ("作用域 run_cmd 替换（错误信封解析＋噪声护栏）", "G1/P2"),
 }
 
 

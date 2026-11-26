@@ -5,6 +5,8 @@
 fake 说 dict、绕过真实错误信封解析；本文件用 run_cmd 桩喂脱敏真实信封给
 dispatch.hc_json / app_json 的真实解析路径，断言映射出的错误种类与附加字段。
 信封样例来自 tests/fixtures/（来源分级见 README）。不靠真进程。
+噪声护栏（T5d 自 turn_cut slice8 并入，#50/#99 Q3）：非 JSON stdout／非零退出的
+其余纯文本 stderr/stdout 摘录 300 字符护栏——FakeHerdr 说 dict 造不出的故障留在本缝。
 """
 import contextlib
 import json
@@ -111,6 +113,36 @@ def main():
     assert seen[0] == ["/fake/hc", "send", "--json", "--", "t99", "-开头文本"]
     assert seen[1] == ["/fake/herdr-app", "do", "tab.close", "{}"]
     print("10 argv assembly: --json right after hc subcommand, app passthrough")
+
+    # 11 噪声护栏（T5d 自 turn_cut slice8 并入，#50/#99）：其余纯文本 stderr/stdout
+    #    摘录的 300 字符护栏保持不变（#50 只改 JSON 截断）。
+    long = "噪" * 500
+    # hc_output：rc 0 但 stdout 非 JSON
+    with stub_run_cmd(lambda argv, ts: ns(0, long, "")):
+        e = expect("hc_output", lambda: dispatch.hc_json("/fake/hc", ["read", "t99"], 30))
+    assert e.hints == [long[:300]], e.hints
+    # HcFailure：rc 1，stderr/stdout 摘录各 300
+    with stub_run_cmd(lambda argv, ts: ns(1, long, long)):
+        e = expect("hc_failed", lambda: dispatch.hc_json("/fake/hc", ["get", "t99"], 30))
+    assert isinstance(e, dispatch.HcFailure)
+    assert e.hints == [long[:300], long[:300]], e.hints
+    # app_output：rc 0 但 stdout 非 JSON
+    with stub_run_cmd(lambda argv, ts: ns(0, long, "")):
+        e = expect("app_output", lambda: dispatch.app_json("/fake/app", ["ls"], 30))
+    assert e.hints == [long[:300]], e.hints
+    # parse_extraction：找不到形状 JSON 时 stdout 摘录 300（纯函数直调）
+    try:
+        dispatch.parse_extraction(long)
+        raise AssertionError("should raise extraction_invalid")
+    except dispatch.DispatchError as e:
+        assert e.kind == "extraction_invalid" and e.hints[-1] == long[:300], e.hints
+    # extract_via_pi：非零退出时 stderr/stdout 摘录 300
+    with stub_run_cmd(lambda argv, ts: ns(1, "", long)):
+        pi_args = types.SimpleNamespace(extract_timeout=1200.0, pi_model=None)
+        e = expect("extraction_failed",
+                   lambda: dispatch.extract_via_pi("/fake/pi", pi_args, "/fake/turn.md"))
+    assert e.hints[-1] == long[:300], e.hints
+    print("11 noise guards: other 300-char excerpts unchanged ok")
 
     print("all command-parse tests passed")
 
