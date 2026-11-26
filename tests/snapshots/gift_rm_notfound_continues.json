@@ -200,7 +200,10 @@
   {
    "command": "app status",
    "phase": "space_selecting",
-   "changes": {}
+   "changes": {
+    "pane_adopted": true,
+    "space_landed": "sp2"
+   }
   },
   {
    "command": "app do space.select",
@@ -216,8 +219,6 @@
    "command": "app do tab.close",
    "phase": "space_selecting",
    "changes": {
-    "pane_adopted": true,
-    "space_landed": "sp2",
     "space_restore": "restored"
    }
   },

@@ -907,7 +907,7 @@ class Deps:
 
     def __init__(self, *, hc_json=None, app_json=None, monotonic=None, sleep=None,
                  env=None, locate=None, http_open=None, run_cmd=None, extract=None,
-                 proxy_resolution=None):
+                 proxy_resolution=None, now=None):
         self._hc_json = hc_json
         self._app_json = app_json
         self._monotonic = monotonic
@@ -918,6 +918,7 @@ class Deps:
         self._run_cmd = run_cmd
         self._extract = extract
         self._proxy_resolution = proxy_resolution
+        self._now = now
         self.hc_bin = None
         self.app_bin = None
         self.pi_bin = None
@@ -937,6 +938,10 @@ class Deps:
 
     def sleep(self, s):
         return (self._sleep or time.sleep)(s)
+
+    def now(self):
+        """墙钟（UTC ISO 秒精度）：Journal 构造时取（ADR-0022 决定 7），⑤ 共用。"""
+        return (self._now or pipeline.now_iso)()
 
     @property
     def env(self):

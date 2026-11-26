@@ -6,14 +6,16 @@
 交付与 webhook、抽取后端）；本模块不 import 分发脚本，外部世界经鸭子类型的
 `Deps` 注入。依赖方向：dispatch → pipeline → {herdr, turn, learning, errors}。
 
-`RunState` 收口三套并行状态（局部标量、facts/ctx、台账 dict），对管线只暴露
-三个薄包装方法（ADR-0020 决定 12，行为逐字不变，④ journal 以后只换方法体）：
-  - phase(name, **fields)：写台账 phase 与字段并原子落盘；name=None 表示只落盘、
-    不改 phase（基线里若干「只补字段」写点的原样保留）。
-  - fact(key, value, *, ledger=True)：写 facts（即 ctx）；ledger=True 时镜像进
-    台账 dict，但不单独落盘——落盘时机仍由相邻 phase 决定（ADR-0022 决定 5 的
-    约 5 处延后写在此保持延后，改立即落盘归 journal 片）。
-  - project(ok)：把 facts 与轮次标量投影成交付载荷（成功 19 键 / error 21 键）。
+`RunState` 收口三套并行状态（局部标量、facts/ctx、台账），对管线只暴露三个
+薄包装方法（ADR-0020 决定 12）；台账文件本身由兄弟模块 `Journal` 独占
+（ADR-0022 决定 1）：
+  - phase(name, **fields)：委托 Journal.phase（写台账 phase 与字段并原子落盘）；
+    name=None 表示只落盘、不改 phase（基线里若干「只补字段」写点的原样保留）。
+    台账未开（预检期）时不写——预检期领养沿用基线 `ledger=None` 语义。
+  - fact(key, value, *, ledger=True)：写 facts（即 ctx）；ledger=True 时立即镜像进
+    台账并原子落盘（ADR-0022 决定 5：基线约 5 处延后落盘改为立即落盘，只改中间态）。
+  - project(ok)：把 facts 与轮次标量投影成交付载荷（成功 19 键 / error 21 键）；
+    纯函数式投影，留在 RunState（不进 Journal）。
 
 台账未开时不做通用缓冲（ADR-0022 决定 2 订正）：facts 本身就是预检期缓冲；
 首版台账只取 target_address 与 workspace 两个键。`run` 永不外抛 DispatchError：
@@ -22,7 +24,6 @@
 """
 import enum
 import hashlib
-import json
 import os
 import re
 import sys
@@ -35,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import learning  # noqa: E402
 from errors import DispatchError  # noqa: E402
 from herdr import Herdr, HerdrFailure, NotFound  # noqa: E402
+from journal import Journal  # noqa: E402
 from turn import (  # noqa: E402
     closest_fragment, cut_turn, find_session_start_trigger, fold_hits,
     generate_short_task_name, normalize_paste, utf16_units, verbatim_present,
@@ -67,12 +69,6 @@ SPLIT_MAX_UTF16 = 700
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def write_json_atomic(path, obj):
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
-    tmp.replace(path)
 
 
 def has_internal_newline(text):
@@ -149,38 +145,35 @@ class Extraction:
 
 # ---------------------------------------------------------------- RunState
 
-# 结果载荷里的 ctx 键段：成功 19 键、error 21 键（ADR-0022 决定 4）。
-# error 键序是成功键序的母集，launch_sent 与 adopt_reason 仅 error 带出。
-_SUCCESS_FACT_KEYS = (
-    "target_address", "launched", "rebuilt", "rebuilt_old_target", "workspace",
-    "space_created", "pane_adopted", "gift_cleanup_warning", "reset_skipped",
-    "display_name", "display_name_warning", "space", "space_selected",
-    "space_landed", "space_target_warning", "space_restore", "space_restore_warning",
-    "next_skill_feedback", "learning_warning",
-)
-_ERROR_FACT_KEYS = (
+# 结果载荷里的 ctx 键段：一张有序表 21 键（ADR-0022 决定 4）。
+# `launch_sent` 与 `adopt_reason` 仅 error 带出；成功投影过滤它们后是 19 键，
+# 且键序恰为 error 键序的子序列——输出键序与现状逐字一致（快照逐字比对）。
+_ERROR_ONLY_FACT_KEYS = frozenset({"launch_sent", "adopt_reason"})
+_FACT_KEYS = (
     "target_address", "launched", "launch_sent", "rebuilt", "rebuilt_old_target",
     "workspace", "adopt_reason", "space_created", "pane_adopted",
     "gift_cleanup_warning", "reset_skipped", "display_name", "display_name_warning",
     "space", "space_selected", "space_landed", "space_target_warning",
     "space_restore", "space_restore_warning", "next_skill_feedback", "learning_warning",
 )
+# 台账缺键哨兵：`complete=False` 是合法值，判据是「键存在」而非真值（ADR-0022 决定 4）。
+_MISSING = object()
 
 
 class RunState:
     """一轮共享状态＋台账/上下文写入的三个薄包装方法（ADR-0020 决定 12）。
 
-    方法体是现行 dict 加原子落盘的薄包装，行为一字不变；④ journal 只换方法体，
-    管线调用点不动。
+    台账文件由 `Journal` 独占（ADR-0022 决定 1）；三个方法仍是管线唯一调用点：
+    phase 委托、fact 写 ctx 并立即镜像落盘、project 留在这里做纯投影。
     """
 
     def __init__(self, request, deps):
         self.request = request
         self.deps = deps
         self.facts = {}          # ctx：本轮部分状态（成功与 error 都带适用字段）
-        self.ledger = None       # 台账 dict（open 之后才非 None）
-        self.ledger_path = None
-        self.ledger_opened = False
+        self.ledger_path = Path(request.loop_dir) / "runs" / f"{request.release_id}.json"
+        # 墙钟经 Deps 注入（ADR-0022 决定 7）；只有 Journal.fail 自盖 failed_at。
+        self.journal = Journal(self.ledger_path, now=deps.now)
         self.result_path = None
         self.notify_path = None
         self.original_target = request.target
@@ -206,34 +199,37 @@ class RunState:
         self.rewritten = None
         self.ext_fields = {}
 
+    @property
+    def ledger_opened(self):
+        """首版台账成功落盘＝放行 id 已消耗（ADR-0024 两态 hints 判据）。"""
+        return self.journal.opened
+
     def phase(self, name=None, **fields):
-        """写台账 phase 与字段并原子落盘；name=None 只落盘、不改 phase。
+        """委托 Journal.phase：写台账 phase 与字段并原子落盘；name=None 只补字段。
 
         台账未开（预检期）时不写——与基线各调用点的 `if ledger is not None`
-        守卫同义；journal 片再把「open 前 phase」改成编程错误。
+        守卫同义（预检期领养确实会走到这里）。Journal.phase 自身在 open 前调用
+        是编程错误（Journal 单测钉死）。
         """
-        if self.ledger is None:
+        if not self.journal.opened:
             return
-        if name is not None:
-            self.ledger["phase"] = name
-        self.ledger.update(fields)
-        write_json_atomic(self.ledger_path, self.ledger)
+        self.journal.phase(name, **fields)
 
     def fact(self, key, value, *, ledger=True):
-        """写 facts（ctx）；ledger=True 时镜像进台账 dict，不立即落盘。
+        """写 facts（ctx）；ledger=True 时立即镜像进台账并原子落盘。
 
-        落盘时机由相邻 phase 决定；基线里的延后写（pane_adopted/space_landed/
-        space_target_warning 等）由此保持延后，改立即落盘归 journal 片。
+        ADR-0022 决定 5：基线约 5 处延后落盘统一改立即落盘（只改中间态，终态与
+        phase 次序不变）。台账未开时只进 facts（Journal.fact 未开不写）。
         """
         self.facts[key] = value
-        if ledger and self.ledger is not None:
-            self.ledger[key] = value
+        if ledger:
+            self.journal.fact(key, value)
 
     def project(self, ok):
         """把 facts 与轮次标量投影成交付载荷（成功/error 两份固定头部）。
 
-        键序与现状逐字一致（快照逐字比对）；error 额外读台账的 run_record/
-        complete/complete_reason（台账未开时视为缺键）。
+        键序与现状逐字一致（快照逐字比对）；error 额外经 Journal.get 读台账的
+        run_record/complete/complete_reason（缺键哨兵区分 `complete=False`）。
         """
         return self._success_payload() if ok else self._error_payload()
 
@@ -264,7 +260,9 @@ class RunState:
         # target_model 仅传了才出现：语义是「本轮请求切换到的名字」，非「已验证生效」。
         if request.target_model:
             payload["target_model"] = request.target_model
-        for k in _SUCCESS_FACT_KEYS:
+        for k in _FACT_KEYS:
+            if k in _ERROR_ONLY_FACT_KEYS:
+                continue
             if k in self.facts:
                 payload[k] = self.facts[k]
         return payload
@@ -288,17 +286,20 @@ class RunState:
         if request.target_model:
             out["target_model"] = request.target_model
             out["error"]["model_sent"] = self.model_sent
-        for k in _ERROR_FACT_KEYS:
+        for k in _FACT_KEYS:
             if k in self.facts:
                 out[k] = self.facts[k]
         if self.started is not None:
             out["error"]["elapsed_s"] = round(self.deps.monotonic() - self.started, 1)
-        if self.ledger is not None and self.ledger.get("run_record"):
-            out["error"]["run_record"] = self.ledger["run_record"]
+        run_record = self.journal.get("run_record")
+        if run_record:
+            out["error"]["run_record"] = run_record
         # 完整性标记（ADR-0019）：回读后发生的错误（如抽取失败）不丢折叠标记。
-        if self.ledger is not None and "complete" in self.ledger:
-            out["complete"] = self.ledger["complete"]
-            out["complete_reason"] = self.ledger["complete_reason"]
+        # 判据是「键存在」：complete=False 是合法值（哨兵区分缺键）。
+        complete = self.journal.get("complete", _MISSING)
+        if complete is not _MISSING:
+            out["complete"] = complete
+            out["complete_reason"] = self.journal.get("complete_reason")
         return out
 
 
@@ -979,7 +980,7 @@ def adopt(state, herdr, address, precheck):
         state.fact("space_restore", cm.restore)
         if warning is not None:
             state.fact("space_restore_warning", warning)
-        if state.ledger is not None:
+        if state.journal.opened:
             fields = {"space_restore": cm.restore}
             if warning is not None:
                 fields["space_restore_warning"] = warning
@@ -1154,14 +1155,8 @@ def run(request, deps):
 
 
 def _error_outcome(state, e):
-    """统一 error 出口：尽力写终态台账（失败吞）、部分状态机械带出。"""
-    if state.ledger is not None and state.ledger_path is not None:
-        try:
-            state.phase(f"error:{e.kind}",
-                        error={"kind": e.kind, "message": e.message},
-                        failed_at=now_iso())
-        except OSError:
-            pass
+    """统一 error 出口：尽力写终态台账（Journal.fail 内部吞 OSError）、部分状态机械带出。"""
+    state.journal.fail(e.kind, e.message)
     state.error = e
     return Outcome(e.returncode, state.project(False), state.result_path, state.notify_path)
 
@@ -1324,8 +1319,8 @@ def _run(state):
         raise DispatchError("prompt_unreadable", f"读不到提示词文件：{e}", [])
     if hashlib.sha256(recheck).hexdigest() != sha:
         raise DispatchError("prompt_changed", "提示词文件在预检期间被改动，不发送", [])
-    runs.mkdir(parents=True, exist_ok=True)
-    state.ledger = {
+    # Journal.open 是消耗放行 id 的唯一动作：runs 目录在 open 里建、首版落盘。
+    state.journal.open({
         "release_id": request.release_id,
         "task_name": state.task_name,
         "target": request.target,
@@ -1353,9 +1348,7 @@ def _run(state):
         },
         "phase": "sending",
         "created_at": now_iso(),
-    }
-    write_json_atomic(state.ledger_path, state.ledger)
-    state.ledger_opened = True   # 首版台账成功落盘＝放行 id 消耗（ADR-0024 两态 hints 判据）
+    })
 
     # ---- bring_up：Route 三选一 ----
     if route in (Route.create, Route.rebuild):
