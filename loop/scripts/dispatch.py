@@ -743,15 +743,13 @@ def _extract_prompt_path():
     return extract_md
 
 
-def _extract_sections(request, injection, *, inline):
-    """两后端共用的消息段：指令→few-shot 注入（如有）→回声参照（#127）。
+def _extract_sections(request, injection, delivery_note):
+    """两后端共用的消息段：投递说法＋指令→few-shot 注入（如有）→回声参照（#127）。
 
-    只换本轮原料的投递说法：api 内联在末尾、pi 走 @文件附件（ADR-0013）；
+    delivery_note 是本轮原料的投递说法：api 内联在末尾、pi 走 @文件附件（ADR-0013）；
     原料正文本身不进返回值。
     """
-    head = ("本轮原料已内联在本消息末尾。" if inline
-            else "本轮原料已随消息附上（@文件）。")
-    sections = [head + _EXTRACT_INSTRUCTION]
+    sections = [delivery_note + _EXTRACT_INSTRUCTION]
     if injection:
         sections.append(injection)
     sections.append(echo_reference(request))
@@ -768,7 +766,8 @@ def _extraction_from_output(output):
 def extract_via_pi(deps, request, turn_path, injection):
     extract_md = _extract_prompt_path()
     # 在线 few-shot（ADR-0012）与回声参照（#127）同 api 侧共用；原料只走 @文件附件。
-    instruction = "\n\n".join(_extract_sections(request, injection, inline=False))
+    instruction = "\n\n".join(_extract_sections(
+        request, injection, "本轮原料已随消息附上（@文件）。"))
     instruction += f'\n本轮原料落盘路径：{turn_path}'
     argv = [
         deps.pi_bin, "-p",
@@ -807,7 +806,8 @@ def extract_via_api(deps, request, turn_path, injection):
         raise DispatchError("missing_prompt", f"读不到抽取提示词：{extract_md}：{e}", [])
     # 在线 few-shot（ADR-0012）与回声参照（#127）都插在指令与本轮原料之间，
     # 本轮原料仍居消息末尾；无历史时为空、沿用原 prompt（冷启动行为不变）。
-    sections = _extract_sections(request, injection, inline=True)
+    sections = _extract_sections(
+        request, injection, "本轮原料已内联在本消息末尾。")
     sections.append(turn_text)
     user_content = "\n\n".join(sections)
     body = json.dumps({
