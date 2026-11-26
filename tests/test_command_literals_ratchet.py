@@ -2,15 +2,15 @@
 """test_command_literals_ratchet.py — 命令字面量棘轮守卫（G1，#109，ADR-0021 决定 4）。
 
 跑法：python3 tests/test_command_literals_ratchet.py
-扫描 `loop/scripts/dispatch.py`：herdr 命令字面量只许留在白名单函数里，白名单
-随 G2/G3 迁移逐批缩小、终态清空（清空后删常量、改无条件断言，归最后退役切片）。
+扫描 `loop/scripts/dispatch.py`：herdr 命令字面量一律不许出现。G2 迁会话簇、
+G3 迁空间簇后白名单已清空，终态片删除常量与陈旧/容忍分支，改为**无条件断言**
+（ADR-0021 决定 4）；此后任何新增命令字面量直接红，无豁免路径。
 
 判据（可机械检验的「命令字面量」）：传给 `hc_json` / `app_json` 的 argv 里，
 首元素是字符串字面量（app 的 `do` 取第二元素为 do 子命令）。变量 argv 不算——
 它还没把命令词写进分发脚本。函数级归属取最内层 `def`，模块级记 `<module>`。
 
-自检式「只缩不增」：白名单条目不再命中、或函数已不存在，守卫自己失败，逼 PR
-删条。不依赖 git 状态（ADR-0021 Considered Options）。注入假源码覆盖每种判定
+不依赖 git 状态（ADR-0021 Considered Options）。注入假源码覆盖每种判定
 路径，守卫绿不是守卫坏了的假绿。
 """
 import ast
@@ -18,11 +18,6 @@ import collections
 from pathlib import Path
 
 DISPATCH = Path(__file__).resolve().parent.parent / "loop" / "scripts" / "dispatch.py"
-
-# 白名单：函数名 -> (理由, 退役切片)。只许缩小；陈旧条目自检必红。
-# 首版以实际扫描推导（G1）：15 个函数、35 处字面量。G2 迁会话簇（删 10 条），
-# G3 迁空间簇后清空（本片 WHITELIST = {}；删常量、改无条件断言归最后退役切片）。
-WHITELIST = {}
 
 
 def command_literal(call):
@@ -82,46 +77,37 @@ def collect(source):
     return dict(collector.hits)
 
 
-def scan(source, whitelist):
-    """(源码, 白名单)→问题列表。空列表＝通过。守卫与自证共用。"""
+def scan(source):
+    """(源码)→问题列表。空列表＝通过。守卫与自证共用。
+
+    无条件断言：任一行出现命令字面量即失败，不存在白名单豁免。
+    """
     hits = collect(source)
     problems = []
     for scope in sorted(hits):
-        if scope not in whitelist:
-            detail = "; ".join("L%d %s" % item for item in hits[scope])
-            problems.append("%s: 未豁免 herdr 命令字面量 %d 处 [%s]"
-                            % (scope, len(hits[scope]), detail))
-    for scope in sorted(whitelist):
-        if scope not in hits:
-            problems.append("%s: 白名单条目陈旧（已无命令字面量，须删条）" % scope)
+        detail = "; ".join("L%d %s" % item for item in hits[scope])
+        problems.append("%s: herdr 命令字面量 %d 处 [%s]"
+                        % (scope, len(hits[scope]), detail))
     return problems
 
 
 def _self_test():
     """注入假源码覆盖每种判定路径——不修改真实文件、不依赖 git。"""
     # 非 argv 字面量不算（普通字符串/注释不误伤）
-    assert scan('def f():\n    x = "get"\n', {}) == []
-    # hc/app 两种入口、两种调用形都报
+    assert scan('def f():\n    x = "get"\n') == []
+    # hc/app 两种入口、两种调用形都报——无条件断言，无任何豁免路径
     for src in ('def f():\n    deps.hc_json(["get", "t"], 30)\n',
                 'def f():\n    hc_json(bin, ["get", "t"], 30)\n',
                 'def f():\n    deps.app_json(["ls"], 30)\n',
                 'def f():\n    app_json(bin, ["ls"], 30)\n',
                 'def f():\n    deps.app_json(["do", "tab.close", "{}"], 30)\n'):
-        assert scan(src, {}) != [], src
+        assert scan(src) != [], src
     # 变量 argv 不算
-    assert scan("def f():\n    deps.hc_json(argv, 30)\n", {}) == []
-    # 白名单内违规容忍
-    assert scan('def f():\n    deps.hc_json(["get"], 30)\n',
-                {"f": ("理由", "G2")}) == []
-    # 白名单条目陈旧必报（函数还在但已无违规）
-    assert scan("def f():\n    x = 1\n", {"f": ("理由", "G2")}) != []
-    # 白名单条目陈旧必报（函数已不存在）
-    assert scan("def g():\n    x = 1\n", {"f": ("理由", "G2")}) != []
-    # 模块级命令字面量归 <module>，可被白名单接住
-    assert scan('deps.hc_json(["get"], 30)\n', {}) != []
-    assert scan('deps.hc_json(["get"], 30)\n', {"<module>": ("理由", "G2")}) == []
+    assert scan("def f():\n    deps.hc_json(argv, 30)\n") == []
+    # 模块级命令字面量归 <module>，同样无条件失败
+    assert scan('deps.hc_json(["get"], 30)\n') != []
     # 干净文件通过
-    assert scan("def f():\n    x = 1\n", {}) == []
+    assert scan("def f():\n    x = 1\n") == []
     # 嵌套函数取最内层归属
     nested = "def outer():\n    def inner():\n        deps.hc_json([\"get\"], 30)\n"
     assert list(collect(nested)) == ["inner"]
@@ -132,9 +118,9 @@ def main():
     _self_test()
     source = DISPATCH.read_text(encoding="utf-8")
     hits = collect(source)
-    problems = scan(source, WHITELIST)
+    problems = scan(source)
     assert problems == [], "命令字面量棘轮失败：\n  " + "\n  ".join(problems)
-    print("ratchet: %d functions / %d literal sites (G3 whitelist empty)"
+    print("ratchet: %d functions / %d literal sites, no command literals"
           % (len(hits), sum(len(v) for v in hits.values())))
     print("all command-literal ratchet tests passed")
 
