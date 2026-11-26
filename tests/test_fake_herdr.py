@@ -377,6 +377,74 @@ def main():
     assert g["turn"] is False
     print("25 turn absent (None) / non-integer (False) scenarios expressible")
 
+    # 26 space.new 赠送日志（T5b）：(space_id, tab_id, 赠送 shell 地址) 与返回/ls 一致；
+    #    noop（空间没建）不记。消费方据此断言清理舞落点，不硬编码假世界自动 id。
+    w = FakeHerdr()
+    r = w.app_json(None, ["do", "space.new",
+                          json.dumps({"name": "proj", "folder": "/proj",
+                                      "focus": False})], 30)
+    assert w.gifts == [(r["space"], r["tab"], r["terminal"])], w.gifts
+    ls = w.app_json(None, ["ls"], 30)
+    sp = ls["spaces"][0]
+    assert sp["id"] == r["space"] and sp["tabs"][0]["id"] == r["tab"]
+    assert sp["tabs"][0]["terminals"][0]["terminal"] == r["terminal"]
+    w2 = FakeHerdr()
+    w2.fail("space.new", "noop")
+    w2.app_json(None, ["do", "space.new", json.dumps({"name": "x"})], 30)
+    assert w2.gifts == [], w2.gifts
+    print("26 space.new gift log matches response and ls; noop not logged")
+
+    # 27 跨侧命令时序日志（T5b）：hc/app 调用按实际顺序入 command_log，do 带子命令名；
+    #    失败调用也入日志（与 hc_calls/app_calls 同口径）。显示名时序断言用。
+    #    命名避开 ADR-0022 台账 Journal 域词（那是运行时台账文件类，④片落地）。
+    w = FakeHerdr()
+    w.add_terminal(address="t50")
+    w.add_space(name="main")
+    w.hc_json(None, ["get", "t50"], 30)
+    w.app_json(None, ["status"], 30)
+    w.app_json(None, ["do", "terminal.keep", json.dumps({"terminal": "t50"})], 30)
+    w.hc_json(None, ["send", "--", "t50", "你好"], 120)
+    assert w.command_log == [("hc", "get"), ("app", "status", None),
+                             ("app", "do", "terminal.keep"), ("hc", "send")], w.command_log
+    w2 = FakeHerdr()
+    w2.app_closed()
+    app_raises(lambda: w2.app_json(None, ["status"], 30))
+    assert w2.command_log == [("app", "status", None)], w2.command_log
+    print("27 cross-side command_log records call order, do subcommand, failed calls")
+
+    # 28 app_closed → app_opened（T5b）：用户打开 herdr-app 后命令照常（重试用）。
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.app_closed()
+    app_raises(lambda: w.app_json(None, ["status"], 30))
+    w.app_opened()
+    assert w.app_json(None, ["status"], 30)["space"] == "sp1"
+    print("28 event: app reopened after closed")
+
+    # 29 ls 不暴露空间 id（T5b）：命中空间缺 id 的防御场景（契约 id 可空先例，
+    #    与 hide_tab_ids 同形）；status 仍报真实选中，只影响 ls 投影。
+    w = FakeHerdr()
+    w.add_space(name="proj")
+    w.hide_space_ids()
+    ls = w.app_json(None, ["ls"], 30)
+    contract.check("app.ls", ls)
+    assert ls["spaces"][0]["id"] is None and ls["spaces"][0]["name"] == "proj"
+    assert w.app_json(None, ["status"], 30)["space"] == "sp1"
+    print("29 event: space ids hidden in ls, status unaffected")
+
+    # 30 delay 的 nth（T5b）：只第 N 次该命令调用挂延迟（1 起，与 fail 的 nth 同形）；
+    #    缺省每次照旧。select 复核抖动只抖首次、还原 select 干净的场景用。
+    w = FakeHerdr()
+    sp1 = w.add_space(name="main")
+    sp2 = w.add_space(name="side")
+    w.delay("space.select", "land_after", after=2, nth=1)
+    w.app_json(None, ["do", "space.select", json.dumps({"id": sp2})], 30)
+    assert w.app_json(None, ["status"], 30)["space"] == sp1   # 首次 select：抖动报旧值
+    assert w.app_json(None, ["status"], 30)["space"] == sp2
+    w.app_json(None, ["do", "space.select", json.dumps({"id": sp1})], 30)
+    assert w.app_json(None, ["status"], 30)["space"] == sp1   # 第二次 select：不挂延迟
+    print("30 delay nth: only the Nth command invocation arms the delay")
+
     print("all fake-herdr tests passed")
 
 

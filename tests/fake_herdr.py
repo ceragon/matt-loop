@@ -36,6 +36,8 @@ class FakeHerdr:
         self.sends = []              # (addr, text, if_idle) 发送日志
         self.hc_calls = []           # 每次 hc 调用的完整 args
         self.app_calls = []          # 每次 app 调用的完整 args
+        self.gifts = []              # space.new 赠送日志：(space_id, tab_id, 赠送 shell 地址)
+        self.command_log = []        # 跨 hc/app 命令时序日志：("hc", cmd) / ("app", cmd, do 子命令)
         self._screens = {}           # address -> read 屏幕文本
         self._screen_seq = {}        # address -> 待消费屏幕序列（read 逐次取一条）
         self._launch = None          # (启动命令文本, 效果)
@@ -46,6 +48,7 @@ class FakeHerdr:
         self._stale_status = None    # {"remaining": N, "value": 旧选中}
         self._closed = False         # 事件：app 没开着
         self._hide_tab_ids = False   # 事件：ls 不暴露标签页 id
+        self._hide_space_ids = False # 事件：ls 不暴露空间 id
         self._land_elsewhere = False # 事件：pane 落进非选中空间
         self._switch_on = None       # 事件：某条命令后用户切走空间
         self._next_addr = 100
@@ -161,13 +164,15 @@ class FakeHerdr:
         self._fails.append({"command": command, "mode": mode, "kind": kind,
                             "nth": nth, "message": message, "n": 0})
 
-    def delay(self, command, mode, *, after=1):
+    def delay(self, command, mode, *, after=1, nth=None):
         """延迟旋钮：某条命令的效果慢下来。land_after＝第 after 次观察才落地
-        （keep 数 ls、tab.close 数 get、space.select 数 status）；vanish＝条目被收走。"""
+        （keep 数 ls、tab.close 数 get、space.select 数 status）；vanish＝条目被收走。
+        nth 定位第几次该命令调用才挂延迟（1 起，缺省每次），与 fail 的 nth 同形。"""
         self._guard_key(command)
         if (command, mode) not in self._DELAY_OK:
             raise ValueError("不适用的延迟组合：(%r, %r)" % (command, mode))
-        self._delays.append({"command": command, "mode": mode, "after": after})
+        self._delays.append({"command": command, "mode": mode, "after": after,
+                             "nth": nth, "n": 0})
 
     # 假世界实现的命令面（dispatch 实际调用的 8 个 hc 子命令＋3 个 app 子命令＋5 个 do）。
     _SUPPORTED = frozenset({"get", "run", "label", "send", "wait", "read", "kill", "rm",
@@ -203,6 +208,8 @@ class FakeHerdr:
     def _delay_after(self, command, mode):
         for d in self._delays:
             if d["command"] == command and d["mode"] == mode:
+                if d["nth"] is not None and d["n"] != d["nth"]:
+                    continue
                 return d["after"]
         return None
 
@@ -211,6 +218,10 @@ class FakeHerdr:
     def app_closed(self):
         """herdr-app 没开着：一切 app 命令失败（错误信封为假设形状，README 标注）。"""
         self._closed = True
+
+    def app_opened(self):
+        """herdr-app 重新打开（app_closed 的恢复事件）：app 命令照常。"""
+        self._closed = False
 
     def user_switches_space(self, *, on=None):
         """用户切走选中空间。on=None 立即切；on=<命令名> 挂在那条命令完成之后
@@ -228,6 +239,10 @@ class FakeHerdr:
     def hide_tab_ids(self):
         """ls 不暴露标签页 id（显示名定位不到的场景）。"""
         self._hide_tab_ids = True
+
+    def hide_space_ids(self):
+        """ls 不暴露空间 id（命中空间缺 id 的场景；契约 id 可空先例）。"""
+        self._hide_space_ids = True
 
     def session_killed_externally(self, address):
         """会话被外部杀掉：finished、reason=killed、无正常退出码，名字失解析。"""
@@ -267,6 +282,7 @@ class FakeHerdr:
     def hc_json(self, hc_bin, args, timeout_s):
         self.hc_calls.append(list(args))
         cmd = args[0]
+        self.command_log.append(("hc", cmd))
         noop = self._fault(cmd, "hc")
         if cmd == "get":
             d = self._require(args[1])
@@ -411,12 +427,14 @@ class FakeHerdr:
                 tabs.append({"id": None if self._hide_tab_ids else tb["id"],
                              "name": tb["name"],
                              "active": True, "settled": False, "terminals": entries})
-            spaces.append({"id": sp["id"], "name": sp["name"], "folder": sp["folder"],
+            spaces.append({"id": None if self._hide_space_ids else sp["id"],
+                           "name": sp["name"], "folder": sp["folder"],
                            "machine": None, "active": True, "tabs": tabs})
         return {"spaces": spaces, "recent": []}
 
     def app_json(self, app_bin, args, timeout_s):
         self.app_calls.append(list(args))
+        self.command_log.append(("app", args[0], args[1] if args[0] == "do" else None))
         if self._closed:
             raise self._app_fail("not running")
         knob_key = args[1] if args[0] == "do" else args[0]
@@ -466,6 +484,10 @@ class FakeHerdr:
                 self._pending_panes[addr] = n
 
     def _do(self, name, payload, noop=False):
+        # 延迟旋钮的调用计数：每条命令调用一次（tab.close 查 vanish/land_after 两次不双计）。
+        for d in self._delays:
+            if d["command"] == name:
+                d["n"] += 1
         if name == "terminal.keep":
             addr = payload["terminal"]
             if self._spaces and not noop:
@@ -506,6 +528,7 @@ class FakeHerdr:
                                    folder=payload.get("folder"))
             gifted = self.add_terminal(fg="shell", turn=0)
             tb_id = self.add_tab(sp_id, terminals=[gifted])
+            self.gifts.append((sp_id, tb_id, gifted))
             return {"space": sp_id, "tab": tb_id, "terminal": gifted}
         if name == "tab.close":
             if noop:
