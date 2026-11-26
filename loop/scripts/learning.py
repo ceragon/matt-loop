@@ -50,9 +50,13 @@ LOCK_TIMEOUT_S = 5.0
 _SLASH_RE = re.compile(r"^\s*/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 
-def enabled():
-    """LOOP_LEARNING=off 关闭；其他值（含未设）默认开启（ADR-0012 §5.5）。"""
-    return os.environ.get("LOOP_LEARNING", "").strip().lower() != "off"
+def enabled(env=None):
+    """LOOP_LEARNING=off 关闭；其他值（含未设）默认开启（ADR-0012 §5.5）。
+
+    env 是可注入的环境映射（默认 os.environ；管线传 deps.env，收掉直读洞）。
+    """
+    _env = os.environ if env is None else env
+    return _env.get("LOOP_LEARNING", "").strip().lower() != "off"
 
 
 def learning_dir():

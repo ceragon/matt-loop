@@ -25,7 +25,7 @@ from pathlib import Path
 
 import harness
 from harness import dispatch
-from helpers import PROMPT, ANCHOR, world, api_env, FakeResp
+from helpers import PROMPT, ANCHOR, world, api_env, FakeResp, extraction
 
 OLD = "旧轮回复第一行\n旧轮回复第二行"
 ECHO = "❯ " + ANCHOR + " …"
@@ -49,10 +49,10 @@ def run_round(screen, rid, ext, prompt=PROMPT, mock_extract=True,
         w = world(screen)
         captured = {}
 
-        def recording_extract(pi_bin, args, path):
+        def recording_extract(deps, request, path, injection):
             captured["extract_path"] = str(path)
             captured["extract_input"] = Path(path).read_text(encoding="utf-8")
-            return dict(ext)
+            return extraction(ext)
 
         r = harness.run(argv, world=w, env=env,
                         extract=recording_extract if mock_extract else dispatch.extract,

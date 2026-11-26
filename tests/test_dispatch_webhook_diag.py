@@ -38,7 +38,7 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from helpers import PROMPT, EXT, world
+from helpers import PROMPT, EXT, world, extraction
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -90,7 +90,7 @@ def run_case(rid, opener, proxy_res=None):
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
         r = harness.run(argv, world=world(),
                         env={"LOOP_WEBHOOK_URL": URL, "LOOP_WEBHOOK_SECRET": SECRET},
-                        extract=lambda pi_bin, args, raw: dict(EXT),
+                        extract=lambda deps, request, turn_path, injection: extraction(EXT),
                         http_open=opener, proxy_resolution=proxy_res)
         result_text = r.result_path.read_text(encoding="utf-8")
         notify_bytes = r.notify_path.read_bytes()

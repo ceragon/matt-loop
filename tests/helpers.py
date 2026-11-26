@@ -32,6 +32,7 @@ import json
 from pathlib import Path
 
 from fake_herdr import FakeHerdr
+from harness import pipeline
 
 PROMPT = "请实现某个功能\n第二行说明"
 ANCHOR = PROMPT.splitlines()[0][:24]
@@ -70,10 +71,19 @@ def argv(td, rid, extra=()):
             "--settle-seconds", "0.01", "--settle-checks", "2", *extra]
 
 
+def extraction(source):
+    """把六/五字段 ext 源转成管线 Extraction（Deps.extract 的注入面契约，P2）。
+    reply 单列；其余字段按源序进 fields；格式标记默认 False。"""
+    src = dict(source)
+    reply = src.pop("reply", "")
+    return pipeline.Extraction(fields=src, reply=reply, next_skill_invalid=False)
+
+
 def ext(source):
     """extract 桩构造器：返回给定 ext 的副本。ext 源经显式参数绑定（六字段/五字段
-    旧形状各文件本地绑定），不共享自由变量。"""
-    return lambda pi_bin, args, turn_path: dict(source)
+    旧形状各文件本地绑定），不共享自由变量。注入面与 Deps.extract 同形：
+    (deps, request, turn_path, injection) → pipeline.Extraction。"""
+    return lambda deps, request, turn_path, injection: extraction(source)
 
 
 def api_env(**kw):

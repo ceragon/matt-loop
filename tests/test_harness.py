@@ -5,6 +5,9 @@
 只测 harness 的机械职责：装配依赖对象、调用分发脚本入口、把返回码与产物
 整理成可断言的东西；全局副作用作用域内替换并恢复；时钟虚拟不真睡。
 不解释业务含义（不断言业务分支）。
+P2 收口后 harness 不再赋值任何 dispatch 模块全局：命令层、时钟、locate、
+http_open/run_cmd、proxy_resolution 全经 Deps 注入；仅 learning_dir 的环境
+直读仍需 scoped_env（随 ⑤/P3 退役）。
 """
 import json
 import os
@@ -15,7 +18,7 @@ from pathlib import Path
 import harness
 from harness import dispatch
 from fake_herdr import FakeHerdr
-from helpers import PROMPT, ANCHOR, EXT
+from helpers import PROMPT, ANCHOR, EXT, extraction
 
 
 def world_with_terminal():
@@ -25,6 +28,10 @@ def world_with_terminal():
     w.add_tab(sp, terminals=["t99"])   # pane 已在：领养提前返回
     w.screen("t99", ANCHOR + "\n已完成该功能。")
     return w
+
+
+def stub_ext(deps, request, turn_path, injection):
+    return extraction(EXT)
 
 
 def base_argv(td, rid, extra=()):
@@ -41,8 +48,7 @@ def main():
     # 1 跑一轮：返回码与产物（stdout JSON、台账、result 文件）整理齐全
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
-        r = harness.run(base_argv(td, "harness-1"), world=w,
-                        extract=lambda pi_bin, args, raw: dict(EXT))
+        r = harness.run(base_argv(td, "harness-1"), world=w, extract=stub_ext)
         assert r.rc == 0, r.result          # 装配正确：一轮跑通（不断言业务分支）
         assert json.loads(r.stdout.strip()) == r.result
         assert isinstance(r.ledger, dict)   # 台账产物被整理出来
@@ -50,16 +56,19 @@ def main():
         assert r.ledger_path.exists()
     print("1 run collects rc, stdout result, ledger, result file")
 
-    # 2 全局副作用归零：模块全局与 os.environ 跑后原样
+    # 2 全局副作用归零：harness 不再替换模块全局，跑后原样；os.environ 也恢复。
     before_env = dict(os.environ)
-    saved = (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool)
+    saved = (dispatch.hc_json, dispatch.app_json, dispatch.find_tool,
+             dispatch.webhook_open, dispatch.run_cmd,
+             dispatch.webhook_proxy_resolution)
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
-        harness.run(base_argv(td, "harness-2"), world=w,
-                    extract=lambda pi_bin, args, raw: dict(EXT))
-    assert (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool) == saved
+        harness.run(base_argv(td, "harness-2"), world=w, extract=stub_ext)
+    assert (dispatch.hc_json, dispatch.app_json, dispatch.find_tool,
+            dispatch.webhook_open, dispatch.run_cmd,
+            dispatch.webhook_proxy_resolution) == saved
     assert dict(os.environ) == before_env
-    print("2 module globals and os.environ restored")
+    print("2 module globals untouched, os.environ restored")
 
     # 3 虚拟时钟：settle 静置只推进虚拟时间，不真睡
     w = world_with_terminal()
@@ -68,44 +77,41 @@ def main():
         argv = base_argv(td, "harness-3",
                          extra=["--settle-seconds", "5"])
         t0 = time.monotonic()
-        r = harness.run(argv, world=w, clock=clock,
-                        extract=lambda pi_bin, args, raw: dict(EXT))
+        r = harness.run(argv, world=w, clock=clock, extract=stub_ext)
         elapsed = time.monotonic() - t0
         assert r.rc == 0, r.result
         assert clock.t >= 10, clock.t     # 2 次静置 × 5 秒全记在虚拟时钟上
         assert elapsed < 2, elapsed       # 真实时间没睡
     print("3 virtual clock advances without real sleeping")
 
-    # 4 残留全局洞（reset_settle 读模块级 hc_json/time）也被作用域内覆盖：
-    #   --reset 前置路径若没被覆盖会撞真实 hc_json（missing_tool）而停轮；
-    #   跑通（rc 0）即证覆盖生效，不断言前置发送序列本身。
+    # 4 前置路径全部经 Deps（不再有模块级 hc_json/time 残留）：--reset 跑通即证。
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
         r = harness.run(base_argv(td, "harness-4", extra=["--reset", "clear"]),
-                        world=w, extract=lambda pi_bin, args, raw: dict(EXT))
+                        world=w, extract=stub_ext)
         assert r.rc == 0, r.result
-    print("4 residual module-global paths covered by scoped injection")
+    print("4 reset prestep runs entirely through Deps injection")
 
-    # 5 env 注入到达分发脚本（隔离映射作用域内应用、跑后恢复）：backend=api 缺配置
-    #   必在启动预检停轮（rc 非 0 即证 env 到达）；具体业务 kind 由既有专项测试覆盖。
+    # 5 env 注入到达分发脚本（Deps.env）：backend=api 缺配置必在启动预检停轮。
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
         r = harness.run(base_argv(td, "harness-5"), world=w,
                         env={"LOOP_EXTRACT_BACKEND": "api"},   # 缺 API 配置
-                        extract=lambda pi_bin, args, raw: dict(EXT))
+                        extract=stub_ext)
         assert r.rc == 2, r.result
     assert dict(os.environ) == before_env
-    print("5 env mapping reaches dispatch, os.environ restored after run")
+    print("5 env mapping reaches dispatch via Deps.env, os.environ restored")
 
-    # 6 残留洞吸收：合并 env 作用域内应用到 os.environ（覆盖直读 os.environ 的读者，
-    #   如 learning.enabled），跑后恢复原样；原本不存在的键退出删除。
+    # 6 残留 env 作用域（仅 learning_dir）：合并 env 作用域内应用到 os.environ，
+    #   跑后恢复原样；原本不存在的键退出删除。
     before_env = dict(os.environ)   # LOOP_PROBE_NEW 是虚构键，本就不在环境里
     seen = {}
 
-    def probe_extract(pi_bin, args, turn_path):
+    def probe_extract(deps, request, turn_path, injection):
         seen["LOOP_LEARNING"] = os.environ.get("LOOP_LEARNING")
         seen["LOOP_PROBE_NEW"] = os.environ.get("LOOP_PROBE_NEW")
-        return dict(EXT)
+        seen["deps_learning"] = deps.env.get("LOOP_LEARNING")
+        return extraction(EXT)
 
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
@@ -114,41 +120,32 @@ def main():
         assert r.rc == 0, r.result
     assert seen["LOOP_LEARNING"] == "off", seen          # 默认隔离到达 os.environ 读者
     assert seen["LOOP_PROBE_NEW"] == "probe-val", seen   # 注入键作用域内可见
+    assert seen["deps_learning"] == "off", seen          # Deps.env 同源
     assert "LOOP_PROBE_NEW" not in os.environ            # 原本不存在→退出删除
     assert dict(os.environ) == before_env
-    print("6 env mapping applied to os.environ in scope, restored on exit")
+    print("6 residual env scope (learning_dir) applied in scope, restored on exit")
 
-    # 7 残留洞吸收：注入 http_open/run_cmd 时作用域内替换模块级 webhook_open/run_cmd，
-    #   退出无条件恢复；不注入则模块级原样不动。
+    # 7 http_open/run_cmd 经 Deps 注入（不再替换模块全局）；探针在抽取里各调一次。
     saved_open, saved_cmd = dispatch.webhook_open, dispatch.run_cmd
-    marker_open = lambda req, timeout, proxies: None
-    marker_cmd = lambda argv, timeout_s: None
-    seen2 = {}
+    calls = []
+    marker_open = lambda req, timeout, proxies: calls.append(("open", req, proxies))
+    marker_cmd = lambda argv, timeout_s: calls.append(("cmd", list(argv), timeout_s))
 
-    def probe_extract2(pi_bin, args, turn_path):
-        seen2["open"] = dispatch.webhook_open
-        seen2["cmd"] = dispatch.run_cmd
-        return dict(EXT)
+    def probe_extract2(deps, request, turn_path, injection):
+        deps.run_cmd(["probe-cmd"], 7)
+        deps.http_open("probe-req", 5, {"https": "p"})
+        return extraction(EXT)
 
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
         r = harness.run(base_argv(td, "harness-7"), world=w,
-                        http_open=marker_open, run_cmd=marker_cmd, extract=probe_extract2)
+                        http_open=marker_open, run_cmd=marker_cmd,
+                        extract=probe_extract2)
         assert r.rc == 0, r.result
-    assert seen2["open"] is marker_open and seen2["cmd"] is marker_cmd
+    assert ("cmd", ["probe-cmd"], 7) in calls, calls
+    assert ("open", "probe-req", {"https": "p"}) in calls, calls
     assert dispatch.webhook_open is saved_open and dispatch.run_cmd is saved_cmd
-    seen3 = {}
-
-    def probe_extract3(pi_bin, args, turn_path):
-        seen3["open"] = dispatch.webhook_open
-        seen3["cmd"] = dispatch.run_cmd
-        return dict(EXT)
-
-    w = world_with_terminal()
-    with tempfile.TemporaryDirectory() as td:
-        harness.run(base_argv(td, "harness-7b"), world=w, extract=probe_extract3)
-    assert seen3["open"] is saved_open and seen3["cmd"] is saved_cmd
-    print("7 injected http_open/run_cmd replace module globals in scope, restored")
+    print("7 injected http_open/run_cmd reach Deps surface, module globals untouched")
 
     # 8 scoped_env（T5a 抽出，run() 内部复用）：作用域内应用、退出恢复原值、
     #   原本不存在的键退出删除。嵌套作用域验证「恢复原值」不靠裸 os.environ 写入。
@@ -180,42 +177,32 @@ def main():
     assert dict(os.environ) == before_env
     print("8c scoped_env restores on exception exit")
 
-    # 9 残留洞吸收（T5c）：注入 proxy_resolution 时作用域内替换模块级
-    #   webhook_proxy_resolution，退出无条件恢复；不注入则模块级原样不动。
+    # 9 proxy_resolution 经 Deps 注入（不再替换模块全局）；探针在抽取里调一次。
     saved_proxy = dispatch.webhook_proxy_resolution
     marker_proxy = lambda url: ({"https": "http://proxy.invalid:1"}, "env")
-    seen4 = {}
+    proxy_seen = []
 
-    def probe_extract4(pi_bin, args, turn_path):
-        seen4["proxy"] = dispatch.webhook_proxy_resolution
-        return dict(EXT)
+    def probe_extract4(deps, request, turn_path, injection):
+        proxy_seen.append(deps.proxy_resolution("https://example.invalid/x"))
+        return extraction(EXT)
 
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
         r = harness.run(base_argv(td, "harness-9"), world=w,
                         proxy_resolution=marker_proxy, extract=probe_extract4)
         assert r.rc == 0, r.result
-    assert seen4["proxy"] is marker_proxy
+    assert proxy_seen == [({"https": "http://proxy.invalid:1"}, "env")], proxy_seen
     assert dispatch.webhook_proxy_resolution is saved_proxy
-    seen5 = {}
-
-    def probe_extract5(pi_bin, args, turn_path):
-        seen5["proxy"] = dispatch.webhook_proxy_resolution
-        return dict(EXT)
-
-    w = world_with_terminal()
-    with tempfile.TemporaryDirectory() as td:
-        harness.run(base_argv(td, "harness-9b"), world=w, extract=probe_extract5)
-    assert seen5["proxy"] is saved_proxy
-    print("9 injected proxy_resolution replaces module global in scope, restored")
+    print("9 injected proxy_resolution reaches Deps surface, module global untouched")
 
     # 9c 异常退出也无条件恢复：轮内抛异常（extract 探针炸）时模块全局与 os.environ
     #   仍恢复原样，异常原样外抛（finally 覆盖，不留共享污染）。
     before_env = dict(os.environ)
-    saved_all = (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
-                 dispatch.webhook_open, dispatch.run_cmd, dispatch.webhook_proxy_resolution)
+    saved_all = (dispatch.hc_json, dispatch.app_json, dispatch.find_tool,
+                 dispatch.webhook_open, dispatch.run_cmd,
+                 dispatch.webhook_proxy_resolution)
 
-    def boom_extract(pi_bin, args, turn_path):
+    def boom_extract(deps, request, turn_path, injection):
         raise RuntimeError("probe boom")
 
     w = world_with_terminal()
@@ -227,7 +214,7 @@ def main():
             raise AssertionError("异常须原样外抛")
         except RuntimeError as e:
             assert str(e) == "probe boom", e
-    assert (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
+    assert (dispatch.hc_json, dispatch.app_json, dispatch.find_tool,
             dispatch.webhook_open, dispatch.run_cmd,
             dispatch.webhook_proxy_resolution) == saved_all
     assert dict(os.environ) == before_env

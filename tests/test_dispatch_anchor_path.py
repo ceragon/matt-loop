@@ -21,16 +21,16 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from helpers import ANCHOR, world, argv
+from helpers import ANCHOR, world, argv, extraction
 
 def run_round(screen, rid):
     """reply 取回读全文（无旧轮时本轮段＝全文，保证逐字校验过），聚焦完整性门而非抽取质量。"""
     w = world(screen)
     with tempfile.TemporaryDirectory() as td:
         r = harness.run(argv(td, rid), world=w,
-                        extract=lambda pi_bin, args, turn_path: {
+                        extract=lambda deps, request, turn_path, injection: extraction({
                             "needs_user": False, "questions": [],
-                            "conclusion": "", "blocked": "", "reply": screen})
+                            "conclusion": "", "blocked": "", "reply": screen}))
         return r.rc, r.result, r.ledger
 
 

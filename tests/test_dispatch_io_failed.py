@@ -23,7 +23,7 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from helpers import PROMPT, SCREEN, EXT, world, argv, api_env
+from helpers import PROMPT, SCREEN, EXT, world, argv, api_env, extraction
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -204,9 +204,9 @@ def main():
     def setup_reply(td):
         holder["runs"] = td / ".loop" / "runs"
 
-    def extract_break_reply(pi_bin, args, turn_path):
+    def extract_break_reply(deps, request, turn_path, injection):
         (holder["runs"] / "io-reply-1.md").mkdir()
-        return dict(EXT)
+        return extraction(EXT)
 
     o = run_round("io-reply-1", w, setup=setup_reply, extract=extract_break_reply)
     assert_delivered(o, "io_failed", opened=True)
@@ -241,11 +241,11 @@ def main():
     #   真实抽取入口——api 专项先例）→ io_failed 已开态（US11 同形盲区）。
     w = world()
 
-    def extract_break_turn(pi_bin, args, turn_path):
+    def extract_break_turn(deps, request, turn_path, injection):
         tp = Path(turn_path)
         tp.unlink()
         tp.mkdir()
-        return dispatch.extract(pi_bin, args, turn_path)
+        return dispatch.extract(deps, request, turn_path, injection)
 
     o = run_round("io-turn-1", w, env=api_env(), extract=extract_break_turn)
     assert_delivered(o, "io_failed", opened=True)
