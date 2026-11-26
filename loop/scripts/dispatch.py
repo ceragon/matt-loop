@@ -87,7 +87,8 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
     搜不到不代表回复不完整（ADR-0013）。
   - 工具定位：hc（任何后端都必需；backend=pi 时还有 pi）先 shutil.which，PATH 找不到时自动探常见目录
     （~/.local/bin、homebrew、nvm node bin），后台 job 缺 PATH 也能起。uv 不每轮要求，只在解释器
-    <3.10 的自举路径里探（探不到报 python_too_old，ADR-0005 决定 7）。
+    <3.10 的自举路径里探（探不到报 python_too_old；#129/#130 的判断——ADR-0005 决定 7
+    只授权延后定位 pi）。
   - 本地记录归置：--loop-dir 默认 $TMPDIR/loop（tempfile.gettempdir()/loop），runs/ 放
     记录、releases/ 放放行提示词；随 OS 临时清理、不留持久审计，台账拒重发保护止于
     重启（放行 id 每次唯一）。PATH 由 find_tool 兜底，不需手写包装脚本。
