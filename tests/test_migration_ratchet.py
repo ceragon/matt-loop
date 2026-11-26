@@ -11,7 +11,7 @@ AST 扫描测试目录全部 .py（含守卫自身），禁止两类新增违规
 白名单是文件级字面量列表，每条带理由与退役切片。自检式「只缩不增」：
   - 非白名单文件出现违规→失败；
   - 白名单条目匹配不到任何真实违规→失败（逼 PR 删条）；
-  - 终态列表清空、守卫变无条件断言（R 执行）。
+  - 终态列表清空、守卫变无条件断言（最后一个退役切片执行，P2/⑤ 与 G1/P2 之后）。
 不依赖 git 状态（ADR-0021 Considered Options），任何检出环境都成立。
 守卫用注入的假源码自证能报错（每种判定路径各一例），「守卫绿」不是守卫坏了的假绿。
 """
@@ -24,14 +24,10 @@ TESTS_DIR = Path(__file__).resolve().parent
 _ENV_WRITE_METHODS = frozenset({"update", "pop", "setdefault", "clear"})
 
 # 文件级白名单：filename -> (理由, 退役切片)。只许缩小，不许新增；陈旧条目自检必红。
-# 首版以实际扫描推导（T4）；T5a–T5d 已把 16 个消费方按文件迁完、逐条删（21→15→11→8→5）。
-# 终态 5 条均带明确退役切片；R 删供应方残留兼容面、清空列表改无条件断言。
+# 首版以实际扫描推导（T4）；T5a–T5d 把 16 个消费方按文件迁完、逐条删（21→15→11→8→5）；
+# R 删三个供应方残留兼容面、删条（5→2，#104）。
+# 现存 2 条均带明确退役切片；最后一个退役切片清空列表改无条件断言（本片不清空、不删常量）。
 WHITELIST = {
-    # 三个供应方：残留兼容面（run_case/旧桩的 dispatch.<名> 赋值＋import 期 os.environ 写入）。
-    # 消费方已全部迁完（T5a–T5d）、兼容面无消费方引用（仅供应方之间转口）；随 R 删旧桩时删条。
-    "test_dispatch_reset.py": ("供应方残留兼容面：run_case 全局赋值＋import 期环境写入", "R"),
-    "test_dispatch_get_or_create.py": ("供应方残留兼容面：run_case 全局赋值＋import 期环境写入", "R"),
-    "test_dispatch_api_extract.py": ("供应方残留兼容面：env/api_env 的 os.environ 写入（供消费方）", "R"),
     # harness：残留洞作用域内替换（模块全局＋os.environ 应用＋webhook_open/run_cmd），退出恢复。
     "harness.py": ("残留洞作用域内替换（模块全局/os.environ/webhook_open/run_cmd）", "P2/⑤"),
     # 命令解析测试：作用域 run_cmd 替换喂真实错误信封＋噪声护栏摘录（T5d 并入）。

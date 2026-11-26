@@ -21,7 +21,8 @@ result.json / notify.json 落盘产物与 POST 请求体字节。覆盖规格阶
 T5c（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run。写失败探针（9/9b）保留
 对宿主模块 pathlib.Path 的作用域 mock.patch.object，退出无条件恢复（ADR-0016 决定 7
 残留洞纪律）。退避记录经既有 clock= 参数（VirtualClock 子类自带 sleeps 日志）。
-常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
+R（#104）：共享常量 PROMPT/SCREEN 迁 helpers 单一出处；EXT/EXT_NEEDS_USER 与
+_world(question) 变体留本地。
 """
 import json
 import shutil
@@ -33,10 +34,7 @@ from unittest import mock
 import harness
 from harness import dispatch
 from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-SCREEN = ANCHOR + "\n已完成该功能。"
+from helpers import PROMPT, SCREEN
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"

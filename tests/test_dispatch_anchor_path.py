@@ -12,7 +12,7 @@
 T5a（ADR-0021，#99）：完整轮用例（1–4）迁 FakeHerdr＋harness.run（唯一 CLI 缝）；
 find_tool 探测（5）不吃 Deps，保留直调，替换手法改对宿主模块 shutil 的作用域
 mock.patch.object（退出无条件恢复，ADR-0016 决定 7 残留洞纪律）。
-常量与助手本文件自带（T4 先例），不 import 供应方文件。
+R（#104）：共享常量与 world/argv 构造器迁 helpers 单一出处。
 """
 import shutil
 import tempfile
@@ -21,36 +21,13 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-
-
-def _world(screen):
-    """既有 idle agent t99＋main 空间 pane 已在＋指定屏幕。"""
-    w = FakeHerdr()
-    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
-    sp = w.add_space(name="main")
-    w.add_tab(sp, terminals=["t99"])
-    w.screen("t99", screen)
-    return w
-
-
-def _argv(td, rid):
-    pf = Path(td) / "prompt.md"
-    pf.write_text(PROMPT, encoding="utf-8")
-    return ["--target", "t99", "--release-id", rid,
-            "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
-            "--space", "main", "--wall-clock", "5", "--check-in", "1",
-            "--settle-seconds", "0.01", "--settle-checks", "2"]
-
+from helpers import ANCHOR, world, argv
 
 def run_round(screen, rid):
     """reply 取回读全文（无旧轮时本轮段＝全文，保证逐字校验过），聚焦完整性门而非抽取质量。"""
-    w = _world(screen)
+    w = world(screen)
     with tempfile.TemporaryDirectory() as td:
-        r = harness.run(_argv(td, rid), world=w,
+        r = harness.run(argv(td, rid), world=w,
                         extract=lambda pi_bin, args, turn_path: {
                             "needs_user": False, "questions": [],
                             "conclusion": "", "blocked": "", "reply": screen})

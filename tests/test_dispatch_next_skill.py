@@ -16,8 +16,9 @@ env / http_open / run_cmd 注入，真实抽取入口 dispatch.extract 经 harne
   7 e2e pi：同形状透传；pi 指令含六字段。
   8 extract.md：next_skill 规格、唯一例外、七候选、预测优先级在位。
 
-T5d（ADR-0021，#99）：e2e 用例迁 FakeHerdr＋harness.run；常量与助手本文件自带，
-不 import 供应方文件（去重债归 R）。
+T5d（ADR-0021，#99）：e2e 用例迁 FakeHerdr＋harness.run。
+R（#104）：共享常量与 world/api_env/FakeResp 迁 helpers 单一出处；EXT 五字段旧形状
+经 helpers.EXT5 单一出处（BASE_EXT 缺字段用例依赖键缺失）。
 """
 import json
 import tempfile
@@ -27,51 +28,10 @@ from pathlib import Path
 import harness
 from harness import dispatch
 import learning
-from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-SCREEN = ANCHOR + "\n已完成该功能。"
-EXT = {"needs_user": False, "questions": [],
-       "conclusion": "", "blocked": "", "reply": SCREEN}
-KEY = "sk-test-SECRET-VALUE"
-BASE = "https://gw.example/v1"
-MODEL = "test-model"
+from helpers import PROMPT, SCREEN, world, api_env, FakeResp
+from helpers import EXT5 as EXT   # 五字段旧形状（helpers 单一出处）
 
 BASE_EXT = dict(EXT)  # 五字段旧形状（conclusion=""、reply=SCREEN）
-
-
-class FakeResp:
-    def __init__(self, payload):
-        self._b = json.dumps(payload).encode("utf-8")
-
-    def read(self):
-        return self._b
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _api_env(**kw):
-    # LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入
-    # 覆盖宿主可能导出的同名键，保住隔离（退出恢复）。T4 先例。
-    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
-         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL, "LOOP_API_MAX_TOKENS": ""}
-    d.update(kw)
-    return d
-
-
-def _world():
-    """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋稳定屏幕。"""
-    w = FakeHerdr()
-    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
-    sp = w.add_space(name="main")
-    w.add_tab(sp, terminals=["t99"])
-    w.screen("t99", SCREEN)
-    return w
 
 
 def parse_ok(obj, meta=None):
@@ -95,13 +55,13 @@ def run_round(td, rid, ext_obj, backend):
         def fake_open(req, timeout, proxies):
             captured["body"] = json.loads(req.data.decode("utf-8"))
             return FakeResp({"choices": [{"message": {"content": payload}}]})
-        r = harness.run(argv, world=_world(), env=_api_env(),
+        r = harness.run(argv, world=world(), env=api_env(),
                         extract=dispatch.extract, http_open=fake_open)
     else:
         def fake_run(argv_, timeout):
             captured["argv"] = argv_
             return types.SimpleNamespace(returncode=0, stdout=payload, stderr="")
-        r = harness.run(argv, world=_world(), env={"LOOP_EXTRACT_BACKEND": "pi"},
+        r = harness.run(argv, world=world(), env={"LOOP_EXTRACT_BACKEND": "pi"},
                         extract=dispatch.extract, run_cmd=fake_run)
     return r.rc, r.result, ld, captured
 

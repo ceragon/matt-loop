@@ -15,20 +15,15 @@
  10 duplicate_release 优先于一切前置。
 
 T5a（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run（唯一 CLI 缝）；
-拒发场景用假世界故障旋钮 w.fail("send", nth=…)。常量与助手本文件自带，
-不 import 供应方文件。
+拒发场景用假世界故障旋钮 w.fail("send", nth=…)。R（#104）：共享常量与 ext 构造器迁 helpers（EXT 经 EXT5 别名）；_world/_argv 变体留本地。
 """
 import tempfile
 from pathlib import Path
 
 import harness
 from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-SCREEN = ANCHOR + "\n已完成该功能。"
-EXT = {"needs_user": False, "questions": [],
-       "conclusion": "", "blocked": "", "reply": SCREEN}
+from helpers import PROMPT, SCREEN, ext
+from helpers import EXT5 as EXT   # 五字段旧形状（helpers 单一出处）
 
 
 def _world(turn=5, refuse_nth=None):
@@ -61,8 +56,7 @@ def _argv(td, rid, reset=None, model=None, prompt=PROMPT, pre_ledger=False):
     return a
 
 
-def _ext(pi_bin, args, turn_path):
-    return dict(EXT)
+_ext = ext(EXT)   # extract 桩：五字段旧形状（helpers.ext 构造器）
 
 
 def run_case(reset_arg, model_arg, w, rid, prompt=PROMPT, pre_ledger=False):

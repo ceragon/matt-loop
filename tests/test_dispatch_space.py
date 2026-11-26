@@ -34,7 +34,7 @@ T5b（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run（唯一 CL
 失败经 fail("space.select", nth=…) 定位那一次（dispatch 单次不重试）；select 复核抖动经
 delay("space.select", "land_after", nth=1) 只抖首次；用户接管经 user_switches_space(on=…)；
 空间缺 id 经 hide_space_ids()；跑后选中/条目所在空间经命令层入口只读复核（T4 先例）。
-常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
+R（#104）：共享常量迁 helpers 单一出处。
 """
 import contextlib
 import io
@@ -45,11 +45,7 @@ from pathlib import Path
 import harness
 from harness import dispatch
 from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-LAUNCH = "claude --dangerously-skip-permissions"
-NAME = "claude-matt-loop"
-DISPLAY = "LoopEng_测试任务"
+from helpers import PROMPT, LAUNCH, NAME, DISPLAY
 
 
 def run_round(w, rid, *, target=NAME, launch=None, cwd=None, rebuild=False,

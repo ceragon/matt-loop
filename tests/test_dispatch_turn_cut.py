@@ -16,7 +16,7 @@ env / extract / http_open / run_cmd 注入，断言只认 rc、stdout JSON、台
 
 T5d（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run；slice8 噪声护栏（其余纯文本
 300 字符摘录）并入 test_command_parse（命令层错误映射缝，Q3）；fold_hits 纯函数直调
-保留原位。常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
+保留原位。R（#104）：共享常量与 world/api_env/FakeResp 迁 helpers 单一出处。
 """
 import json
 import tempfile
@@ -25,50 +25,11 @@ from pathlib import Path
 
 import harness
 from harness import dispatch
-from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-KEY = "sk-test-SECRET-VALUE"
-BASE = "https://gw.example/v1"
-MODEL = "test-model"
+from helpers import PROMPT, ANCHOR, world, api_env, FakeResp
 
 OLD = "旧轮回复第一行\n旧轮回复第二行"
 ECHO = "❯ " + ANCHOR + " …"
 NEW = "本轮回复第一行\n本轮回复第二行"
-
-
-class FakeResp:
-    def __init__(self, payload):
-        self._b = json.dumps(payload).encode("utf-8")
-
-    def read(self):
-        return self._b
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _api_env(**kw):
-    # LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入
-    # 覆盖宿主可能导出的同名键，保住隔离（退出恢复）。T4 先例。
-    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
-         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL, "LOOP_API_MAX_TOKENS": ""}
-    d.update(kw)
-    return d
-
-
-def _world(screen):
-    """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋给定屏幕。"""
-    w = FakeHerdr()
-    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
-    sp = w.add_space(name="main")
-    w.add_tab(sp, terminals=["t99"])
-    w.screen("t99", screen)
-    return w
 
 
 def run_round(screen, rid, ext, prompt=PROMPT, mock_extract=True,
@@ -85,7 +46,7 @@ def run_round(screen, rid, ext, prompt=PROMPT, mock_extract=True,
                 "--space", "main",
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
-        w = _world(screen)
+        w = world(screen)
         captured = {}
 
         def recording_extract(pi_bin, args, path):
@@ -226,7 +187,7 @@ def slice7_error_payload():
     screen = ECHO + "\n" + long_line
     ext = {"needs_user": False, "questions": ["瞎编的问题"],
            "conclusion": "本轮结论：短", "blocked": "", "reply": "瞎编的回复"}
-    for backend, env in (("pi", None), ("api", _api_env())):
+    for backend, env in (("pi", None), ("api", api_env())):
         rc, res, led, files, cap, w = run_round(screen, "tc-payload-" + backend, ext, env=env)
         assert rc == 1 and res["error"]["kind"] == "extraction_rewritten", res
         assert f"{backend} 在改写而不是抽取" in res["error"]["message"], res["error"]["message"]
@@ -260,7 +221,7 @@ def slice9_backend_turn_input():
         return FakeResp(payload)
 
     rc, res, led, files, _, _ = run_round(screen, "tc-api-input", ext, mock_extract=False,
-                                          env=_api_env(), http_open=fake_open)
+                                          env=api_env(), http_open=fake_open)
     assert rc == 0 and res["ok"] and res["extract_backend"] == "api", res
     user = cap["body"]["messages"][1]["content"]
     assert NEW in user and ECHO in user, "本轮段须内联"
