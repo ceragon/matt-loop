@@ -264,8 +264,9 @@ class FakeHerdr:
         return None
 
     def _hc_fail(self, kind, message, returncode=1):
-        return dispatch.HcFailure(kind, message, [], returncode,
-                                  {"error": {"kind": kind, "message": message}})
+        return dispatch.HerdrFailure(
+            kind, message, [], returncode, op="hc_json", source="hc",
+            detail={"error": {"kind": kind, "message": message}})
 
     def _require(self, addr):
         """按地址或 live 名字解析；解析不到即 not_found（实测退出码 3）。"""
@@ -406,8 +407,9 @@ class FakeHerdr:
 
     def _app_fail(self, message):
         # 真实 app_json 把一切非零退出统一映射 app_failed（错误信封 error 是字符串）
-        return dispatch.AppFailure("app_failed", "herdr-app 退出码 1：" + message,
-                                   [], 1, {"error": message})
+        return dispatch.HerdrFailure(
+            "app_failed", "herdr-app 退出码 1：" + message, [], 1,
+            op="app_json", source="app", detail={"error": message})
 
     def _ls(self):
         spaces = []

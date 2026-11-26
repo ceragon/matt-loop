@@ -268,9 +268,9 @@ SEND_GUARD_S = 120.0
 QUERY_GUARD_S = 30.0
 # hc wait 子进程护栏 = 本次 --timeout + 余量。
 WAIT_GUARD_MARGIN_S = 30.0
-# 迁移前 hc_json 只把「非零退出」包成 HcFailure；进程/输出层失败（run_cmd 的
-# missing_tool/tool_timeout 与 hc_json 的 hc_output）原样穿透。网关把这些也收进
-# HerdrFailure，这里按 kind 恢复逐字穿透（G2，ADR-0018 决定 9）。
+# 迁移前 hc_json 只把「非零退出」包成独立进程层失败类（现已并入 HerdrFailure）；进程/
+# 输出层失败（run_cmd 的 missing_tool/tool_timeout 与 hc_json 的 hc_output）原样穿透。
+# 网关把这些也收进 HerdrFailure，这里按 kind 恢复逐字穿透（G2，ADR-0018 决定 9）。
 _HC_PASSTHROUGH_KINDS = frozenset({"missing_tool", "tool_timeout", "hc_output"})
 # 回读范围（ADR-0013，supersede 裁定 A3「只取当前屏」）：请求最近 1000 行拼接
 # 历史＋当前屏（hc stitched 历史上限）。长回复滚出当前屏的部分仍可取回；超过
@@ -350,13 +350,6 @@ def api_config(env=None):
             vals["LOOP_API_MODEL"], max_tokens)
 
 
-class HcFailure(DispatchError):
-    def __init__(self, kind, message, hints, returncode, detail):
-        super().__init__(kind, message, hints)
-        self.returncode = returncode
-        self.detail = detail
-
-
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -395,7 +388,7 @@ def run_cmd(argv, timeout_s):
 
 
 def hc_json(hc_bin, args, timeout_s):
-    """跑一条 hc 命令并解析 --json 输出；非零退出抛 HcFailure。"""
+    """跑一条 hc 命令并解析 --json 输出；非零退出抛 HerdrFailure。"""
     # --json 必须紧跟子命令：send 用 `--` 保护以 - 开头的提示词文本，
     # `--` 之后的一切都被 clap 当位置参数，选项放后面会被吞掉。
     p = run_cmd([hc_bin, args[0], "--json", *args[1:]], timeout_s)
@@ -404,35 +397,27 @@ def hc_json(hc_bin, args, timeout_s):
         kind = None
         if isinstance(detail, dict):
             kind = detail.get("kind") or (detail.get("error") or {}).get("kind")
-        raise HcFailure(
+        raise HerdrFailure(
             kind or "hc_failed",
             f"hc {' '.join(args)} 退出码 {p.returncode}"
             + (f"（{kind}）" if kind else ""),
             [s.strip()[:300] for s in (p.stderr, p.stdout) if s and s.strip()],
             p.returncode,
-            detail,
+            op="hc_json", source="hc", native_kind=kind, detail=detail,
         )
     data = try_json(p.stdout)
     if not isinstance(data, dict):
-        raise DispatchError(
+        raise HerdrFailure(
             "hc_output",
             f"hc {' '.join(args)} 的 stdout 不是 JSON 对象",
             [p.stdout.strip()[:300]],
+            op="hc_json", source="hc",
         )
     return data
 
 
-class AppFailure(DispatchError):
-    """herdr-app 命令失败（镜像 HcFailure）。detail 是 app 的 JSON 错误对象（可能为 None）。"""
-
-    def __init__(self, kind, message, hints, returncode, detail):
-        super().__init__(kind, message, hints)
-        self.returncode = returncode
-        self.detail = detail
-
-
 def app_json(app_bin, args, timeout_s):
-    """跑一条 herdr-app 命令并解析 JSON 输出；非零退出抛 AppFailure。
+    """跑一条 herdr-app 命令并解析 JSON 输出；非零退出抛 HerdrFailure。
     所有 herdr-app 调用经此单一咽喉（与 hc_json 同为可注入桩点）。
     herdr-app 的 ls/status/do 原生输出 JSON，不插 --json；do 的错误形状是
     {"error": "..."}＋退出码 1。绝不用裸 herdr-app 作探针（它会打开窗口）。"""
@@ -444,20 +429,21 @@ def app_json(app_bin, args, timeout_s):
             err = detail.get("error")
             if isinstance(err, dict):
                 err = err.get("kind") or err.get("message")
-        raise AppFailure(
+        raise HerdrFailure(
             "app_failed",
             f"herdr-app {' '.join(args[:2])} 退出码 {p.returncode}"
             + (f"：{str(err)[:200]}" if err else ""),
             [s.strip()[:300] for s in (p.stderr, p.stdout) if s and s.strip()],
             p.returncode,
-            detail,
+            op="app_json", source="app", detail=detail,
         )
     data = try_json(p.stdout)
     if not isinstance(data, dict):
-        raise DispatchError(
+        raise HerdrFailure(
             "app_output",
             f"herdr-app {' '.join(args[:2])} 的 stdout 不是 JSON 对象",
             [p.stdout.strip()[:300]],
+            op="app_json", source="app",
         )
     return data
 

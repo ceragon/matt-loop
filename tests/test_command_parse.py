@@ -43,11 +43,11 @@ def expect(kind, fn):
 
 
 def main():
-    # 1 hc 错误信封（实测形状 {"error":{kind,message,hint}}）→ HcFailure 透传 kind
+    # 1 hc 错误信封（实测形状 {"error":{kind,message,hint}}）→ HerdrFailure 透传 kind
     envelope = load("hc_error_not_found.json")
     with stub_run_cmd(lambda argv, ts: ns(3, json.dumps(envelope), "hc: no terminal")):
         e = expect("not_found", lambda: dispatch.hc_json("/fake/hc", ["get", "t404"], 30))
-    assert isinstance(e, dispatch.HcFailure)
+    assert isinstance(e, dispatch.HerdrFailure)
     assert e.returncode == 3 and e.detail == envelope
     assert any("hc: no terminal" in h for h in e.hints)
     print("1 hc error envelope: kind passthrough, rc, detail, hints")
@@ -82,7 +82,7 @@ def main():
     with stub_run_cmd(lambda argv, ts: ns(1, json.dumps(app_err))):
         e = expect("app_failed", lambda: dispatch.app_json(
             "/fake/herdr-app", ["do", "--help"], 30))
-    assert isinstance(e, dispatch.AppFailure)
+    assert isinstance(e, dispatch.HerdrFailure)
     assert e.detail == app_err and e.returncode == 1
     assert "unknown command" in e.message
     print("6 app string error envelope -> app_failed")
@@ -121,10 +121,10 @@ def main():
     with stub_run_cmd(lambda argv, ts: ns(0, long, "")):
         e = expect("hc_output", lambda: dispatch.hc_json("/fake/hc", ["read", "t99"], 30))
     assert e.hints == [long[:300]], e.hints
-    # HcFailure：rc 1，stderr/stdout 摘录各 300
+    # HerdrFailure：rc 1，stderr/stdout 摘录各 300
     with stub_run_cmd(lambda argv, ts: ns(1, long, long)):
         e = expect("hc_failed", lambda: dispatch.hc_json("/fake/hc", ["get", "t99"], 30))
-    assert isinstance(e, dispatch.HcFailure)
+    assert isinstance(e, dispatch.HerdrFailure)
     assert e.hints == [long[:300], long[:300]], e.hints
     # app_output：rc 0 但 stdout 非 JSON
     with stub_run_cmd(lambda argv, ts: ns(0, long, "")):
