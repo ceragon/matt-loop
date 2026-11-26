@@ -73,6 +73,32 @@ def main():
         assert e.kind == "extraction_rewritten", e.kind
     print("5 conclusion/questions/blocked verbatim checks unchanged ok")
 
+    # 5b 校验闸门回归（#127，零行为改动）：空选段成功、全失败 hints 形状不变、
+    #    部分失败只标记。语料＝本轮原料（SCREEN）。
+    empty = {"needs_user": False, "questions": [], "conclusion": "",
+             "blocked": "", "next_skill": ""}
+    rewritten = dispatch.verify_extraction(empty, SCREEN, "/fake/turn.md",
+                                           "/fake/raw.md", "api")
+    assert rewritten == {}, rewritten
+    all_bad = {"needs_user": False, "questions": ["瞎编的问题"],
+               "conclusion": "瞎编的结论", "blocked": "瞎编的弹框", "next_skill": ""}
+    try:
+        dispatch.verify_extraction(all_bad, SCREEN, "/fake/turn.md",
+                                   "/fake/raw.md", "api")
+        raise AssertionError("全部瞎编应 extraction_rewritten")
+    except dispatch.DispatchError as e:
+        assert e.kind == "extraction_rewritten" and e.returncode == 1
+        # #50 载荷形状不变：每个失败字段一条「字段名＋最接近的原文整行」，
+        # 末尾两条路径提示（原料、回读全文）。
+        assert len(e.hints) == 5, e.hints
+        assert e.hints[0].startswith("conclusion 未过逐字校验，最接近的原文整行：")
+        assert e.hints[1].startswith("blocked 未过逐字校验，最接近的原文整行：")
+        assert e.hints[2].startswith("questions[0] 未过逐字校验，最接近的原文整行：")
+        assert e.hints[3] == "本轮原料已落盘：/fake/turn.md"
+        assert e.hints[4] == "回读全文已落盘：/fake/raw.md"
+        assert "api 在改写而不是抽取" in e.message
+    print("5b empty selections succeed, all-fail hints shape unchanged ok")
+
     # 6 端到端：pi 输出带瞎编 summary（真实抽取链：extract=dispatch.extract＋注入 run_cmd）
     pi_out = json.dumps(dict(BASE, summary="pi 瞎编的概括"), ensure_ascii=False)
     w = world()
