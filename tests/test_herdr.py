@@ -466,7 +466,7 @@ def gift_cleanup():
 
     w, sp, gift, keep_tab = gifted_world()
     h, _ = make_herdr(w)
-    warnings = h.discard_shell_tabs(sp, "t50")
+    warnings = list(h.discard_shell_tabs(sp, "t50"))
     assert warnings == []
     tabs = h.layout().raw["spaces"][0]["tabs"]
     assert [t["id"] for t in tabs] == [keep_tab]
@@ -478,7 +478,7 @@ def gift_cleanup():
     w, sp, gift, keep_tab = gifted_world()
     w.fail("tab.close", "error")
     h, _ = make_herdr(w)
-    warnings = h.discard_shell_tabs(sp, "t50")
+    warnings = list(h.discard_shell_tabs(sp, "t50"))
     assert [x["reason"] for x in warnings] == ["tab_close_error"]
     assert ("hc", "get") not in w.command_log
     print("31 discard_shell_tabs: tab_close_error warning, no polling")
@@ -486,7 +486,7 @@ def gift_cleanup():
     w, sp, gift, keep_tab = gifted_world()
     w.delay("tab.close", "land_after", after=5)
     h, clock = make_herdr(w)
-    warnings = h.discard_shell_tabs(sp, "t50", within=4, poll=2)
+    warnings = list(h.discard_shell_tabs(sp, "t50", within=4, poll=2))
     assert [x["reason"] for x in warnings] == ["finish_timeout"]
     assert clock.t >= 4
     print("32 discard_shell_tabs: finish_timeout warning (rm live refused)")
@@ -495,7 +495,7 @@ def gift_cleanup():
     w.delay("tab.close", "land_after", after=99)
     w.fail("get", "error", kind="unavailable")
     h, clock = make_herdr(w)
-    warnings = h.discard_shell_tabs(sp, "t50", within=4, poll=2)
+    warnings = list(h.discard_shell_tabs(sp, "t50", within=4, poll=2))
     assert [x["reason"] for x in warnings] == ["finish_poll_error"]
     assert clock.t >= 4
     print("33 discard_shell_tabs: finish_poll_error warning")
@@ -503,7 +503,7 @@ def gift_cleanup():
     w, sp, gift, keep_tab = gifted_world()
     w.fail("rm", "error", kind="unavailable")
     h, _ = make_herdr(w)
-    warnings = h.discard_shell_tabs(sp, "t50")
+    warnings = list(h.discard_shell_tabs(sp, "t50"))
     assert [x["reason"] for x in warnings] == ["rm_error"]
     print("34 discard_shell_tabs: rm_error warning")
 
@@ -512,9 +512,113 @@ def gift_cleanup():
     w.fail("tab.close", "noop")          # 终端保持 live
     w.fail("get", "error", kind="unavailable", nth=1)
     h, _ = make_herdr(w)
-    warnings = h.discard_shell_tabs(sp, "t50", within=4, poll=2)
+    warnings = list(h.discard_shell_tabs(sp, "t50", within=4, poll=2))
     assert [x["reason"] for x in warnings] == ["finish_timeout"]
     print("35 discard_shell_tabs: transient poll error recovered -> timeout")
+
+
+def focus_with_known_original():
+    """G3 加性参数：调用方已读 original 时，进入不再自读 status，还原目标用它。"""
+    w, sp1, sp2 = world_with_two_spaces()
+    h, _ = make_herdr(w)
+    with h.focus(sp2, original=sp1) as f:
+        assert h.selected_space() == sp2
+    assert f.restore == "restored" and h.selected_space() == sp1
+    app_cmds = [c for c in w.command_log if c[0] == "app"]
+    assert app_cmds[0] == ("app", "do", "space.select"), app_cmds
+    print("36 focus(original=...): no enter status read, select first, restore ok")
+
+    # original=None 是合法值（区分「传 None」与「未传」）：不进入自读，仍 select；
+    # 已选中目标时退出还原为 not_needed（原选中就是 None，无从还原）。
+    w, sp1, sp2 = world_with_two_spaces()
+    h, _ = make_herdr(w)
+    w.user_switches_space()            # 当前选中 sp2
+    with h.focus(sp2, original=None) as f:
+        assert h.selected_space() == sp2
+    assert f.restore == "not_needed"
+    app_cmds = [c for c in w.command_log if c[0] == "app"]
+    assert app_cmds[0] == ("app", "do", "space.select"), app_cmds
+    print("36b focus(original=None): None is a known value, not 'unset' ok")
+
+    # 进入复核不符：先还原，还原结局挂在 f.restore（管线据此记账），再抛错
+    w, sp1, sp2 = world_with_two_spaces()
+    h, _ = make_herdr(w)
+    w.delay("space.select", "land_after", after=2, nth=1)
+    cm = h.focus(sp2, original=sp1)
+    try:
+        with cm:
+            raise AssertionError("复核不符不应继续")
+    except StatusMismatch as e:
+        assert e.stage == "focus_select_mismatch"
+    assert cm.restore == "restored" and h.selected_space() == sp1
+    print("36c focus: enter mismatch exposes restore outcome on the cm")
+
+
+def keep_layout_and_discard_reuse():
+    """G3 加性参数：keep 回执带落地 Layout；discard 传入即复用、不再自读 ls。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t50")
+    w.add_space(name="main")
+    h, _ = make_herdr(w)
+    p = h.keep("t50", within=5, poll=1)
+    assert p.layout is not None
+    assert p.layout.placement("t50").pane == p.pane
+    print("37 keep: placement carries the landing Layout ok")
+
+    w = FakeHerdr()
+    w.add_terminal(address="t50", name="claude-test")
+    gift = w.add_terminal(address="t-gift", fg="shell", turn=0)
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=[gift])
+    w.add_tab(sp, terminals=["t50"])
+    h, _ = make_herdr(w)
+    layout = h.layout()
+    before = len(w.command_log)
+    warnings = list(h.discard_shell_tabs(sp, "t50", layout=layout))
+    added = w.command_log[before:]
+    assert warnings == []
+    assert not any(c[0] == "app" and c[1] == "ls" for c in added), added
+    assert any(c == ("app", "do", "tab.close") for c in added), added
+    assert any(c == ("hc", "get") for c in added), added
+    assert any(c == ("hc", "rm") for c in added), added
+    print("38 discard_shell_tabs(layout=...): no internal ls, reuses the tree ok")
+
+
+def discard_yields_at_failure_point():
+    """生成器形态：每条 warning 在其失败点 yield，下一条清理命令尚未发出。
+
+    断言消费方在两次 next() 之间观察到的世界状态：第一条 tab.close 失败并 yield
+    后，第二条 tab.close 还没到达——即 warning 的发生点与下一条命令之间没有整批
+    延后；管线可据此在循环体里立即落盘（基线逐条 gift_cleanup_warning 写点）。
+    """
+    w = FakeHerdr()
+    w.add_terminal(address="t50", name="claude-test")
+    g1 = w.add_terminal(address="t-g1", fg="shell", turn=0)
+    g2 = w.add_terminal(address="t-g2", fg="shell", turn=0)
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=[g1])
+    w.add_tab(sp, terminals=[g2])
+    w.add_tab(sp, terminals=["t50"])
+    w.fail("tab.close", "error")           # 两个赠送 tab 的关闭都失败
+    h, _ = make_herdr(w)
+
+    def closes():
+        return [c for c in w.command_log if c == ("app", "do", "tab.close")]
+
+    gen = h.discard_shell_tabs(sp, "t50")
+    first = next(gen)
+    assert first["reason"] == "tab_close_error"
+    assert len(closes()) == 1, closes()    # 第二条 tab.close 尚未发出
+    second = next(gen)
+    assert second["reason"] == "tab_close_error"
+    assert len(closes()) == 2, closes()
+    try:
+        next(gen)
+    except StopIteration:
+        pass
+    else:
+        raise AssertionError("清理结束须 StopIteration")
+    print("39 discard_shell_tabs: generator yields each warning at its failure point")
 
 
 def main():
@@ -525,6 +629,9 @@ def main():
     keep_polling()
     focus_restoration()
     gift_cleanup()
+    focus_with_known_original()
+    keep_layout_and_discard_reuse()
+    discard_yields_at_failure_point()
     print("all herdr tests passed")
 
 

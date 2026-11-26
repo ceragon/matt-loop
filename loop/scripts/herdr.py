@@ -29,6 +29,9 @@ READ_LINES = 1000
 POLL_TIMEOUT_S = 30.0
 POLL_INTERVAL_S = 2.0
 
+# 区分「调用方没传」与「传了合法值 None」（original 可为 None：没有选中空间）。
+_UNSET = object()
+
 # 持久 shell 的进程名（与 dispatch.fg_is_shell 同判据，网关不 import 分发脚本）。
 SHELL_NAMES = frozenset({"sh", "bash", "zsh", "nu", "fish", "dash", "ksh", "tcsh", "csh"})
 
@@ -136,13 +139,18 @@ class Session:
 
 @dataclass(frozen=True)
 class Placement:
-    """终端在 app 树里的落点：空间 / 标签页 / pane。pane 为空不算 placement。"""
+    """终端在 app 树里的落点：空间 / 标签页 / pane。pane 为空不算 placement。
+
+    layout：这次落点来自哪次 `ls`（keep 落地轮询用；管线可把同一棵树交给
+    `discard_shell_tabs` 复用，避免多读一条 ls）。不参与相等比较。
+    """
 
     address: str | None
     pane: str | None
     space: dict
     tab: dict
     raw: dict
+    layout: "Layout | None" = field(default=None, repr=False, compare=False)
 
     @property
     def space_id(self):
@@ -176,7 +184,7 @@ class Layout:
         for space, tab, entry in self._entries:
             if entry.get("terminal") == address and entry.get("pane"):
                 return Placement(address=address, pane=entry.get("pane"),
-                                 space=space, tab=tab, raw=entry)
+                                 space=space, tab=tab, raw=entry, layout=self)
         return None
 
 
@@ -268,18 +276,23 @@ class Focus:
     结局写在 `f.restore`：restored / user_switched / not_needed / failed；
     failed 时 `f.warning` 带 reason（restore_error / restore_mismatch）与 detail。
     用户已切走不抢回，异常退出也还原（ADR-0018 决定 6）。
+
+    original：调用方若已为策略读过当前选中，可传入以免进入时再读一条 status
+    （默认 `_UNSET` → 内部自读，行为与既有完全一致）。该值同时是还原目标。
     """
 
-    def __init__(self, gateway, space):
+    def __init__(self, gateway, space, original=_UNSET):
         self.gateway = gateway
         self.space = space
+        self._original = original
         self.original = None
         self.restore = None
         self.warning = None
         self._entered = False
 
     def __enter__(self):
-        self.original = self.gateway.selected_space()
+        self.original = (self.gateway.selected_space()
+                         if self._original is _UNSET else self._original)
         if self.original == self.space:
             self._entered = True
             return self
@@ -291,8 +304,10 @@ class Focus:
             self.gateway._restore_space(self.original, self.space)
             raise
         if actual != self.space:
-            # 不符先还原再抛（best effort；还原结局不覆盖进入失败本身）。
-            self.gateway._restore_space(self.original, self.space)
+            # 不符先还原再抛；还原结局挂在 self.restore 供管线记账（进入失败本身
+            # 仍抛出，不因还原结局被掩盖）。
+            self.restore, self.warning = self.gateway._restore_space(
+                self.original, self.space)
             raise StatusMismatch(
                 "status_mismatch",
                 "space.select 复核选中=%r ≠ 目标 %r" % (actual, self.space),
@@ -463,8 +478,9 @@ class Herdr:
                 detail=raw, partial_facts={"raw": raw})
         return space
 
-    def focus(self, space):
-        return Focus(self, space)
+    def focus(self, space, *, original=_UNSET):
+        """返回 Focus 上下文管理器；传 original 则不重读当前选中（默认为自读）。"""
+        return Focus(self, space, original)
 
     def keep(self, address, within=POLL_TIMEOUT_S, poll=POLL_INTERVAL_S):
         """terminal.keep ＋落地轮询复核；窗口耗尽抛 stage=no_pane。"""
@@ -523,18 +539,22 @@ class Herdr:
         return tab["id"]
 
     def discard_shell_tabs(self, space, keep_address,
-                           within=POLL_TIMEOUT_S, poll=POLL_INTERVAL_S):
-        """关赠送标签页 → 轮询 hc get 等 finished → rm；返回降级 warnings。
+                           within=POLL_TIMEOUT_S, poll=POLL_INTERVAL_S, *,
+                           layout=None):
+        """关赠送标签页 → 轮询 hc get 等 finished → rm；**生成器**，逐条 yield 降级 warnings。
 
+        layout：调用方若已有这棵 app 树（如 keep 落地轮询的落点 Layout），传入即
+        直接复用、不再内部自读 ls；默认 None → 自读（行为不变）。
         warnings 的 reason 四种：tab_close_error / finish_timeout /
         finish_poll_error / rm_error（与既有 gift_cleanup_warning 同词汇）。
-        单个 tab 失败不阻断其余 tab 的清理。
+        每条 warning 在其发生点（该条失败命令之后、下一条清理命令之前）yield：
+        消费方在循环体里立即落盘，即保住基线「每条告警立即写 ctx＋台账」的写点；
+        网关自身仍对台账失明。单个 tab 失败不阻断其余 tab 的清理。
         """
-        warnings = []
-        raw = self.layout().raw
+        raw = (layout.raw if layout is not None else self.layout().raw)
         space_entry = _find_space(raw, space)
         if space_entry is None:
-            return warnings
+            return
         for tab in space_entry.get("tabs") or []:
             if not isinstance(tab, dict):
                 continue
@@ -553,8 +573,8 @@ class Herdr:
                           stage="tab_close",
                           partial={"space": space, "tab_id": tab_id})
             except HerdrFailure as e:
-                warnings.append({"reason": "tab_close_error",
-                                 "detail": "关闭赠送 shell tab 失败：%s" % e.message})
+                yield {"reason": "tab_close_error",
+                       "detail": "关闭赠送 shell tab 失败：%s" % e.message}
                 continue
             for address in addresses:
                 if not address:
@@ -572,10 +592,9 @@ class Herdr:
                     reason = {"timeout": "finish_timeout",
                               "poll_error": "finish_poll_error"}.get(
                                   outcome, "rm_error")
-                    warnings.append({
+                    yield {
                         "reason": reason,
-                        "detail": "hc rm 赠送 shell 终端失败：%s" % e.message})
-        return warnings
+                        "detail": "hc rm 赠送 shell 终端失败：%s" % e.message}
 
     # ---- 内部：命令封装与失败映射 ----
 

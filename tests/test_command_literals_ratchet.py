@@ -20,15 +20,9 @@ from pathlib import Path
 DISPATCH = Path(__file__).resolve().parent.parent / "loop" / "scripts" / "dispatch.py"
 
 # 白名单：函数名 -> (理由, 退役切片)。只许缩小；陈旧条目自检必红。
-# 首版以实际扫描推导（G1）：15 个函数、35 处字面量。G2 已迁会话簇（删 10 条），
-# G3 迁空间簇后清空。
-WHITELIST = {
-    "adopt": ("领养：status/ls/space.new/terminal.keep/tab.close 与 hc get/rm 混用", "G3"),
-    "apply_display_name": ("显示名落地：ls 定位与 tab.rename", "G3"),
-    "resolve_space_id_for_learning": ("学习侧空间解析：只读 ls", "G3"),
-    "restore_space": ("选中还原：status 读当前选中", "G3"),
-    "select_and_verify": ("空间切换：space.select 与 status 复核", "G3"),
-}
+# 首版以实际扫描推导（G1）：15 个函数、35 处字面量。G2 迁会话簇（删 10 条），
+# G3 迁空间簇后清空（本片 WHITELIST = {}；删常量、改无条件断言归最后退役切片）。
+WHITELIST = {}
 
 
 def command_literal(call):
@@ -140,7 +134,7 @@ def main():
     hits = collect(source)
     problems = scan(source, WHITELIST)
     assert problems == [], "命令字面量棘轮失败：\n  " + "\n  ".join(problems)
-    print("ratchet: %d functions / %d literal sites whitelisted for G3"
+    print("ratchet: %d functions / %d literal sites (G3 whitelist empty)"
           % (len(hits), sum(len(v) for v in hits.values())))
     print("all command-literal ratchet tests passed")
 

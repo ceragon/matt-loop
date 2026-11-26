@@ -56,7 +56,7 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
     不校验式样，只机械校验（非空、1–64 字符、禁换行控制字符，非法 bad_args）＋落地。新鲜路径
     （创建/复活/重建）必传，缺则 display_name_required（与 launch_required 同构：退出码 2、
     零发送、id 不消耗、补参同 id 重试；两参同缺 launch_required 先报）；复用轮可选，传了就覆盖、
-    不传不碰。落地时序：领养复核 pane 落地后、前置/主任务发送前，find_tab 定位 tab id→tab.rename
+    不传不碰。落地时序：领养复核 pane 落地后、前置/主任务发送前，ls 定位 tab id→tab.rename
     →ls 复核 tab.name==显示名（命令成功不算数）；台账 naming phase。失败降级告警不丢放行：
     rename 失败/复核不符/无 tab→display_name_warning（rename_error/rename_mismatch/no_tab），
     主流程继续；pane 落地仍是硬闸（adopt_failed 不变）。result display_name 回显本轮传入值
@@ -749,15 +749,6 @@ def check_identity(terminal, args):
         )
 
 
-def find_app_bin(deps):
-    """恒可见不变量要求 herdr-app；探不到即 missing_tool（创建/既有/复活共用）。"""
-    app_bin = deps.locate("herdr-app")
-    if not app_bin:
-        raise DispatchError("missing_tool", "PATH 与常见目录里都找不到 herdr-app",
-                            ["恒可见不变量要求 herdr-app；装上后重试"])
-    return app_bin
-
-
 def dialog_error(session):
     st = session.status or {}
     kind = st.get("kind")
@@ -1064,34 +1055,6 @@ def do_create(deps, herdr, args, ledger, ledger_path, ctx):
     send_launch_command(herdr, args, ledger, ledger_path, ctx)
 
 
-def find_pane(ls_data, address):
-    """在 herdr-app ls 结果里找终端的 pane 条目；无 pane 返回 None。"""
-    for sp in ls_data.get("spaces") or []:
-        for tb in sp.get("tabs") or []:
-            for t in tb.get("terminals") or []:
-                if t.get("terminal") == address and t.get("pane"):
-                    return t
-    return None
-
-
-def find_pane_space(ls_data, address):
-    """找终端 pane 所在的 space 条目（#43 落地复核：pane 存在还不够，须在目标空间）；
-    无 pane 返回 None。"""
-    for sp in ls_data.get("spaces") or []:
-        for tb in sp.get("tabs") or []:
-            for t in tb.get("terminals") or []:
-                if t.get("terminal") == address and t.get("pane"):
-                    return sp
-    return None
-
-
-def select_and_verify(deps, space_id):
-    """space.select＋只读 status 复核（命令成功不算数）；返回复核到的选中空间 id。
-    命令/查询失败照抛 DispatchError，由调用方决定停轮还是降级。"""
-    deps.app_json(["do", "space.select", json.dumps({"id": space_id})], QUERY_GUARD_S)
-    return deps.app_json(["status"], QUERY_GUARD_S).get("space")
-
-
 def parse_space(space, spaces):
     """--space 三态解析（ADR-0011，#70 归一）：唯一匹配实现，领养与学习共用。
 
@@ -1159,76 +1122,49 @@ def parse_space(space, spaces):
     return result
 
 
-def resolve_space_id_for_learning(app_bin, space):
+def resolve_space_id_for_learning(herdr, space):
     """--space 三态解析的只读投影（ADR-0012 学习用，#70 归一）：不建空间、不 select、不抛错。
 
     匹配与领养共用 parse_space（ADR-0011 规则唯一实现）；本函数只加只读策略：
     error／new_space 提案（路径零匹配）／ls 失败一律返回 None——学习侧据此禁用
     本轮 space scoped 学习并告警（id 缺失禁用该轮学习，ADR-0012）。
-    绝不触发 space.new（那是领养路径的显式 opt-in）。
+    绝不触发 space.new（那是领养路径的显式 opt-in）。读整棵 app 树经网关 `layout()`。
     """
     try:
-        ls = app_json(app_bin, ["ls"], QUERY_GUARD_S)
+        layout = herdr.layout()
     except DispatchError:
         return None
-    parsed = parse_space(space, ls.get("spaces") or [])
+    parsed = parse_space(space, layout.raw.get("spaces") or [])
     if parsed["error"] is not None or parsed["new_space"] is not None:
         return None
     return parsed["target_id"]
 
 
-def find_tab(ls_data, address):
-    """在 herdr-app ls 结果里找终端所在 tab 条目（显示名落地用，ADR-0010）；
-    定位不到（无 tab 或 tab 无 id）返回 None。"""
-    for sp in ls_data.get("spaces") or []:
-        for tb in sp.get("tabs") or []:
-            if not tb.get("id"):
-                continue
-            for t in tb.get("terminals") or []:
-                if t.get("terminal") == address:
-                    return tb
-    return None
-
-
-def apply_display_name(deps, address, display_name, ledger, ledger_path, ctx):
-    """显示名落地（ADR-0010）：ls 定位 tab id → tab.rename → ls 复核 tab.name==显示名
-    （命令成功不算数）。时序在领养复核 pane 落地后、前置/主任务发送前。
+def apply_display_name(deps, herdr, address, display_name, ledger, ledger_path, ctx):
+    """显示名落地（ADR-0010）：网关 `rename_tab`（ls 定位 tab id → tab.rename → ls 复核
+    tab.name==显示名；命令成功不算数）。时序在领养复核 pane 落地后、前置/主任务发送前。
     失败降级告警不丢放行：rename 失败/复核不符/无 tab → ctx/台账记 display_name_warning
     （reason：rename_error/rename_mismatch/no_tab，带详情），主流程继续；pane 落地仍是
     硬闸（adopt_failed 语义不变）。result display_name 回显本轮传入值：落地步骤一跑就带
     （含 no_tab/ls 失败等未真正发出 rename 的降级情形，审计「请求了什么名」），成功与 error 都带。
     不写 summary 标签：机器可读靠自动跟随 tab 名的 where 标签。"""
-    deps.app_bin = find_app_bin(deps)
+    herdr.require_app()
     ctx["display_name"] = display_name
     ledger.update(phase="naming", display_name=display_name)
     write_json_atomic(ledger_path, ledger)
     warning = None
-    tab = None
     try:
-        ls = deps.app_json(["ls"], QUERY_GUARD_S)
-        tab = find_tab(ls, address)
+        herdr.rename_tab(address, display_name)
     except DispatchError as e:
-        warning = {"reason": "rename_error", "detail": e.message}
-    if warning is None and tab is None:
-        warning = {"reason": "no_tab", "detail": f"ls 里定位不到终端 {address} 所在 tab"}
-    if warning is None:
-        try:
-            deps.app_json(["do", "tab.rename", json.dumps(
-                {"id": tab["id"], "name": display_name}, ensure_ascii=False)], QUERY_GUARD_S)
-        except DispatchError as e:
+        stage = getattr(e, "stage", None)
+        if stage == "no_tab":
+            warning = {"reason": "no_tab", "detail": e.message}
+        elif stage == "rename_mismatch":
+            warning = {"reason": "rename_mismatch",
+                       "actual": e.partial_facts.get("actual"),
+                       "detail": e.message}
+        else:
             warning = {"reason": "rename_error", "detail": e.message}
-    if warning is None:
-        # 复核：命令成功不算数，必须只读 ls 核 tab.name 真的等于显示名。
-        try:
-            ls2 = deps.app_json(["ls"], QUERY_GUARD_S)
-            tab2 = find_tab(ls2, address)
-            actual = tab2.get("name") if tab2 else None
-        except DispatchError as e:
-            warning = {"reason": "rename_error", "detail": e.message}
-            actual = None
-        if warning is None and actual != display_name:
-            warning = {"reason": "rename_mismatch", "actual": actual,
-                       "detail": f"复核 tab.name={actual!r} ≠ 显示名 {display_name!r}"}
     if warning is not None:
         ctx["display_name_warning"] = warning
         ledger.update(display_name_warning=warning)
@@ -1237,49 +1173,7 @@ def apply_display_name(deps, address, display_name, ledger, ledger_path, ctx):
     write_json_atomic(ledger_path, ledger)
 
 
-def restore_space(deps, original, target, ledger, ledger_path, ctx):
-    """还原选中（#43 还原竞态护栏，ADR-0011）：keep 落地复核后（成功与失败路径都跑）
-    把选中空间还原回领养前的原选中。护栏：先只读 status 核当前选中——仍是目标空间
-    （用户没接管）才还原；用户已切走即跳过（user_switched），绝不抢回用户的视图。
-    原本就选中目标/无原选中→not_needed。还原失败降级告警 space_restore_warning
-    （restore_error/restore_mismatch）不丢放行：pane 落地仍是硬闸。
-    只读/命令错误均已降级为告警，不作停轮抛错。"""
-    warning = None
-    cur = None
-    try:
-        cur = deps.app_json(["status"], QUERY_GUARD_S).get("space")
-    except DispatchError as e:
-        warning = {"reason": "restore_error", "detail": e.message}
-    if warning is not None:
-        outcome = "failed"
-    elif cur != target:
-        outcome = "user_switched"   # 切换窗口内用户接管了选中：不还原、不抢视图
-    elif original is None or original == target:
-        outcome = "not_needed"
-    else:
-        outcome = "failed"
-        cur2 = None
-        try:
-            cur2 = select_and_verify(deps, original)
-        except DispatchError as e:
-            warning = {"reason": "restore_error", "detail": e.message}
-        if warning is None:
-            if cur2 == original:
-                outcome = "restored"
-            else:
-                warning = {"reason": "restore_mismatch", "actual": cur2,
-                           "detail": f"还原复核选中={cur2!r} ≠ 原选中 {original!r}（用户可能又切了）"}
-    ctx["space_restore"] = outcome
-    if warning is not None:
-        ctx["space_restore_warning"] = warning
-    if ledger is not None:
-        ledger.update(space_restore=outcome)
-        if warning is not None:
-            ledger.update(space_restore_warning=warning)
-        write_json_atomic(ledger_path, ledger)
-
-
-def adopt(deps, address, ledger, ledger_path, ctx, precheck, space,
+def adopt(deps, herdr, address, ledger, ledger_path, ctx, precheck, space,
           adopt_timeout=ADOPT_TIMEOUT_S, adopt_poll=ADOPT_POLL_S):
     """领养（ADR-0009 恒可见不变量）：status 探测→只读 ls 核 pane→缺则按 --space
     三态解析目标空间→（路径零匹配 space.new focus:false）→terminal.keep→带超时轮询
@@ -1290,13 +1184,14 @@ def adopt(deps, address, ledger, ledger_path, ctx, precheck, space,
     空间定位（#43 grill 定稿，ADR-0011，space 必传）：只在需要 keep 时解析——
     三态匹配归一纯函数 parse_space（#70，唯一实现，规则见该函数）；本调用方策略：
     路径零匹配→执行 space.new{name:目录名,folder:路径,focus:false}，error 按 reason
-    映射（名重名 bad_args，其余 adopt_failed）。目标≠当前 shown 才 space.select→status
-    复核（不符先走还原护栏再 select_error，keep 不发）；目标==shown 不 select。
-    keep→复核 pane 及其所在空间（落错空间→space_target_warning 告警不丢放行）→
-    还原选中（restore_space 护栏，keep 失败路径也还原）。pane 已在则提前返回不抢。
+    映射（名重名 bad_args，其余 adopt_failed）。目标≠当前 shown 才进 `focus`（select→
+    status 复核→退出恒还原），不符即 select_error 停轮（keep 不发）；目标==shown 不 select。
+    keep→复核 pane 及其所在空间（落错空间→space_target_warning 告警不丢放行）。
+    pane 已在则提前返回不抢。机械步骤走网关（layout/focus/keep/discard_shell_tabs）；
+    要不要领养/三态选哪个/零匹配建不建/盘点时机/失败映射等策略仍在本函数。
     precheck=True（既有路径补领养）：写台账前，失败零发送、id 不消耗、同 id 重试；
     precheck=False（创建路径）：写台账后，失败保留已建终端、id 消耗、新 id 重试修复。"""
-    deps.app_bin = find_app_bin(deps)
+    herdr.require_app()
     def fail(reason, message, hints):
         ctx["workspace"] = "failed"
         ctx["adopt_reason"] = reason
@@ -1312,20 +1207,75 @@ def adopt(deps, address, ledger, ledger_path, ctx, precheck, space,
             ledger.update(gift_cleanup_warning=w)
             write_json_atomic(ledger_path, ledger)
 
+    def record_restore(cm):
+        # f.restore 结局写进 ctx 与台账（现行落点：keep 后的 finally，成功失败都记）。
+        warning = cm.warning
+        if warning is not None and warning.get("reason") == "restore_mismatch":
+            # 文案与基线逐字一致：网关 warning 不带「用户可能又切了」注脚。
+            warning = dict(warning)
+            warning["detail"] = (
+                "还原复核选中=%r ≠ 原选中 %r（用户可能又切了）"
+                % (warning.get("actual"), original_space))
+        ctx["space_restore"] = cm.restore
+        if warning is not None:
+            ctx["space_restore_warning"] = warning
+        if ledger is not None:
+            ledger.update(space_restore=cm.restore)
+            if warning is not None:
+                ledger.update(space_restore_warning=warning)
+            write_json_atomic(ledger_path, ledger)
+
+    def keep_and_verify():
+        # terminal.keep＋落地轮询复核在网关 `keep` 内（命令成功不算数，窗口内反复
+        # 只读 ls，pane 出现即成功；窗口耗尽报 no_pane）。本处只把领域失败映射回
+        # 基线的外部 kind/文案。
+        try:
+            placement = herdr.keep(address, within=adopt_timeout, poll=adopt_poll)
+        except DispatchError as e:
+            stage = getattr(e, "stage", None)
+            if stage == "keep_command":
+                fail("keep_error", f"terminal.keep 失败：{e.message}", retry)
+            if stage == "keep_poll":
+                fail("app_closed", f"keep 后 herdr-app ls 失败：{e.message}", retry)
+            if stage == "no_pane":
+                fail("no_pane", e.message, retry)
+            fail("keep_error", f"terminal.keep 失败：{e.message}", retry)
+        # pane 已经本轮 keep 落地即如实报（#46：后续任一步失败——清理/等就绪——
+        # 都不再掩盖「已可见」这一部分状态）。
+        ctx["pane_adopted"] = True
+        if ledger is not None:
+            ledger.update(pane_adopted=True)
+        # 落地复核所在空间（#43）：pane 存在还不够，须在目标空间。keep 异步
+        # 落地，窗口内选中被切走时 pane 会落进别的空间——如实告警不静默；
+        # pane 已落地恒可见满足，不丢放行（多半是用户自己切走所致）。
+        if space_target is not None:
+            actual = placement.space_id
+            ctx["space_landed"] = actual
+            if ledger is not None:
+                ledger.update(space_landed=actual)
+            if actual != space_target:
+                w = {"reason": "landed_elsewhere", "actual": actual,
+                     "detail": f"pane 落进空间 {actual!r} ≠ 目标 {space_target!r}"
+                               "（落地窗口内选中被切走）"}
+                ctx["space_target_warning"] = w
+                if ledger is not None:
+                    ledger.update(space_target_warning=w)
+        return placement
+
     retry = (["打开 herdr-app 后用同一放行 id 重试（零发送、id 未消耗）"] if precheck
              else ["已建终端保留；打开 herdr-app 后用新放行 id 重试，走既有路径补领养修复"])
     if ledger is not None:
         ledger.update(phase="adopting")
         write_json_atomic(ledger_path, ledger)
     try:
-        original_space = deps.app_json(["status"], QUERY_GUARD_S).get("space")
+        original_space = herdr.selected_space()
     except DispatchError as e:
         fail("app_closed", f"herdr-app 没开或不可达，领养失败：{e.message}", retry)
     try:
-        ls = deps.app_json(["ls"], QUERY_GUARD_S)
+        layout = herdr.layout()
     except DispatchError as e:
         fail("app_closed", f"herdr-app ls 失败，领养失败：{e.message}", retry)
-    if find_pane(ls, address):
+    if layout.placement(address) is not None:
         ctx["workspace"] = "adopted"
         if ledger is not None:
             ledger.update(phase="adopt_done", workspace="adopted")
@@ -1336,7 +1286,7 @@ def adopt(deps, address, ledger, ledger_path, ctx, precheck, space,
     # 显式传路径 opt-in 自动建（零匹配时执行 space.new）；--space 必传，无「不传参
     # 静默按 cwd 猜」分支（多空间可共享同一 folder，静默 cwd 路由会拆散既有组织——
     # issue #43 关键约束）。
-    spaces = ls.get("spaces") or []
+    spaces = layout.raw.get("spaces") or []
     parsed = parse_space(space, spaces)
     if parsed["error"] is not None:
         err = parsed["error"]
@@ -1354,141 +1304,71 @@ def adopt(deps, address, ledger, ledger_path, ctx, precheck, space,
     # name=目录名、folder=路径、focus:false 不抢视图；赠送 shell 清理绑 space_created。
     if space_new is not None:
         try:
-            r = deps.app_json(["do", "space.new",
-                                   json.dumps(space_new, ensure_ascii=False)], QUERY_GUARD_S)
+            space_target = herdr.create_space(space_new["name"], space_new["folder"])
         except DispatchError as e:
+            if getattr(e, "stage", None) == "missing_space":
+                fail("keep_error", e.message, retry)
             fail("keep_error", f"space.new 失败：{e.message}", retry)
         ctx["space_created"] = True
         if ledger is not None:
             ledger.update(space_created=True)
             write_json_atomic(ledger_path, ledger)
-        space_target = r.get("space")
-        if not space_target:
-            fail("keep_error", "space.new 未返回新空间 id", retry)
         # 建后复核当前 shown：零空间时新空间即被显示（真实 app 语义），有空间时
         # focus:false 保持原 shown——目标==shown 则下面不 select。
         try:
-            original_space = deps.app_json(["status"], QUERY_GUARD_S).get("space")
+            original_space = herdr.selected_space()
         except DispatchError as e:
             fail("keep_error", f"space.new 后 status 复核失败：{e.message}", retry)
     # select 目标空间＋status 复核选中（命令成功不算数），不符即 select_error 停轮
     # （keep 不发，落点不会漂）。复核不符也先走还原护栏——select 可能已生效只是
     # 复核抖动，焦点不被留在目标空间。目标==当前 shown 不 select（不抢视图）。
-    # 选中成功后 keep/复核包在 try 里，失败路径也经 finally 还原选中。
+    # 选中成功后 keep/复核包在 focus 里，失败路径也经 __exit__ 还原选中。
     ctx["space_selected"] = space_target
     if ledger is not None:
         ledger.update(space_selected=space_target)
         write_json_atomic(ledger_path, ledger)
-    selection_switched = False
-    if space_target != original_space:
+    selection_switched = space_target != original_space
+    if selection_switched:
         if ledger is not None:
             ledger.update(phase="space_selecting")
             write_json_atomic(ledger_path, ledger)
-        try:
-            cur = select_and_verify(deps, space_target)
-        except DispatchError as e:
-            fail("select_error", f"space.select 失败：{e.message}", retry)
-        if cur != space_target:
-            restore_space(deps, original_space, space_target, ledger, ledger_path, ctx)
-            fail("select_error",
-                 f"space.select 复核选中={cur!r} ≠ 目标 {space_target!r}，keep 未发", retry)
-        selection_switched = True
     else:
         ctx["space_restore"] = "not_needed"
         if ledger is not None:
             ledger.update(space_restore="not_needed")
             write_json_atomic(ledger_path, ledger)
+    focus_cm = None
+    restore_recorded = False
     try:
-        try:
-            deps.app_json(["do", "terminal.keep",
-                               json.dumps({"terminal": address})], QUERY_GUARD_S)
-        except DispatchError as e:
-            fail("keep_error", f"terminal.keep 失败：{e.message}", retry)
-        # keep 后台完成、失败弹 toast：命令成功不算数，必须只读 ls 复核 pane 落地。
-        # 落地是异步的（#40）：单次 ls 可能跑在落地之前而误判 no_pane，改带超时轮询——
-        # 窗口内反复只读 ls，pane 出现即成功；窗口耗尽仍无 pane 才报 no_pane（keep 真失败如实报）。
-        deadline = deps.monotonic() + adopt_timeout
-        while True:
-            try:
-                ls2 = deps.app_json(["ls"], QUERY_GUARD_S)
-            except DispatchError as e:
-                fail("app_closed", f"keep 后 herdr-app ls 失败：{e.message}", retry)
-            if find_pane(ls2, address):
-                # pane 已经本轮 keep 落地即如实报（#46：后续任一步失败——清理/等就绪——
-                # 都不再掩盖「已可见」这一部分状态）。
-                ctx["pane_adopted"] = True
-                if ledger is not None:
-                    ledger.update(pane_adopted=True)
-                # 落地复核所在空间（#43）：pane 存在还不够，须在目标空间。keep 异步
-                # 落地，窗口内选中被切走时 pane 会落进别的空间——如实告警不静默；
-                # pane 已落地恒可见满足，不丢放行（多半是用户自己切走所致）。
-                if space_target is not None:
-                    landed_sp = find_pane_space(ls2, address)
-                    actual = landed_sp.get("id") if landed_sp else None
-                    ctx["space_landed"] = actual
-                    if ledger is not None:
-                        ledger.update(space_landed=actual)
-                    if actual != space_target:
-                        w = {"reason": "landed_elsewhere", "actual": actual,
-                             "detail": f"pane 落进空间 {actual!r} ≠ 目标 {space_target!r}"
-                                       "（落地窗口内选中被切走）"}
-                        ctx["space_target_warning"] = w
-                        if ledger is not None:
-                            ledger.update(space_target_warning=w)
-                break
-            if deps.monotonic() >= deadline:
-                fail("no_pane", "keep 后轮询窗口耗尽仍无 pane（后台落地失败）", retry)
-            deps.sleep(adopt_poll)
-    finally:
         if selection_switched:
-            restore_space(deps, original_space, space_target, ledger, ledger_path, ctx)
-    if ctx.get("space_created"):
-        # 清理赠送 shell（绑 space_created，#43 定稿）：找本终端所在 space（刚建、只有赠送 tab＋keep tab），
-        # 其余 tab 即赠送 shell——tab.close 结束终端，再 hc rm 清 finished 条目。
-        my_space = next((sp for sp in ls2.get("spaces") or []
-                         if any(t.get("terminal") == address
-                                for tb in sp.get("tabs") or []
-                                for t in tb.get("terminals") or [])), None)
-        for tb in (my_space or {}).get("tabs") or []:
-            addrs = [t.get("terminal") for t in tb.get("terminals") or []]
-            if address in addrs:
-                continue
+            # original 是本函数早先为策略/复核读到的事实（A/D 句），传给网关以免
+            # 进入时再读一条 status；launch 前的台账写点（D 后、select 前）保持不变。
+            focus_cm = herdr.focus(space_target, original=original_space)
             try:
-                deps.app_json(["do", "tab.close", json.dumps(
-                    {"id": tb["id"], "confirmed": True})], QUERY_GUARD_S)
+                with focus_cm:
+                    placement = keep_and_verify()
             except DispatchError as e:
-                gift_warning("tab_close_error", f"关闭赠送 shell tab 失败：{e.message}")
-                continue
-            for a in addrs:
-                # tab.close 异步结束终端（#46 Bug2，与 #40 同类竞态）：单次 rm 会撞
-                # live 被拒（退出码 1）。带超时轮询 hc get 等 finished（复用
-                # --adopt-timeout/--adopt-poll）再 rm；清理失败降级告警不丢放行。
-                deadline = deps.monotonic() + adopt_timeout
-                outcome = "finished"
-                while True:
-                    try:
-                        g = deps.hc_json(["get", a], QUERY_GUARD_S)
-                    except HcFailure as e:
-                        if e.kind == "not_found":
-                            outcome = "gone"
-                            break
-                        g = None    # 瞬时错误：窗口内继续轮询，耗尽才报
-                    if g is not None and g.get("state") == "finished":
-                        break
-                    if deps.monotonic() >= deadline:
-                        outcome = "poll_error" if g is None else "timeout"
-                        break
-                    deps.sleep(adopt_poll)
-                if outcome == "gone":
-                    continue    # 条目已不在，无需 rm
-                try:
-                    deps.hc_json(["rm", a], QUERY_GUARD_S)
-                except DispatchError as e:
-                    if e.kind == "not_found":
-                        continue    # get 与 rm 之间条目被收走，视同清理完成
-                    reason = {"timeout": "finish_timeout",
-                              "poll_error": "finish_poll_error"}.get(outcome, "rm_error")
-                    gift_warning(reason, f"hc rm 赠送 shell 终端失败：{e.message}")
+                if e.kind == "adopt_failed":
+                    raise       # keep/复核失败已按外部 kind 映射，原样上抛
+                if getattr(e, "stage", None) == "focus_select_mismatch":
+                    record_restore(focus_cm)
+                    restore_recorded = True
+                    fail("select_error", e.message + "，keep 未发", retry)
+                fail("select_error", f"space.select 失败：{e.message}", retry)
+        else:
+            placement = keep_and_verify()
+    finally:
+        if (selection_switched and not restore_recorded
+                and focus_cm is not None and focus_cm.restore is not None):
+            record_restore(focus_cm)
+    if ctx.get("space_created"):
+        # 清理赠送 shell（绑 space_created，#43 定稿）：从 keep 落地那次 ls 的落点
+        # 定位终端所在 space（刚建、只有赠送 tab＋keep tab），其余 tab 即赠送 shell——
+        # tab.close 结束终端，再 hc rm 清 finished 条目。复用同一棵 app 树，不再自读 ls。
+        for w in herdr.discard_shell_tabs(
+                placement.space_id, address, within=adopt_timeout,
+                poll=adopt_poll, layout=placement.layout):
+            gift_warning(w["reason"], w["detail"])
     ctx["workspace"] = "adopted"
     if ledger is not None:
         ledger.update(phase="adopt_done", workspace="adopted")
@@ -2067,14 +1947,14 @@ def main(argv=None, *, deps=None):
             if branch == "revive":
                 # 复活同样过预检 pane 闸（US26：app 没开时所有轮次停摆，无隐性例外）；
                 # 启动机械本身不 run、不重写标签（Decision 5）。
-                adopt(deps, ctx["target_address"],
+                adopt(deps, herdr, ctx["target_address"],
                       None, None, ctx, True, args.space,
                       adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
         else:
             # 身份已在分流核过（identity_ok）。恒可见（ADR-0009）：既有路径每轮预检
             # （写台账前）核 pane，缺则补领养（park 等造成的可见性漂移自愈）；补不成→
             # adopt_failed，零发送、id 不消耗、同 id 重试。app 没开时所有轮次停摆（已接受的代价）。
-            adopt(deps, g.address or args.target,
+            adopt(deps, herdr, g.address or args.target,
                   None, None, ctx, True, args.space,
                   adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
             state = g.status_state
@@ -2177,7 +2057,7 @@ def main(argv=None, *, deps=None):
                 ledger.update(rebuilt=True, rebuilt_old_target=ctx["rebuilt_old_target"])
                 write_json_atomic(ledger_path, ledger)
             do_create(deps, herdr, args, ledger, ledger_path, ctx)
-            adopt(deps, ctx["target_address"],
+            adopt(deps, herdr, ctx["target_address"],
                   ledger, ledger_path, ctx, False, args.space,
                   adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
             wait_launch_agent(deps, herdr, args, ledger, ledger_path)
@@ -2192,7 +2072,7 @@ def main(argv=None, *, deps=None):
         #       既有路径仅当传了显示名（复用轮可选，传了就覆盖、不传不碰）。新鲜路径必传（预检已核）。
         #       失败降级 display_name_warning 不丢放行；pane 落地仍是硬闸。
         if args.display_name is not None:
-            apply_display_name(deps, ctx.get("target_address"),
+            apply_display_name(deps, herdr, ctx.get("target_address"),
                                args.display_name, ledger, ledger_path, ctx)
 
         # 2.47) 学习准备（ADR-0012，#48 阶段二）：LOOP_LEARNING=off 时整段跳过，原有
@@ -2204,8 +2084,8 @@ def main(argv=None, *, deps=None):
         learning_space_id = None
         if learning_on:
             learning_store = learning.LearningStore()
-            deps.app_bin = find_app_bin(deps)
-            learning_space_id = resolve_space_id_for_learning(deps.app_bin, args.space)
+            herdr.require_app()
+            learning_space_id = resolve_space_id_for_learning(herdr, args.space)
             if learning_space_id is None:
                 ctx["learning_warning"] = {
                     "reason": "space_id_missing",
