@@ -8,7 +8,7 @@
     不存在）、命中缺 id、路径归一化；纯函数不查路径存在性（那是 main 预检的
     bad_args），路径样例用 /tmp/example 占位。
   2 harness.run CLI 缝：两个调用方「零匹配」策略差异——领养执行 space.new、
-    学习不记录不建（resolve_space_id_for_learning 只读投影）。CLI 受理要求
+    学习不记录不建（learning_prepare 的 begin 回调只读投影 plan_space）。CLI 受理要求
     --space 路径是已存在目录，路径态用真实临时目录。
 """
 import json

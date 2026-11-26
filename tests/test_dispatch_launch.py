@@ -8,8 +8,9 @@ T5a（ADR-0021，#99）：handle_old_python 在 main 之前、会 execv，上不
 保留直调；替换手法改对宿主模块（shutil / os / sys）的作用域 mock.patch.object，
 退出无条件恢复（ADR-0016 决定 7 残留洞纪律）。find_tool 不再被 patch——patch
 shutil.which 让真实 find_tool 跑起来；os.access 钉 False 使探测目录里即使有真实
-同名可执行文件也不认（宿主密闭）。env 走 harness.scoped_env。parse_args 纯函数
-直调保留原位。dispatch 经 harness 取得，不自行 sys.path.insert。
+同名可执行文件也不认（宿主密闭）。env 用 mock.patch.dict 作用域替换（handle_old_python
+直读进程环境，不可注入）。parse_args 纯函数直调保留原位。dispatch 经 harness 取得，
+不自行 sys.path.insert。
 """
 import contextlib
 import io
@@ -37,7 +38,7 @@ def call_old(uv_ret, guard, argv):
         # 不真重 exec；返回让流程落到报错出口（真实 execv 成功则不返回）
 
     try:
-        with harness.scoped_env({"LOOP_UV_REEXEC": guard}), \
+        with mock.patch.dict(os.environ, {"LOOP_UV_REEXEC": guard or ""}), \
              mock.patch.object(sys, "argv", argv), \
              mock.patch.object(shutil, "which", return_value=uv_ret), \
              mock.patch.object(os, "access", return_value=False), \

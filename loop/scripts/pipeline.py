@@ -231,9 +231,8 @@ class RunState:
         self.started = None
         self.reset_sent = False
         self.model_sent = False
-        self.learning_on = False
-        self.learning_store = None
-        self.learning_space_id = None
+        # ⑤ 学习会话（ADR-0023）：admit 里构造一次；关闭时是 Disabled 空对象。
+        self.learning = None
         self.error = None        # 顶层捕获的 DispatchError，供 project(False) 取
         # 阶段间传递（ADR-0020 决定 5）：分流结果、落定会话、主任务 turn 基线、回读文本。
         self.route = None
@@ -620,22 +619,6 @@ def plan_space(space, layout):
         new = parsed["new_space"]
         return SpacePlan(kind="create", name=new["name"], folder=new["folder"])
     return SpacePlan(kind="reuse", space_id=parsed["target_id"])
-
-
-def resolve_space_id_for_learning(herdr, space):
-    """--space 三态解析的只读投影（ADR-0012 学习用，#70 归一）：不建空间、不 select、不抛错。
-
-    匹配与领养共用 parse_space（ADR-0011 规则唯一实现）；本函数只加只读策略：
-    error／new_space 提案（路径零匹配）／ls 失败一律返回 None——学习侧据此禁用
-    本轮 space scoped 学习并告警（id 缺失禁用该轮学习，ADR-0012）。
-    绝不触发 space.new（那是领养路径的显式 opt-in）。读整棵 app 树经网关 `layout()`。
-    """
-    try:
-        layout = herdr.layout()
-    except DispatchError:
-        return None
-    plan = plan_space(space, layout)
-    return plan.space_id if plan.kind == "reuse" else None
 
 
 # ---------------------------------------------------------------- 会话/等待
@@ -1358,6 +1341,10 @@ def admit(state):
                 ["改提示词文件为单行命令（只带短参数）后用同一放行 id 重试（零发送、id 不消耗）",
                  "长正文请用户重新放行、新 id 下一轮发；纪律与证据见 SKILL.md「会话起始 skill」（ADR-0017）"],
                 returncode=2)
+    # ⑤ 学习会话在 admit 里构造一次（ADR-0020 决定 13 / ADR-0023 决定 3）：
+    # env/now/fact 三条注入缝；关闭时 learning.open 返回 Disabled，调用点不写 if on。
+    state.learning = learning.open(env=deps.env, now=deps.now, fact=state.fact,
+                                   target=request.target, release_id=request.release_id)
     return Admitted(text=text, nonempty=tuple(nonempty), anchor=anchor, sha=sha,
                     prompt_path=prompt_path, raw_path=raw_path,
                     turn_path=turn_path, record_path=record_path)
@@ -1536,21 +1523,25 @@ def name_tab(state, herdr):
 
 
 def learning_prepare(state, herdr):
-    """阶段 8 learning_prepare（ADR-0012）：开启时只读把 --space 解析成 space id。"""
+    """阶段 8 learning_prepare（ADR-0023 决定 5）：回调把 --space 只读解析成 space id。
+
+    回调先 `require_app()`（缺失照旧是主流程的 missing_tool，不吞）、再**新读一次**
+    layout（HerdrFailure → None；领养刚建空间后旧 layout 里没有新 id，必须新读）、
+    跑 `plan_space` 仅 reuse(id) 取 id，绝不建空间。`Disabled.begin` 不调回调，
+    所以关闭时零 ls、零 require_app。`begin` 拿 None 时写 space_id_missing（文案原样）。
+    """
     request = state.request
-    deps = state.deps
-    state.learning_on = learning.enabled(deps.env)
-    state.learning_store = None
-    state.learning_space_id = None
-    if state.learning_on:
-        state.learning_store = learning.LearningStore()
+
+    def resolve_space():
         herdr.require_app()
-        state.learning_space_id = resolve_space_id_for_learning(herdr, request.space)
-        if state.learning_space_id is None:
-            state.fact("learning_warning", {
-                "reason": "space_id_missing",
-                "detail": "--space 未能只读解析出唯一 space id，本轮序列/案例/few-shot 禁用"},
-                ledger=False)
+        try:
+            layout = herdr.layout()
+        except HerdrFailure:
+            return None
+        plan = plan_space(request.space, layout)
+        return plan.space_id if plan.kind == "reuse" else None
+
+    state.learning.begin(resolve_space)
 
 
 def send_prestep(state, herdr):
@@ -1592,15 +1583,7 @@ def send_main(state, herdr, admitted):
 
 def learning_settle(state, admitted):
     """阶段 11 learning_settle（ADR-0012）：主任务发送成功后结算上一轮预测。"""
-    request = state.request
-    if state.learning_on:
-        lr = state.learning_store.settle_and_record(
-            request.target, request.release_id, state.learning_space_id,
-            admitted.nonempty[0])
-        if lr.get("feedback") is not None:
-            state.fact("next_skill_feedback", lr["feedback"], ledger=False)
-        if lr.get("warning") is not None:
-            state.fact("learning_warning", lr["warning"], ledger=False)
+    state.learning.settle(admitted.nonempty[0])
 
 
 def await_result(state, herdr):
@@ -1649,19 +1632,8 @@ def extract_verify(state, admitted):
     request = state.request
     deps = state.deps
     state.phase("extracting")
-    examples_used = 0
-    sequence_used = False
-    seq_snapshot = []
-    injection = ""
-    if state.learning_on:
-        inj = state.learning_store.build_injection(state.learning_space_id, request.target)
-        injection = inj.get("text", "")
-        examples_used = inj.get("examples_used", 0)
-        sequence_used = inj.get("sequence_used", False)
-        seq_snapshot = inj.get("sequence", [])
-        if inj.get("warning") is not None:
-            state.fact("learning_warning", inj["warning"], ledger=False)
-    extraction = deps.extract(request, admitted.turn_path, injection)
+    # ⑤ 注入文本与元数据由会话持有（ADR-0023 决定 1/6）；关闭时 inject() 返回 ""。
+    extraction = deps.extract(request, admitted.turn_path, state.learning.inject())
     reply = extraction.reply
     fields = extraction.fields
     # 逐字校验语料＝本轮原料（ADR-0013）：旧轮文本不参与通过判定。
@@ -1675,14 +1647,9 @@ def extract_verify(state, admitted):
     state.fact("run_record", str(admitted.record_path))
     state.fact("reply_chars", len(reply))
     state.fact("reply_bad_lines", len(bad_reply_lines))
-    # 创建待观察预测（ADR-0012）：每轮成功抽取都创建（含空预测）。
-    if state.learning_on:
-        pr = state.learning_store.record_prediction(
-            request.target, request.release_id, state.learning_space_id,
-            fields.get("next_skill", ""), extraction.next_skill_invalid,
-            reply, seq_snapshot, examples_used, sequence_used, complete=state.complete)
-        if pr.get("warning") is not None:
-            state.fact("learning_warning", pr["warning"], ledger=False)
+    # 创建待观察预测（ADR-0012）：每轮成功抽取都创建（含空预测）；
+    # 模拟型关闭时 record 是空操作（ADR-0023 决定 4/6）。
+    state.learning.record(extraction, state.complete)
     state.rewritten = rewritten
     state.ext_fields = fields
     state.record_path = admitted.record_path

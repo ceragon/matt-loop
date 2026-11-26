@@ -6,8 +6,8 @@
 整理成可断言的东西；全局副作用作用域内替换并恢复；时钟虚拟不真睡。
 不解释业务含义（不断言业务分支）。
 P2 收口后 harness 不再赋值任何 dispatch 模块全局：命令层、时钟、locate、
-http_open/run_cmd、proxy_resolution 全经 Deps 注入；仅 learning_dir 的环境
-直读仍需 scoped_env（随 ⑤/P3 退役）。
+http_open/run_cmd、proxy_resolution 全经 Deps 注入；P3/⑤ 起学习环境也走
+deps.env，harness 不再作用域改写 os.environ。
 """
 import json
 import os
@@ -102,28 +102,20 @@ def main():
     assert dict(os.environ) == before_env
     print("5 env mapping reaches dispatch via Deps.env, os.environ restored")
 
-    # 6 残留 env 作用域（仅 learning_dir）：合并 env 作用域内应用到 os.environ，
-    #   跑后恢复原样；原本不存在的键退出删除。
-    before_env = dict(os.environ)   # LOOP_PROBE_NEW 是虚构键，本就不在环境里
-    seen = {}
-
-    def probe_extract(deps, request, turn_path, injection):
-        seen["LOOP_LEARNING"] = os.environ.get("LOOP_LEARNING")
-        seen["LOOP_PROBE_NEW"] = os.environ.get("LOOP_PROBE_NEW")
-        seen["deps_learning"] = deps.env.get("LOOP_LEARNING")
-        return extraction(EXT)
-
+    # 6 学习 env 经 Deps.env 到达 learning（⑤ 收口后不再作用域改写 os.environ）：
+    #   LOOP_LEARNING_DIR 指到临时目录，一轮开启学习后该目录出现学习落盘即证 env 到位。
+    before_env = dict(os.environ)
     w = world_with_terminal()
     with tempfile.TemporaryDirectory() as td:
+        ldir = Path(td) / "learn"
         r = harness.run(base_argv(td, "harness-6"), world=w,
-                        env={"LOOP_PROBE_NEW": "probe-val"}, extract=probe_extract)
+                        env={"LOOP_LEARNING": "on", "LOOP_LEARNING_DIR": str(ldir)},
+                        extract=stub_ext)
         assert r.rc == 0, r.result
-    assert seen["LOOP_LEARNING"] == "off", seen          # 默认隔离到达 os.environ 读者
-    assert seen["LOOP_PROBE_NEW"] == "probe-val", seen   # 注入键作用域内可见
-    assert seen["deps_learning"] == "off", seen          # Deps.env 同源
-    assert "LOOP_PROBE_NEW" not in os.environ            # 原本不存在→退出删除
+        assert ldir.is_dir() and (ldir / "pending.json").is_file(), \
+            "学习存储落盘在 env 指定的目录"
     assert dict(os.environ) == before_env
-    print("6 residual env scope (learning_dir) applied in scope, restored on exit")
+    print("6 learning env reaches learning_dir via Deps.env, os.environ untouched")
 
     # 7 http_open/run_cmd 经 Deps 注入（不再替换模块全局）；探针在抽取里各调一次。
     saved_open, saved_cmd = dispatch.webhook_open, dispatch.run_cmd
@@ -147,36 +139,6 @@ def main():
     assert dispatch.webhook_open is saved_open and dispatch.run_cmd is saved_cmd
     print("7 injected http_open/run_cmd reach Deps surface, module globals untouched")
 
-    # 8 scoped_env（T5a 抽出，run() 内部复用）：作用域内应用、退出恢复原值、
-    #   原本不存在的键退出删除。嵌套作用域验证「恢复原值」不靠裸 os.environ 写入。
-    before_env = dict(os.environ)
-    with harness.scoped_env({"LOOP_PROBE_SE": "outer"}):
-        assert os.environ["LOOP_PROBE_SE"] == "outer"
-        with harness.scoped_env({"LOOP_PROBE_SE": "inner", "LOOP_PROBE_SE2": "x"}):
-            assert os.environ["LOOP_PROBE_SE"] == "inner"
-            assert os.environ["LOOP_PROBE_SE2"] == "x"
-        assert os.environ["LOOP_PROBE_SE"] == "outer"     # 退出恢复原值
-        assert "LOOP_PROBE_SE2" not in os.environ         # 原本不存在→退出删除
-    assert dict(os.environ) == before_env
-    print("8 scoped_env applies in scope, restores originals, deletes new keys")
-
-    # 8b None 值＝作用域内确保键不存在（单元探针的「无 guard」场景），退出恢复。
-    with harness.scoped_env({"LOOP_PROBE_SE": "present"}):
-        with harness.scoped_env({"LOOP_PROBE_SE": None}):
-            assert "LOOP_PROBE_SE" not in os.environ
-        assert os.environ["LOOP_PROBE_SE"] == "present"
-    assert dict(os.environ) == before_env
-    print("8b scoped_env None value ensures key absent in scope, restored on exit")
-
-    # 8c 异常退出也无条件恢复。
-    try:
-        with harness.scoped_env({"LOOP_PROBE_SE": "boom"}):
-            raise RuntimeError("probe")
-    except RuntimeError:
-        pass
-    assert dict(os.environ) == before_env
-    print("8c scoped_env restores on exception exit")
-
     # 9 proxy_resolution 经 Deps 注入（不再替换模块全局）；探针在抽取里调一次。
     saved_proxy = dispatch.webhook_proxy_resolution
     marker_proxy = lambda url: ({"https": "http://proxy.invalid:1"}, "env")
@@ -196,7 +158,7 @@ def main():
     print("9 injected proxy_resolution reaches Deps surface, module global untouched")
 
     # 9c 异常退出也无条件恢复：轮内抛异常（extract 探针炸）时模块全局与 os.environ
-    #   仍恢复原样，异常原样外抛（finally 覆盖，不留共享污染）。
+    #   仍恢复原样（harness 已不写 os.environ，这里顺带守住），异常原样外抛。
     before_env = dict(os.environ)
     saved_all = (dispatch.hc_json, dispatch.app_json, dispatch.find_tool,
                  dispatch.webhook_open, dispatch.run_cmd,

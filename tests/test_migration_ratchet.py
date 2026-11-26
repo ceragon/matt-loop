@@ -26,12 +26,10 @@ _ENV_WRITE_METHODS = frozenset({"update", "pop", "setdefault", "clear"})
 # 文件级白名单：filename -> (理由, 退役切片)。只许缩小，不许新增；陈旧条目自检必红。
 # 首版以实际扫描推导（T4）；T5a–T5d 把 16 个消费方按文件迁完、逐条删（21→15→11→8→5）；
 # R 删三个供应方残留兼容面、删条（5→2，#104）；P2 收口 harness 的模块全局替换与
-# test_command_parse 的 run_cmd 作用域替换（2→1）。现存 1 条带明确退役切片；
-# 最后一个退役切片清空列表改无条件断言（本片不清空、不删常量）。
-WHITELIST = {
-    # harness：仅剩 learning_dir 直读 os.environ 的作用域 env 应用（enabled 已走 deps.env）。
-    "harness.py": ("残留 env 作用域替换（learning_dir 直读 os.environ）", "P3/⑤"),
-}
+# test_command_parse 的 run_cmd 作用域替换（2→1）；P3/⑤ 把学习环境洞收口到
+# deps.env，harness 不再作用域改写 os.environ（1→0）。终态片删常量改无条件断言；
+# 本片保留空表，自检机制不动。
+WHITELIST = {}
 
 
 def _is_dispatch_attr_target(node):

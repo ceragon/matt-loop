@@ -6,7 +6,7 @@
 
 纯模块纪律：零全局副作用、不直接 import dispatch（经 fake_herdr→harness 的传递导入
 属 ADR-0016 决定 9 授权）、不写 os.environ；被棘轮扫描天然干净，不进白名单。
-环境一律经 harness env 注入或 harness.scoped_env。
+环境一律经 harness env 注入（Deps.env）。
 
 AST 核对备注（实施时实测）：
   - world：×4 组（next_skill/reset/webhook/webhook_diag）与 ×2 组（api_extract/

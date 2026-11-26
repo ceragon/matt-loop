@@ -7,16 +7,13 @@ run(...) 只做一件事：装配依赖对象、调用分发脚本入口、把�
 全局副作用纪律（ADR-0016 决定 7）：时钟、环境变量、工具定位、命令层、webhook
 出口与代理决议全走 Deps 注入；P2 已把残留的模块全局替换（hc_json/app_json/time/
 find_tool/webhook_open/run_cmd/webhook_proxy_resolution）全部收口，harness 不再
-赋值任何 dispatch 全局。仅剩一条随 ⑤/P3 退役的作用域 env：
-  - learning_dir 仍直读 os.environ（learning.enabled 已改为 deps.env），
-    LearningStore 的目录解析因此仍需把合并后的 env 映射经 scoped_env 作用域内
-    应用到 os.environ（设置＋退出恢复原值、原本不存在的键退出删除）。这是
-    ADR-0016 决定 7 学习环境洞例外的最后一段，随 ⑤ 接线收口后删除，终态片兜底。
+赋值任何 dispatch 全局。P3/⑤ 把学习的环境洞也收口：`learning.enabled`、
+`learning_dir` 与学习事件时间戳全部走 `deps.env` / `deps.now`，harness 因此不再
+作用域内改写 os.environ（ADR-0016 决定 7 的最后一段已删除）。
 """
 import contextlib
 import io
 import json
-import os
 import sys
 import types
 from pathlib import Path
@@ -50,30 +47,6 @@ class VirtualClock:
         self.t += s
 
 
-@contextlib.contextmanager
-def scoped_env(env_map):
-    """作用域 env（T5a 自 run() 抽出，单元探针共用）：作用域内把 env_map 应用到
-    os.environ，退出无条件恢复——原本存在的键恢复原值、原本不存在的键删除。
-    值为 None 表示作用域内确保该键不存在（单元探针的「无 guard」场景）。
-    残留洞纪律（ADR-0016 决定 7）：作用域内替换、退出恢复，不留共享污染。
-    P2 后仅剩 learning_dir 直读 os.environ（learning.enabled 已走 deps.env）；
-    随 ⑤/P3 收口后本函数与 run() 里的作用域一起删除。"""
-    saved = {k: os.environ.get(k) for k in env_map}
-    try:
-        for k, v in env_map.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        yield
-    finally:
-        for k, old in saved.items():
-            if old is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = old
-
-
 def _argv_value(argv, flag):
     """机械取 argv 里某 flag 的值（产物路径定位用，不解释业务）。"""
     argv = list(argv)
@@ -89,7 +62,7 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
     """装配 Deps、跑一轮 dispatch.main、整理返回码与产物。
 
     world：FakeHerdr（两个命令层入口填进 Deps 的 hc_json/app_json 字段）。
-    env：隔离环境变量映射（合并 DEFAULT_ENV，作用域内应用到 os.environ、退出恢复原样）。
+    env：隔离环境变量映射（合并 DEFAULT_ENV 后交给 Deps.env；不再改写 os.environ）。
     extract/locate/http_open/run_cmd/proxy_resolution：可选依赖覆盖；clock 缺省虚拟时钟。
     返 SimpleNamespace：rc、stdout、stderr、result（stdout JSON）、
     ledger/notify（落盘 JSON，存在才读）、各产物路径与 loop_dir。
@@ -109,11 +82,9 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
                          run_cmd=run_cmd, extract=extract,
                          proxy_resolution=proxy_resolution)
     out, err = io.StringIO(), io.StringIO()
-    # 仅剩 learning_dir 的 os.environ 直读（⑤/P3 收口）；Deps 注入的其余依赖不再
-    # 触碰任何模块全局。
-    with scoped_env(env_map):
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = dispatch.main(list(argv), deps=deps)
+    # 依赖全经 Deps 注入（含 env），不触碰任何模块全局或 os.environ。
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = dispatch.main(list(argv), deps=deps)
     stdout = out.getvalue()
     result = json.loads(stdout.strip()) if stdout.strip() else None
     loop_dir = _argv_value(argv, "--loop-dir")
