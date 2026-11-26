@@ -22,7 +22,8 @@
 
 T5a（ADR-0021，#99）：纯函数计量（1、14 前半）保留原位；完整轮用例迁 FakeHerdr＋
 harness.run（唯一 CLI 缝），零 hc 调用断言用假世界日志 w.hc_calls；not_found 场景
-＝世界里没有该终端。常量与助手本文件自带，不 import 供应方文件。
+＝世界里没有该终端。R（#104）：SCREEN/ANCHOR_SRC/EXT 与 ext 构造器迁 helpers 单一出处（EXT 经 EXT5 别名）；
+_world(turn/not_found) 变体留本地。
 """
 import tempfile
 from pathlib import Path
@@ -30,11 +31,8 @@ from pathlib import Path
 import harness
 from harness import dispatch
 from fake_herdr import FakeHerdr
-
-ANCHOR_SRC = "请实现某个功能"
-SCREEN = ANCHOR_SRC + "\n已完成该功能。"
-EXT = {"needs_user": False, "questions": [],
-       "conclusion": "", "blocked": "", "reply": SCREEN}
+from helpers import SCREEN, ext
+from helpers import ANCHOR as ANCHOR_SRC, EXT5 as EXT
 
 
 def _world(turn=5, not_found=False):
@@ -48,8 +46,7 @@ def _world(turn=5, not_found=False):
     return w
 
 
-def _ext(pi_bin, args, turn_path):
-    return dict(EXT)
+_ext = ext(EXT)   # extract 桩：五字段旧形状（helpers.ext 构造器）
 
 
 def run_case(prompt, td, w, rid, reset=None, launch=None, cwd=None,

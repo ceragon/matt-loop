@@ -15,11 +15,7 @@ from pathlib import Path
 import harness
 from harness import dispatch
 from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-EXT = {"needs_user": False, "questions": [], "conclusion": "", "blocked": "",
-       "reply": ANCHOR + "\n已完成该功能。", "next_skill": ""}
+from helpers import PROMPT, ANCHOR, EXT
 
 
 def world_with_terminal():

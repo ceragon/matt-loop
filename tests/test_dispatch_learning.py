@@ -18,7 +18,8 @@ dispatch.extract 经 harness 残留洞吸收密闭跑）。断言只认 rc、std
         存储故障降级不阻断、重置前置不进序列。
 
 T5d（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run；作用域 env 走 harness.scoped_env；
-常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
+R（#104）：共享常量与 api_env/FakeResp 迁 helpers 单一出处（EXT 经 EXT5 别名）；
+_world(screen=None)/_space_world 变体留本地。
 """
 import fcntl
 import json
@@ -31,29 +32,15 @@ import harness
 from harness import dispatch
 import learning
 from fake_herdr import FakeHerdr
-
-SCREEN = "请实现某个功能\n已完成该功能。"
-EXT = {"needs_user": False, "questions": [],
-       "conclusion": "", "blocked": "", "reply": SCREEN}
-KEY = "sk-test-SECRET-VALUE"
-BASE = "https://gw.example/v1"
-MODEL = "test-model"
+from helpers import SCREEN, api_env, FakeResp
+from helpers import EXT5 as EXT   # 五字段旧形状（helpers 单一出处）
 
 CAND = learning.NEXT_SKILL_CANDIDATES
 
 
-def _api_env(**kw):
-    # LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入
-    # 覆盖宿主可能导出的同名键，保住隔离（退出恢复）。T4 先例。
-    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
-         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL, "LOOP_API_MAX_TOKENS": ""}
-    d.update(kw)
-    return d
-
-
 def learning_env(directory, **kw):
     """作用域 env（经 harness.scoped_env，退出无条件恢复）：学习 on＋api 后端配置。"""
-    return harness.scoped_env(_api_env(LOOP_LEARNING="on", LOOP_LEARNING_DIR=str(directory), **kw))
+    return harness.scoped_env(api_env(LOOP_LEARNING="on", LOOP_LEARNING_DIR=str(directory), **kw))
 
 
 def _world(screen=None):
@@ -138,23 +125,9 @@ def run_round(td, rid, prompt, ext_obj, ldir, target="t99", space="main",
         return FakeResp({"choices": [{"message": {"content": payload}}]})
 
     r = harness.run(argv, world=w,
-                    env=_api_env(LOOP_LEARNING="on", LOOP_LEARNING_DIR=str(ldir)),
+                    env=api_env(LOOP_LEARNING="on", LOOP_LEARNING_DIR=str(ldir)),
                     extract=dispatch.extract, http_open=fake_open)
     return r.rc, r.result, ld, captured
-
-
-class FakeResp:
-    def __init__(self, payload):
-        self._b = json.dumps(payload).encode("utf-8")
-
-    def read(self):
-        return self._b
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
 
 
 def urllib_error():
@@ -498,7 +471,7 @@ def main():
              "--space", "main", "--wall-clock", "5", "--check-in", "1",
              "--settle-seconds", "0.01", "--settle-checks", "2"],
             world=_world(),
-            env=_api_env(LOOP_LEARNING="off", LOOP_LEARNING_DIR=str(ldir)),
+            env=api_env(LOOP_LEARNING="off", LOOP_LEARNING_DIR=str(ldir)),
             extract=dispatch.extract,
             http_open=lambda req, timeout, proxies: FakeResp(
                 {"choices": [{"message": {"content": json.dumps(dict(EXT, next_skill="to-spec"))}}]}))

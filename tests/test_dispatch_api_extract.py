@@ -18,125 +18,21 @@
 
 T4（ADR-0021）：本文件业务用例已迁 FakeHerdr＋harness.run（唯一 CLI 缝）；后端专项用例把
 真实抽取入口 dispatch.extract 作为 extract 依赖传入，经 harness 残留洞吸收（env 应用到
-os.environ、注入 http_open/run_cmd 替换模块级）密闭跑真实抽取链。下方 FakeHc、FakeResp、
-env、api_env 与 PROMPT/SCREEN/EXT/BASE/KEY/MODEL 是**残留兼容面**，供未迁消费方
-（next_skill/learning/turn_cut）跨文件 import，原地保留、随 R 删除；棘轮白名单在册。
-无人引用的旧跑用例助手 run_main/ok_payload 已在本片删除。
+os.environ、注入 http_open/run_cmd 替换模块级）密闭跑真实抽取链。
+R（ADR-0021，#104）：残留兼容面（FakeHc/env/api_env/FakeResp/ENV_KEYS）已删，棘轮白名单
+条目随之删除；FakeResp（payload 版）迁 helpers 单一出处（活用例仍用）。共享常量与
+world/argv/api_env 构造器迁 helpers；EXT 五字段旧形状经 helpers.EXT5 单一出处。
 """
-import contextlib
 import json
-import os
 import subprocess
-import sys
 import tempfile
 import urllib.error
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
-import dispatch  # noqa: E402
-import harness  # noqa: E402
-from fake_herdr import FakeHerdr  # noqa: E402
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-SCREEN = ANCHOR + "\n已完成该功能。"
-EXT = {"needs_user": False, "questions": [],
-       "conclusion": "", "blocked": "", "reply": SCREEN}
-KEY = "sk-test-SECRET-VALUE"
-BASE = "https://gw.example/v1"
-MODEL = "test-model"
-ENV_KEYS = ["LOOP_EXTRACT_BACKEND", "LOOP_API_BASE", "LOOP_API_KEY",
-            "LOOP_API_MODEL", "LOOP_API_MAX_TOKENS"]
-
-
-# ---- 残留兼容面（随 R 删）：env/api_env 环境写入助手与旧桩，供未迁消费方跨文件 import ----
-# 本文件 main() 已迁 harness（环境经注入 dict / harness env，不再写 os.environ）；保留仅为
-# 消费方（next_skill/learning/turn_cut import env/api_env/FakeHc/FakeResp/常量）。棘轮白名单在册。
-@contextlib.contextmanager
-def env(**kw):
-    old = {k: os.environ.pop(k, None) for k in ENV_KEYS}
-    os.environ.update({k: v for k, v in kw.items() if v is not None})
-    try:
-        yield
-    finally:
-        for k in ENV_KEYS:
-            os.environ.pop(k, None)
-            if old[k] is not None:
-                os.environ[k] = old[k]
-
-
-def api_env(**kw):
-    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
-         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL}
-    d.update(kw)
-    return env(**d)
-
-
-class FakeHc:
-    def __init__(self):
-        self.sends = []
-        self.turn = 5
-
-    def __call__(self, hc_bin, args, timeout_s):
-        cmd = args[0]
-        if cmd == "get":
-            return {"state": "live", "turn": self.turn, "title": "claude-test",
-                    "address": "t99", "name": "claude-test",
-                    "labels": {"loop": "1"},
-                    "status": {"state": "idle", "title": "claude-test"},
-                    "foreground": {"name": "claude", "argv": ["claude"]}}
-        if cmd == "send":
-            self.sends.append((args[-1], "--if" in args))
-            baseline = self.turn
-            self.turn += 1
-            return {"turn": baseline}
-        if cmd == "read":
-            return {"text": SCREEN, "complete": True, "how": "current", "why": ""}
-        if cmd == "wait":
-            return {"reason": "status", "status": "idle", "turn": self.turn}
-        raise AssertionError("unexpected hc cmd: " + cmd)
-
-
-class FakeResp:
-    def __init__(self, payload):
-        self._b = json.dumps(payload).encode("utf-8")
-
-    def read(self):
-        return self._b
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _world():
-    """既有 idle agent t99＋main 空间 pane 已在＋稳定屏幕（回读逐字校验语料）。"""
-    w = FakeHerdr()
-    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
-    sp = w.add_space(name="main")
-    w.add_tab(sp, terminals=["t99"])
-    w.screen("t99", SCREEN)
-    return w
-
-
-def _argv(td, rid, extra=()):
-    pf = Path(td) / "prompt.md"
-    pf.write_text(PROMPT, encoding="utf-8")
-    return ["--target", "t99", "--release-id", rid,
-            "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
-            "--space", "main", "--wall-clock", "5", "--check-in", "1",
-            "--settle-seconds", "0.01", "--settle-checks", "2", *extra]
-
-
-def _api_env(**kw):
-    # LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入
-    # 覆盖宿主可能导出的同名键，保住「默认 max_tokens」断言的隔离（退出恢复）。
-    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
-         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL, "LOOP_API_MAX_TOKENS": ""}
-    d.update(kw)
-    return d
+import harness
+from harness import dispatch
+from helpers import PROMPT, SCREEN, KEY, BASE, MODEL, world, argv, api_env, FakeResp
+from helpers import EXT5 as EXT   # 五字段旧形状（helpers 单一出处）
 
 
 def _ok_payload():
@@ -156,9 +52,9 @@ def main():
     print("1 backend resolution ok")
 
     # 2 启动预检：缺 env，零发送无台账（经 harness env 注入）
-    w = _world()
+    w = world()
     with tempfile.TemporaryDirectory() as td:
-        r = harness.run(_argv(td, "api-pre-1"), world=w,
+        r = harness.run(argv(td, "api-pre-1"), world=w,
                         env={"LOOP_EXTRACT_BACKEND": "api"})
         assert r.rc == 2 and r.result["error"]["kind"] == "api_not_configured", r.result
         for n in ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL"):
@@ -166,7 +62,7 @@ def main():
         assert w.sends == [] and r.ledger is None
     for bad in ("abc", "0"):
         try:
-            dispatch.api_config(_api_env(LOOP_API_MAX_TOKENS=bad))
+            dispatch.api_config(api_env(LOOP_API_MAX_TOKENS=bad))
             raise AssertionError("should raise")
         except dispatch.DispatchError as e:
             assert e.kind == "bad_api_max_tokens" and e.returncode == 2
@@ -183,11 +79,11 @@ def main():
         # proxies 原样收下但不自证其值：代理决议读真实机器环境（机器相关），归 webhook 套件（T5）。
         return FakeResp(_ok_payload())
 
-    w = _world()
+    w = world()
     with tempfile.TemporaryDirectory() as td:
         # api 路径不找 pi 的缝上重述：本轮经网络出口（http_open）跑通、未注入 run_cmd，
         # 若走 pi 子进程会撞真实 run_cmd 而失败——成功＋captured 请求即证 api 直连。
-        r = harness.run(_argv(td, "api-ok-1"), world=w, env=_api_env(),
+        r = harness.run(argv(td, "api-ok-1"), world=w, env=api_env(),
                         extract=dispatch.extract, http_open=fake_open)
         assert r.rc == 0 and r.result["ok"], r.result
         assert r.result["extract_backend"] == "api"
@@ -207,10 +103,10 @@ def main():
         assert captured["timeout"] == 1200.0
         assert r.result["needs_user"] is False and r.result["questions"] == []
         assert w.sends == [("t99", PROMPT, True)]
-    w = _world()
+    w = world()
     with tempfile.TemporaryDirectory() as td:
-        r = harness.run(_argv(td, "api-ok-2"), world=w,
-                        env=_api_env(LOOP_API_MAX_TOKENS="8192"),
+        r = harness.run(argv(td, "api-ok-2"), world=w,
+                        env=api_env(LOOP_API_MAX_TOKENS="8192"),
                         extract=dispatch.extract, http_open=fake_open)
         assert r.rc == 0 and captured["body"]["max_tokens"] == 8192
     print("3+4 request shape and success contract ok")
@@ -229,9 +125,9 @@ def main():
         (urllib.error.URLError(ConnectionRefusedError()), 1, "extraction_failed", "API URLError"),
     ]
     for i, (exc, rc_want, kind, msg) in enumerate(cases):
-        w = _world()
+        w = world()
         with tempfile.TemporaryDirectory() as td:
-            r = harness.run(_argv(td, f"api-err-{i}"), world=w, env=_api_env(),
+            r = harness.run(argv(td, f"api-err-{i}"), world=w, env=api_env(),
                             extract=dispatch.extract, http_open=raising_open(exc))
             assert r.rc == rc_want and r.result["error"]["kind"] == kind, (kind, r.result)
             if msg:
@@ -239,9 +135,9 @@ def main():
             for s in (r.stdout, r.stderr, json.dumps(r.result, ensure_ascii=False)):
                 assert KEY not in s and "gw.example" not in s, "密钥/URL 回显"
     for payload in ({}, {"choices": [{"message": {"content": "不是 JSON"}}]}):
-        w = _world()
+        w = world()
         with tempfile.TemporaryDirectory() as td:
-            r = harness.run(_argv(td, "api-bad"), world=w, env=_api_env(),
+            r = harness.run(argv(td, "api-bad"), world=w, env=api_env(),
                             extract=dispatch.extract,
                             http_open=lambda req, timeout, proxies: FakeResp(payload))
             assert r.rc == 1 and r.result["error"]["kind"] == "extraction_invalid", r.result
@@ -254,9 +150,9 @@ def main():
         pi_argv["argv"] = argv
         return subprocess.CompletedProcess(argv, 0, json.dumps(EXT, ensure_ascii=False), "")
 
-    w = _world()
+    w = world()
     with tempfile.TemporaryDirectory() as td:
-        r = harness.run(_argv(td, "pi-reg-1", extra=("--pi-model", "m1")), world=w,
+        r = harness.run(argv(td, "pi-reg-1", extra=("--pi-model", "m1")), world=w,
                         env={"LOOP_EXTRACT_BACKEND": "pi"},
                         extract=dispatch.extract, run_cmd=fake_run_cmd)
         assert r.rc == 0 and r.result["ok"] and r.result["extract_backend"] == "pi", r.result

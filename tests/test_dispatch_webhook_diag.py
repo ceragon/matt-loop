@@ -23,7 +23,7 @@ HTTPS_PROXY）；6–8 的被测对象是真实 webhook_proxy_resolution 的代�
 完整轮保真实决议、网络探测改对宿主模块 urllib.request 的作用域 mock.patch.object
 （macOS 专有属性 create=True 让 mock 负责增删恢复）；9 是 _proxy_diagnostic 单元
 探针，保留直调、同一替换手法（ADR-0016 决定 7 残留洞纪律）。
-常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
+R（#104）：共享常量与 world 构造器迁 helpers 单一出处。
 """
 import contextlib
 import errno
@@ -38,13 +38,7 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-SCREEN = ANCHOR + "\n已完成该功能。"
-EXT = {"needs_user": False, "questions": [], "conclusion": "", "blocked": "",
-       "reply": SCREEN, "next_skill": ""}
+from helpers import PROMPT, EXT, world
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -57,16 +51,6 @@ def assert_clean(*texts):
     for text in texts:
         for bad in SENTINELS:
             assert bad not in text, (bad, text)
-
-
-def _world():
-    """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋稳定屏幕。"""
-    w = FakeHerdr()
-    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
-    sp = w.add_space(name="main")
-    w.add_tab(sp, terminals=["t99"])
-    w.screen("t99", SCREEN)
-    return w
 
 
 @contextlib.contextmanager
@@ -104,7 +88,7 @@ def run_case(rid, opener, proxy_res=None):
                 "--space", "main",
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2"]
-        r = harness.run(argv, world=_world(),
+        r = harness.run(argv, world=world(),
                         env={"LOOP_WEBHOOK_URL": URL, "LOOP_WEBHOOK_SECRET": SECRET},
                         extract=lambda pi_bin, args, raw: dict(EXT),
                         http_open=opener, proxy_resolution=proxy_res)

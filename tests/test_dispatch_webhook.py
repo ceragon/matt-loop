@@ -24,7 +24,7 @@ T5c（ADR-0021，#99）：9–13 原 send_webhook 直调上移 CLI 缝（完整�
 经既有 clock= 参数自带记录时钟，滤掉落定静置前缀后退避子序列精确对照，原全序列断言等强）。
 14 是 build_opener 单元探针（测真实 webhook_open 适配器本身），保留直调；替换手法改对
 宿主模块 urllib.request 的作用域 mock.patch.object＋harness.scoped_env，退出无条件恢复
-（ADR-0016 决定 7 残留洞纪律）。常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
+（ADR-0016 决定 7 残留洞纪律）。R（#104）：共享常量与 world 构造器迁 helpers 单一出处；FakeResp（b"ok" 版）留本地。
 """
 import json
 import ssl
@@ -36,13 +36,7 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-ANCHOR = PROMPT.splitlines()[0][:24]
-SCREEN = ANCHOR + "\n已完成该功能。"
-EXT = {"needs_user": False, "questions": [], "conclusion": "", "blocked": "",
-       "reply": SCREEN, "next_skill": ""}
+from helpers import PROMPT, EXT, world
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -77,16 +71,6 @@ def _backoff(clock):
     return [s for s in clock.sleeps if s in (0.5, 1.0)]
 
 
-def _world():
-    """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋稳定屏幕。"""
-    w = FakeHerdr()
-    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
-    sp = w.add_space(name="main")
-    w.add_tab(sp, terminals=["t99"])
-    w.screen("t99", SCREEN)
-    return w
-
-
 def run_round(rid, opener, *, env=(URL, SECRET), w=None, proxy_res=None,
               clock=None, extra_argv=()):
     """经唯一 harness.run 跑一轮完整 dispatch；env=(url, secret)，None 成员＝该键不存在。
@@ -100,7 +84,7 @@ def run_round(rid, opener, *, env=(URL, SECRET), w=None, proxy_res=None,
                 "--wall-clock", "5", "--check-in", "1",
                 "--settle-seconds", "0.01", "--settle-checks", "2", *extra_argv]
         return harness.run(
-            argv, world=w if w is not None else _world(),
+            argv, world=w if w is not None else world(),
             env={"LOOP_WEBHOOK_URL": env[0], "LOOP_WEBHOOK_SECRET": env[1]},
             extract=lambda pi_bin, args, raw: dict(EXT),
             http_open=opener,
@@ -166,7 +150,7 @@ def main():
 
     # 4 error 路径也发 webhook
     posted.clear()
-    w = _world()
+    w = world()
     w.fail("send", "error", kind="status_mismatch", nth=1)   # 主任务拒发 → error 路径（旧桩同款 kind）
     r = run_round("wh-err-1", ok_urlopen, w=w)
     res = r.result

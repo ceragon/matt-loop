@@ -22,7 +22,7 @@ T5b（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run（唯一 CL
 断言经假世界 command_log 日志（原跨桩 journal 的假世界侧出处；改名避开 ADR-0022 台账
 Journal 域词）；rename 失败/不落地经 fail("tab.rename") error/noop；tab id 不暴露经
 hide_tab_ids()；主任务拒发经 fail("send", nth=1)。
-常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
+R（#104）：共享常量迁 helpers 单一出处。
 """
 import json
 import tempfile
@@ -30,11 +30,7 @@ from pathlib import Path
 
 import harness
 from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-LAUNCH = "claude --dangerously-skip-permissions"
-NAME = "claude-matt-loop"
-DISPLAY = "LoopEng_测试任务"
+from helpers import PROMPT, LAUNCH, NAME, DISPLAY
 
 
 def run_round(w, rid, *, target=NAME, launch=None, cwd=None, rebuild=False,

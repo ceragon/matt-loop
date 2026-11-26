@@ -17,18 +17,14 @@
 T5b（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run（唯一 CLI 缝）。赠送 shell 地址
 经假世界 gifts 日志取得（不硬编码自动 id）；延迟 finished 经 delay("tab.close", "land_after")、
 条目被收走经 vanish、rm 失败经 fail("rm")；卡弹框经 will_launch(…, "dialog")。
-常量与助手本文件自带，不 import 供应方文件（去重债归 R）。
+R（#104）：共享常量迁 helpers 单一出处。
 """
 import tempfile
 from pathlib import Path
 
 import harness
 from fake_herdr import FakeHerdr
-
-PROMPT = "请实现某个功能\n第二行说明"
-LAUNCH = "claude --dangerously-skip-permissions"
-NAME = "claude-matt-loop"
-DISPLAY = "LoopEng_测试任务"
+from helpers import PROMPT, LAUNCH, NAME, DISPLAY
 
 
 def run_round(w, rid, *, target=NAME, launch=None, cwd=None, rebuild=False,
