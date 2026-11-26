@@ -36,20 +36,15 @@ WHITELIST = {
     "harness.py": ("残留洞作用域内替换（模块全局/os.environ/webhook_open/run_cmd）", "P2/⑤"),
     # 命令解析测试：作用域 run_cmd 替换喂真实错误信封。
     "test_command_parse.py": ("作用域 run_cmd 替换（错误信封解析测试）", "G1/P2"),
-    # 16 个未迁消费方：旧式 dispatch.<名> 赋值与 os.environ 写入，T5 按文件迁 FakeHerdr/harness 时逐条删。
+    # 10 个未迁消费方：旧式 dispatch.<名> 赋值与 os.environ 写入，T5 按文件迁 FakeHerdr/harness 时逐条删
+    # （T5a 已迁 6 个：launch/anchor_path/no_summary/target_model/reset_discipline/split_required）。
     "test_dispatch_adopt.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
-    "test_dispatch_anchor_path.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_display_name.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
-    "test_dispatch_launch.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_learning.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_lifecycle.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_next_skill.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
-    "test_dispatch_no_summary.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_notify.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
-    "test_dispatch_reset_discipline.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_space.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
-    "test_dispatch_split_required.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
-    "test_dispatch_target_model.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_turn_cut.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_webhook.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),
     "test_dispatch_webhook_diag.py": ("未迁消费方：旧式全局赋值/环境写入", "T5"),

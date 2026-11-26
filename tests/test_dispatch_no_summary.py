@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""test_dispatch_no_summary.py — summary 移除回归测试（mock hc/pi，不打真实 agent）。
+"""test_dispatch_no_summary.py — summary 移除回归测试（FakeHerdr 假世界，不打真实 agent）。
 
-跑法：python3.12 tests/test_dispatch_no_summary.py
+跑法：python3 tests/test_dispatch_no_summary.py
 覆盖：
   1 parse_extraction：pi 不给 summary → 照常解析，结果无 summary 键。
   2 parse_extraction：pi 多给 summary（字符串或任意类型）→ 直接丢弃，不报错。
@@ -9,22 +9,23 @@
   4 verify_extraction：ext 里混入瞎编 summary → 不校验、rewritten 保持空。
   5 verify_extraction：conclusion/questions/blocked 逐字校验照旧；全部瞎编仍 error。
   6 端到端：pi 输出带瞎编 summary → result 无 summary、rewritten 空、reply 零坏行。
+
+T5a（ADR-0021，#99）：纯函数直调用例（1–5）保留原位；端到端（6）迁 FakeHerdr＋
+harness.run，真实抽取入口 dispatch.extract 作为 extract 依赖传入、注入 run_cmd
+（T4 api_extract 先例）。常量与助手本文件自带，不 import 供应方文件。
 """
-import contextlib
-import io
 import json
-import sys
 import tempfile
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
-import dispatch  # noqa: E402
-import os  # noqa: E402
-# 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
-os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
+import harness
+from harness import dispatch
+from fake_herdr import FakeHerdr
 
-from test_dispatch_reset import PROMPT, SCREEN, FakeHc, FakeApp  # noqa: E402
+PROMPT = "请实现某个功能\n第二行说明"
+ANCHOR = PROMPT.splitlines()[0][:24]
+SCREEN = ANCHOR + "\n已完成该功能。"
 
 BASE = {"needs_user": False, "questions": [],
         "conclusion": "已完成该功能。", "blocked": "", "reply": SCREEN}
@@ -32,6 +33,25 @@ BASE = {"needs_user": False, "questions": [],
 
 def parse_ok(obj):
     return dispatch.parse_extraction(json.dumps(obj, ensure_ascii=False))
+
+
+def _world():
+    """既有 idle agent t99＋main 空间 pane 已在＋稳定屏幕（回读逐字校验语料）。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t99"])
+    w.screen("t99", SCREEN)
+    return w
+
+
+def _argv(td, rid):
+    pf = Path(td) / "prompt.md"
+    pf.write_text(PROMPT, encoding="utf-8")
+    return ["--target", "t99", "--release-id", rid,
+            "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
+            "--space", "main", "--wall-clock", "5", "--check-in", "1",
+            "--settle-seconds", "0.01", "--settle-checks", "2"]
 
 
 def main():
@@ -77,35 +97,20 @@ def main():
         assert e.kind == "extraction_rewritten", e.kind
     print("5 conclusion/questions/blocked verbatim checks unchanged ok")
 
-    # 6 端到端：pi 输出带瞎编 summary
+    # 6 端到端：pi 输出带瞎编 summary（真实抽取链：extract=dispatch.extract＋注入 run_cmd）
+    pi_out = json.dumps(dict(BASE, summary="pi 瞎编的概括"), ensure_ascii=False)
+    w = _world()
     with tempfile.TemporaryDirectory() as td:
-        pf = Path(td) / "prompt.md"
-        pf.write_text(PROMPT, encoding="utf-8")
-        ld = Path(td) / ".loop"
-        argv = ["--target", "t99", "--release-id", "nosum-e2e",
-                "--prompt-file", str(pf), "--loop-dir", str(ld),
-                "--space", "main",
-                "--wall-clock", "5", "--check-in", "1",
-                "--settle-seconds", "0.01", "--settle-checks", "2"]
-        pi_out = json.dumps(dict(BASE, summary="pi 瞎编的概括"), ensure_ascii=False)
-        dispatch.hc_json = FakeHc()
-        dispatch.app_json = FakeApp()
-        dispatch.run_cmd = lambda argv_, timeout: types.SimpleNamespace(
-            returncode=0, stdout=pi_out, stderr="")
-        dispatch.check_structure_and_tools = lambda: None
-        dispatch.shutil.which = lambda name: "/fake/" + name
-        dispatch.time.sleep = lambda s: None
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = dispatch.main(argv)
-        res = json.loads(buf.getvalue().strip())
-        led = json.loads((ld / "runs" / "nosum-e2e.json").read_text(encoding="utf-8"))
-        assert rc == 0 and res["ok"], res
-        assert "summary" not in res, res
-        assert res["rewritten"] == {}, res
-        assert led["reply_bad_lines"] == 0, led
-        on_disk = json.loads((ld / "runs" / "nosum-e2e.result.json").read_text(encoding="utf-8"))
-        assert "summary" not in on_disk and on_disk == res
+        r = harness.run(_argv(td, "nosum-e2e"), world=w,
+                        extract=dispatch.extract,
+                        run_cmd=lambda argv_, timeout: types.SimpleNamespace(
+                            returncode=0, stdout=pi_out, stderr=""))
+        assert r.rc == 0 and r.result["ok"], r.result
+        assert "summary" not in r.result, r.result
+        assert r.result["rewritten"] == {}, r.result
+        assert r.ledger["reply_bad_lines"] == 0, r.ledger
+        on_disk = json.loads(r.result_path.read_text(encoding="utf-8"))
+        assert "summary" not in on_disk and on_disk == r.result
     print("6 e2e: fabricated summary dropped, rewritten empty, reply 0 bad lines ok")
 
     print("ALL NO-SUMMARY TESTS PASSED")

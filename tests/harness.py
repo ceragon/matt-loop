@@ -9,8 +9,9 @@ run(...) 只做一件事：装配依赖对象、调用分发脚本入口、把�
   - reset_settle 与 resolve_space_id_for_learning 仍读模块级 hc_json/app_json/time，
     check_structure_and_tools 仍读模块级 find_tool（收口归管线片 P2）。
   - learning.enabled/learning_dir 与默认抽取链的环境读者直读 os.environ（绕过 Deps.env）：
-    合并后的 env 映射作用域内应用到 os.environ（设置＋退出恢复原值、原本不存在的键退出
-    删除）。这是 ADR-0016 决定 7 学习环境洞例外的延伸，随 ⑤/P2 收口退役；同时堵住
+    合并后的 env 映射经 scoped_env 作用域内应用到 os.environ（设置＋退出恢复原值、
+    原本不存在的键退出删除；T5a 抽出为上下文管理器，单元探针的作用域 env 共用）。
+    这是 ADR-0016 决定 7 学习环境洞例外的延伸，随 ⑤/P2 收口退役；同时堵住
     T3 实证的真学习目录污染。
   - 默认抽取链（extract_via_api/extract_via_pi）读模块级 webhook_open/run_cmd（绕过 Deps）：
     调用方注入 http_open/run_cmd 时作用域内替换模块级 webhook_open/run_cmd，退出无条件
@@ -51,6 +52,28 @@ class VirtualClock:
         self.t += s
 
 
+@contextlib.contextmanager
+def scoped_env(env_map):
+    """作用域 env（T5a 自 run() 抽出，单元探针共用）：作用域内把 env_map 应用到
+    os.environ，退出无条件恢复——原本存在的键恢复原值、原本不存在的键删除。
+    值为 None 表示作用域内确保该键不存在（单元探针的「无 guard」场景）。
+    残留洞纪律（ADR-0016 决定 7）：作用域内替换、退出恢复，不留共享污染。"""
+    saved = {k: os.environ.get(k) for k in env_map}
+    try:
+        for k, v in env_map.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        yield
+    finally:
+        for k, old in saved.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
+
+
 def _argv_value(argv, flag):
     """机械取 argv 里某 flag 的值（产物路径定位用，不解释业务）。"""
     argv = list(argv)
@@ -87,7 +110,6 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
     # T4 立测试侧棘轮时本文件须进白名单（ADR-0021 决定 4），白名单只许缩小。
     saved = (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
              dispatch.webhook_open, dispatch.run_cmd)
-    saved_env = {k: os.environ.get(k) for k in env_map}
     dispatch.hc_json = world.hc_json
     dispatch.app_json = world.app_json
     dispatch.time = types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)
@@ -98,18 +120,12 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
         dispatch.run_cmd = run_cmd
     out, err = io.StringIO(), io.StringIO()
     try:
-        for k, v in env_map.items():
-            os.environ[k] = v
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = dispatch.main(list(argv), deps=deps)
+        with scoped_env(env_map):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = dispatch.main(list(argv), deps=deps)
     finally:
         (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
          dispatch.webhook_open, dispatch.run_cmd) = saved
-        for k, old in saved_env.items():
-            if old is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = old
     stdout = out.getvalue()
     result = json.loads(stdout.strip()) if stdout.strip() else None
     loop_dir = _argv_value(argv, "--loop-dir")

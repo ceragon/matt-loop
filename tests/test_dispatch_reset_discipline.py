@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test_dispatch_reset_discipline.py — 会话起始 skill 纪律测试（ADR-0004，mock hc/pi）。
+"""test_dispatch_reset_discipline.py — 会话起始 skill 纪律测试（ADR-0004，FakeHerdr 假世界）。
 
 跑法：python3 tests/test_dispatch_reset_discipline.py
 覆盖：
@@ -16,21 +16,17 @@
   8 触发＋显式 --reset new＋turn==0：仍按显式参数发前置。
   9 触发＋--reset=none＋turn 缺失或非整数（如 None/False）：不豁免，仍报 reset_required（turn 未知）。
  10 目标 working 时 not_idle 优先于 reset_required（预检在 hc get 之后）。
+
+T5a（ADR-0021，#99）：纯函数用例（1）保留原位；完整轮用例（2–10）迁 FakeHerdr＋
+harness.run（唯一 CLI 缝）。turn 缺失/非整数场景经假世界 turn=None/False 表达
+（test_fake_herdr 例 25）。常量与助手本文件自带，不 import 供应方文件。
 """
-import contextlib
-import io
-import json
-import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
-import dispatch  # noqa: E402
-from test_dispatch_reset import FakeApp  # noqa: E402
-import os  # noqa: E402
-# 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
-os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
-
+import harness
+from harness import dispatch
+from fake_herdr import FakeHerdr
 
 ANCHOR_SRC = "请实现某个功能"
 SCREEN = ANCHOR_SRC + "\n已完成该功能。"
@@ -38,65 +34,36 @@ EXT = {"needs_user": False, "questions": [],
        "conclusion": "", "blocked": "", "reply": SCREEN}
 
 
-class FakeHc:
-    def __init__(self, turn=5, state="idle"):
-        self.sends = []          # (text, if_idle)
-        self.turn = turn
-        self.state = state
-        self.screen = SCREEN
-
-    def __call__(self, hc_bin, args, timeout_s):
-        cmd = args[0]
-        if cmd == "get":
-            g = {"state": "live", "title": "claude-test",
-                 "address": "t99", "name": "claude-test",
-                 "labels": {"loop": "1"},
-                 "status": {"state": self.state, "title": "claude-test"},
-                 "foreground": {"name": "claude", "argv": ["claude"]}}
-            if self.turn is not None:
-                g["turn"] = self.turn
-            return g
-        if cmd == "send":
-            text = args[-1]
-            self.sends.append((text, "--if" in args))
-            baseline = self.turn if isinstance(self.turn, int) and not isinstance(self.turn, bool) else 0
-            self.turn = baseline + 1
-            return {"turn": baseline}
-        if cmd == "read":
-            return {"text": self.screen, "complete": True, "how": "current", "why": ""}
-        if cmd == "wait":
-            return {"reason": "status", "status": self.state, "turn": self.turn}
-        raise AssertionError("unexpected hc cmd: " + cmd)
+def _world(turn=5, status="idle"):
+    """既有 agent t99＋main 空间 pane 已在＋稳定屏幕；turn=None 缺失、False 非整数。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"},
+                   turn=turn, status=status)
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t99"])
+    w.screen("t99", SCREEN)
+    return w
 
 
-def run_case(prompt, reset_arg, rid, td, fake):
+def _ext(pi_bin, args, turn_path):
+    return dict(EXT)
+
+
+def run_case(prompt, reset_arg, rid, td, w):
     """在给定临时目录里跑一轮 dispatch；返回 (rc, result, ledger_path, result_path)。"""
     pf = Path(td) / "prompt.md"
     pf.write_text(prompt, encoding="utf-8")
-    ld = Path(td) / ".loop"
     argv = ["--target", "t99", "--release-id", rid,
-            "--prompt-file", str(pf), "--loop-dir", str(ld),
-            "--space", "main",
-            "--wall-clock", "5", "--check-in", "1",
+            "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
+            "--space", "main", "--wall-clock", "5", "--check-in", "1",
             "--settle-seconds", "0.01", "--settle-checks", "2"]
     if reset_arg is not None:
         argv += ["--reset", reset_arg]
-    dispatch.hc_json = fake
-    dispatch.app_json = FakeApp()
-    dispatch.extract = lambda pi_bin, args, raw_path: dict(EXT)
-    dispatch.check_structure_and_tools = lambda: None
-    dispatch.shutil.which = lambda name: "/fake/" + name
-    dispatch.time.sleep = lambda s: None
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        rc = dispatch.main(argv)
-    out = buf.getvalue().strip()
-    result = json.loads(out)
-    ledger_path = ld / "runs" / (rid + ".json")
-    result_path = ld / "runs" / (rid + ".result.json")
-    if result_path.exists():
-        assert result_path.read_text(encoding="utf-8").strip() == out, "result 文件与 stdout 不一致"
-    return rc, result, ledger_path, result_path
+    r = harness.run(argv, world=w, extract=_ext)
+    if r.result_path.exists():
+        assert r.result_path.read_text(encoding="utf-8").strip() == r.stdout.strip(), \
+            "result 文件与 stdout 不一致"
+    return r.rc, r.result, r.ledger_path, r.result_path
 
 
 def main():
@@ -125,24 +92,24 @@ def main():
 
     # 2 触发＋none＋turn>0：台账前拒发，id 不消耗
     with tempfile.TemporaryDirectory() as td:
-        fake = FakeHc(turn=5)
-        rc, res, lp, rp = run_case("/wayfinder #7", None, "disc-1", td, fake)
+        w = _world(turn=5)
+        rc, res, lp, rp = run_case("/wayfinder #7", None, "disc-1", td, w)
         assert rc == 2, rc
         assert not res["ok"] and res["error"]["kind"] == "reset_required", res
         msg = res["error"]["message"]
         assert "/wayfinder" in msg and "第 1 行" in msg and "turn=5" in msg, msg
         assert res["error"]["hints"], res
-        assert fake.sends == [], fake.sends                # 零发送
+        assert w.sends == [], w.sends                    # 零发送
         assert not lp.exists(), "拒发不应写台账"
         assert rp.exists(), "拒发也要写 result.json"
         assert "reset" not in res                          # reset=none 不带 reset 键
         print("2 trigger + none + turn>0: refused before ledger, rc=2, id unconsumed")
 
         # 3 同 id 补 --reset clear 重试成功
-        fake2 = FakeHc()
-        rc, res, lp, rp = run_case("/wayfinder #7", "clear", "disc-1", td, fake2)
+        w2 = _world()
+        rc, res, lp, rp = run_case("/wayfinder #7", "clear", "disc-1", td, w2)
         assert rc == 0 and res["ok"], res
-        assert fake2.sends == [("/clear", True), ("/wayfinder #7", True)], fake2.sends
+        assert w2.sends == [("t99", "/clear", True), ("t99", "/wayfinder #7", True)], w2.sends
         assert res["reset"] == "clear"
         assert lp.exists()
         print("3 same release id retry with --reset clear: ok")
@@ -150,69 +117,69 @@ def main():
     # 4 new/clear/compact 都放行
     for i, mode in enumerate(("new", "clear", "compact")):
         with tempfile.TemporaryDirectory() as td:
-            fake = FakeHc()
-            rc, res, lp, _ = run_case("/implement #9", mode, f"disc-4{mode}", td, fake)
+            w = _world()
+            rc, res, lp, _ = run_case("/implement #9", mode, f"disc-4{mode}", td, w)
             assert rc == 0 and res["ok"], (mode, res)
-            assert fake.sends == [("/" + mode, True), ("/implement #9", True)], fake.sends
+            assert w.sends == [("t99", "/" + mode, True), ("t99", "/implement #9", True)], w.sends
     print("4 trigger + new/clear/compact: all accepted")
 
     # 5 非触发＋不传 --reset：照常单发
     with tempfile.TemporaryDirectory() as td:
-        fake = FakeHc()
+        w = _world()
         p = "这几个问题答完再跑 /implement，先给结论"
-        rc, res, _, _ = run_case(p, None, "disc-5", td, fake)
+        rc, res, _, _ = run_case(p, None, "disc-5", td, w)
         assert rc == 0 and res["ok"], res
-        assert fake.sends == [(p, True)], fake.sends
+        assert w.sends == [("t99", p, True)], w.sends
     print("5 mid-line mention + no reset: single send, backward compatible")
 
     # 6 duplicate_release 优先
     with tempfile.TemporaryDirectory() as td:
-        fake = FakeHc()
-        rc, _, lp, _ = run_case(ANCHOR_SRC, None, "disc-6", td, fake)
+        w = _world()
+        rc, _, lp, _ = run_case(ANCHOR_SRC, None, "disc-6", td, w)
         assert rc == 0 and lp.exists()
-        fake2 = FakeHc()
-        rc, res, _, _ = run_case("/wayfinder #7", None, "disc-6", td, fake2)
+        w2 = _world()
+        rc, res, _, _ = run_case("/wayfinder #7", None, "disc-6", td, w2)
         assert rc == 1 and res["error"]["kind"] == "duplicate_release", res
-        assert fake2.sends == []
+        assert w2.sends == []
     print("6 duplicate_release takes precedence over reset_required")
 
     # 7 turn == 0 自动豁免：全新空会话不传 --reset 直接发
     with tempfile.TemporaryDirectory() as td:
-        fake = FakeHc(turn=0)
-        rc, res, lp, _ = run_case("/wayfinder #7", None, "disc-7", td, fake)
+        w = _world(turn=0)
+        rc, res, lp, _ = run_case("/wayfinder #7", None, "disc-7", td, w)
         assert rc == 0 and res["ok"], res
-        assert fake.sends == [("/wayfinder #7", True)], fake.sends
+        assert w.sends == [("t99", "/wayfinder #7", True)], w.sends
         assert res["reset"] == "none"
         assert lp.exists()
     print("7 turn==0 + none: exempted, single send ok")
 
     # 8 turn == 0 但显式传 --reset new：仍按显式参数执行前置
     with tempfile.TemporaryDirectory() as td:
-        fake = FakeHc(turn=0)
-        rc, res, _, _ = run_case("/wayfinder #7", "new", "disc-8", td, fake)
+        w = _world(turn=0)
+        rc, res, _, _ = run_case("/wayfinder #7", "new", "disc-8", td, w)
         assert rc == 0 and res["ok"], res
-        assert fake.sends == [("/new", True), ("/wayfinder #7", True)], fake.sends
+        assert w.sends == [("t99", "/new", True), ("t99", "/wayfinder #7", True)], w.sends
         assert res["reset"] == "new"
     print("8 turn==0 + explicit --reset new: still sends /new first")
 
     # 9 turn 缺失或布尔 False：不豁免，仍拒发 reset_required（turn 未知）
     for idx, bad_turn in enumerate((None, False)):
         with tempfile.TemporaryDirectory() as td:
-            fake = FakeHc(turn=bad_turn)
-            rc, res, lp, _ = run_case("/wayfinder #7", None, f"disc-9-{idx}", td, fake)
+            w = _world(turn=bad_turn)
+            rc, res, lp, _ = run_case("/wayfinder #7", None, f"disc-9-{idx}", td, w)
             assert rc == 2, (bad_turn, rc)
             assert res["error"]["kind"] == "reset_required", res
             assert "turn 未知" in res["error"]["message"], res
-            assert fake.sends == []
+            assert w.sends == []
             assert not lp.exists()
     print("9 missing/bool turn + none: still refused (turn 未知)")
 
     # 10 working 状态时 not_idle 先于 reset_required
     with tempfile.TemporaryDirectory() as td:
-        fake = FakeHc(turn=5, state="working")
-        rc, res, lp, _ = run_case("/wayfinder #7", None, "disc-10", td, fake)
+        w = _world(turn=5, status="working")
+        rc, res, lp, _ = run_case("/wayfinder #7", None, "disc-10", td, w)
         assert rc == 1 and res["error"]["kind"] == "not_idle", res
-        assert fake.sends == []
+        assert w.sends == []
         assert not lp.exists()
     print("10 working state: not_idle takes precedence over reset_required")
 
