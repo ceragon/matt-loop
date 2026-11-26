@@ -7,14 +7,17 @@
   2 启动预检：api 缺 env → api_not_configured（rc=2，只列变量名），零发送、无台账；
     max_tokens 非法 → bad_api_max_tokens（rc=2）。
   3 请求形状：URL=base+/chat/completions（尾斜杠容忍）、Bearer 头、system=extract.md、
-    user=指令＋内联原文、temp 0、max_tokens 默认 32768/env 覆盖、无 stream/response_format、
-    超时=--extract-timeout；api 路径不找 pi。
+    user=指令→few-shot（如有）→回声参照→内联本轮原料居末尾、temp 0、max_tokens 默认
+    32768/env 覆盖、无 stream/response_format、超时=--extract-timeout；api 路径不找 pi。
   4 成功契约：result/台账带 extract_backend=api，选段字段与 pi 路径同形状。
   5 错误映射：HTTPError→extraction_failed（HTTP <码>，不读响应体）；TimeoutError 与
     URLError(TimeoutError)→tool_timeout；URLError(它因)→extraction_failed（类名）；
     响应缺 content/非 JSON→extraction_invalid。密钥与 URL 不进 stdout/result/stderr。
   6 pi 备选回归：backend=pi 走 extract_via_pi（mock run_cmd），--pi-model 透传，
     result extract_backend=pi。
+  7 回声参照细节：参照块＝粘贴归一后提示词原文、位置在指令/注入之后与本轮原料之前、
+    few-shot 共存、两后端逐字一致（pi 原料仍只走 @文件附件）。
+  8 回声参照读取失败（文件缺失/非 UTF-8）→既有 prompt_unreadable，零发送、零执行。
 
 T4（ADR-0021）：本文件业务用例已迁 FakeHerdr＋harness.run（唯一 CLI 缝）；后端专项用例把
 真实抽取入口 dispatch.extract 作为 extract 依赖传入，经 harness 残留洞吸收（env 应用到
@@ -229,6 +232,35 @@ def main():
 
         assert ref_block(api) == ref_block(pi)
     print("7 echo reference: few-shot coexistence, both backends, paste normalization ok")
+
+    # 8 回声参照读取失败（#127/ADR-0024）：抽取期重读提示词失败映射既有
+    #    prompt_unreadable（不新增 kind），两后端同形、零发送/零执行。
+    def boom(*args, **kwargs):
+        raise AssertionError("读取失败不得走到发送或执行")
+
+    with tempfile.TemporaryDirectory() as td:
+        turn = Path(td) / "r.turn.md"
+        turn.write_text("已完成该功能。", encoding="utf-8")
+        missing = Path(td) / "gone.md"
+        bad_enc = Path(td) / "gbk.md"
+        bad_enc.write_bytes("不是 UTF-8".encode("gbk"))
+        for backend, deps in (
+                ("api", dispatch.Deps(env=api_env(), http_open=boom)),
+                ("pi", dispatch.Deps(env={"LOOP_EXTRACT_BACKEND": "pi"}, run_cmd=boom))):
+            for pf in (missing, bad_enc):
+                request = types.SimpleNamespace(
+                    pi_model=None, prompt_file=str(pf),
+                    timing=types.SimpleNamespace(extract_timeout=1200.0))
+                try:
+                    if backend == "api":
+                        dispatch.extract_via_api(deps, request, str(turn), "")
+                    else:
+                        dispatch.extract_via_pi(deps, request, str(turn), "")
+                    raise AssertionError(f"{backend} 读取失败应 prompt_unreadable")
+                except dispatch.DispatchError as e:
+                    assert e.kind == "prompt_unreadable", (backend, e.kind)
+                    assert "读不到提示词文件" in e.message, e.message
+    print("8 echo reference read failure: existing prompt_unreadable, zero send ok")
 
     print("ALL OK")
 
