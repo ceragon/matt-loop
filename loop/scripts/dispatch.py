@@ -715,20 +715,21 @@ def _extraction(fields, meta):
 
 
 ECHO_REFERENCE_LABEL = "【本轮发送的提示词原文】"
-ECHO_REFERENCE_NOTE = ("（其回声行不是回复内容，不是抽取语料；"
-                       "用于逐字比对认出回声及其软换行续行）")
+ECHO_REFERENCE_NOTE = "（供逐字比对，认出回声及其软换行续行）"
 
 
 def echo_reference(request):
-    """回声参照块（#127）：本轮主任务提示词原文（粘贴归一后），与实际发送物同源。
+    """回声参照块（#127）：抽取期重读本轮主任务提示词原文，粘贴归一后与实际发送物同源。
 
-    受理阶段已读过同一文件（admitted.text 即其内容）；抽取中途读失败不包，归
-    io_failed 顶层兜底（ADR-0024）。参照只供认出回声，不是逐字校验语料（ADR-0013
-    补记），本轮原料仍居消息末尾、仍是唯一校验语料。"""
-    prompt_file = getattr(request, "prompt_file", None)
-    if not prompt_file:
-        return ""
-    text = Path(prompt_file).read_text(encoding="utf-8")
+    发送前 open_ledger 已按受理阶段的 sha 复核钉住同一性（中途变文件报 prompt_changed
+    拒发）；这里是抽取期重读，读失败映射既有 prompt_unreadable（ADR-0024 决定 2 的
+    「提示词读取」先例），不新增 error kind。参照只供认出回声及其软换行续行，不是
+    逐字校验语料（ADR-0013 补记）；api 消息里本轮原料仍居末尾，pi 侧原料是 @文件附件，
+    仍是唯一校验语料。"""
+    try:
+        text = Path(request.prompt_file).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise DispatchError("prompt_unreadable", f"读不到提示词文件：{e}", [])
     return ECHO_REFERENCE_LABEL + ECHO_REFERENCE_NOTE + "\n" + normalize_paste(text)
 
 
