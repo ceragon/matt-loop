@@ -140,6 +140,7 @@ check-in 180s、落定静置 10s × 2 次、抽取护栏 1200s、hc read --lines
 """
 
 import argparse
+import enum
 import errno
 import hashlib
 import json
@@ -156,6 +157,7 @@ import types
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1108,6 +1110,36 @@ def parse_space(space, spaces):
     return result
 
 
+@dataclass(frozen=True)
+class SpacePlan:
+    """--space 三态匹配的策略结果（ADR-0020 决定 7）：reuse／create／error。"""
+
+    kind: str
+    space_id: str | None = None
+    name: str | None = None
+    folder: str | None = None
+    reason: str | None = None
+    message: str | None = None
+    hint: str | None = None
+
+
+def plan_space(space, layout):
+    """parse_space 之上的薄包装（ADR-0011 匹配规则唯一实现，ADR-0020 决定 7）。
+
+    只把三态结果映射成 reuse(space_id)／create(name, folder)／error(reason,
+    message, hint)；不重写匹配规则、不建空间、不 select、不抛错。
+    """
+    parsed = parse_space(space, (layout.raw or {}).get("spaces") or [])
+    if parsed["error"] is not None:
+        err = parsed["error"]
+        return SpacePlan(kind="error", reason=err["reason"],
+                         message=err["message"], hint=err["hint"])
+    if parsed["new_space"] is not None:
+        new = parsed["new_space"]
+        return SpacePlan(kind="create", name=new["name"], folder=new["folder"])
+    return SpacePlan(kind="reuse", space_id=parsed["target_id"])
+
+
 def resolve_space_id_for_learning(herdr, space):
     """--space 三态解析的只读投影（ADR-0012 学习用，#70 归一）：不建空间、不 select、不抛错。
 
@@ -1120,10 +1152,8 @@ def resolve_space_id_for_learning(herdr, space):
         layout = herdr.layout()
     except DispatchError:
         return None
-    parsed = parse_space(space, layout.raw.get("spaces") or [])
-    if parsed["error"] is not None or parsed["new_space"] is not None:
-        return None
-    return parsed["target_id"]
+    plan = plan_space(space, layout)
+    return plan.space_id if plan.kind == "reuse" else None
 
 
 def apply_display_name(deps, herdr, address, display_name, ledger, ledger_path, ctx):
@@ -1272,25 +1302,22 @@ def adopt(deps, herdr, address, ledger, ledger_path, ctx, precheck, space,
     # 显式传路径 opt-in 自动建（零匹配时执行 space.new）；--space 必传，无「不传参
     # 静默按 cwd 猜」分支（多空间可共享同一 folder，静默 cwd 路由会拆散既有组织——
     # issue #43 关键约束）。
-    spaces = layout.raw.get("spaces") or []
-    parsed = parse_space(space, spaces)
-    if parsed["error"] is not None:
-        err = parsed["error"]
-        if err["reason"] == "bad_args":
+    plan = plan_space(space, layout)
+    if plan.kind == "error":
+        if plan.reason == "bad_args":
             # 名重名属参数错误：bad_args（退出码 2、id 不消耗），不走 fail 的部分状态。
             raise DispatchError(
-                "bad_args", err["message"],
+                "bad_args", plan.message,
                 ["改传空间 id（sp…）或路径；改正后用同一放行 id 重试（零发送、id 不消耗）"],
                 returncode=2)
-        fail(err["reason"], err["message"],
-             retry + ([err["hint"]] if err["hint"] else []))
-    space_target = parsed["target_id"]
-    space_new = parsed["new_space"]
+        fail(plan.reason, plan.message,
+             retry + ([plan.hint] if plan.hint else []))
+    space_target = plan.space_id
     # 路径零匹配→建空间（统一分支，废旧「零空间自动 space.new{name:会话名}」）：
     # name=目录名、folder=路径、focus:false 不抢视图；赠送 shell 清理绑 space_created。
-    if space_new is not None:
+    if plan.kind == "create":
         try:
-            space_target = herdr.create_space(space_new["name"], space_new["folder"])
+            space_target = herdr.create_space(plan.name, plan.folder)
         except DispatchError as e:
             if getattr(e, "stage", None) == "missing_space":
                 fail("keep_error", e.message, retry)
@@ -1660,6 +1687,153 @@ def io_failed_error(e, ledger_opened):
     return DispatchError("io_failed", f"本地 IO 失败（{type(e).__name__}）：{e}", hints)
 
 
+class Route(enum.Enum):
+    """五路分流结果（ADR-0020 决定 4）；is_fresh 取代可变的局部 fresh。"""
+
+    create = "create"
+    revive = "revive"
+    rebuild = "rebuild"
+    existing = "existing"
+    occupied = "occupied"
+
+    @property
+    def is_fresh(self):
+        return self in (Route.create, Route.revive, Route.rebuild)
+
+
+def _label_ok(session, expect_proc):
+    """loop 标签收编凭据（ADR-0009）：loop=1 且 loop-agent=--expect-proc（未传则只认 loop）。"""
+    labels = session.labels
+    return (labels.get("loop") == "1"
+            and (not expect_proc or labels.get("loop-agent") == expect_proc))
+
+
+def classify(session, request):
+    """五路分流纯函数（ADR-0020 决定 4）：create／revive／rebuild／existing／occupied。
+
+    session 为 None（not_found）或 state=="finished"→create；状态既非 live 也非
+    finished 时抛 not_idle（原生语义不变）。live 按 loop 标签、前台 shell/agent
+    身份判定；occupied 且 --rebuild → rebuild（升格并入）；--rebuild 误传其他
+    分流 → bad_args。无 I/O、不碰 ctx；request 只读 expect_proc 与 rebuild。
+    """
+    if session is None or session.state == "finished":
+        route = Route.create
+    elif session.state != "live":
+        raise DispatchError("not_idle", "目标终端已结束，不发送", [])
+    elif not _label_ok(session, request.expect_proc):
+        route = Route.occupied
+    elif session.is_shell() and session.status_state is None:
+        route = Route.revive      # 空闲 shell＋标签符→原地复活
+    elif not session.is_shell() and session.identity_ok(request.expect_proc):
+        route = Route.existing    # 前台 agent 身份符＋标签符→既有路径
+    else:
+        route = Route.occupied    # 别的 agent/程序（身份不符），或 shell 异常态
+    if route is Route.occupied and request.rebuild:
+        route = Route.rebuild
+    if request.rebuild and route is not Route.rebuild:
+        raise DispatchError(
+            "bad_args", "--rebuild 只在 session_occupied 占位分支生效，其余分流误传",
+            ["去掉 --rebuild；强制重建仅用于用户显式授权 kill 占位者后同名重建"],
+            returncode=2)
+    return route
+
+
+def gate_route(route, session, request):
+    """分流后闸纯函数（ADR-0020 决定 4）：原次序逐字——
+
+    占位报 session_occupied（四种后缀文案在此构造）→ 新鲜路径 launch_required →
+    display_name_required → 非法会话名（create/rebuild）→ rebuild_busy。
+    只读输入、只抛既有 DispatchError；不写 ctx/台账。
+    """
+    if route is Route.occupied:
+        fg = session.foreground or {}
+        argv = fg.get("argv") or []
+        fg_desc = (argv[0] if isinstance(argv, list) and argv else "") \
+            or fg.get("name") or "未知"
+        labels = session.labels
+        label_ok = _label_ok(session, request.expect_proc)
+        suffix = ("（无 loop 标签，拒收编）" if labels.get("loop") != "1"
+                  else "（loop 标签与 --expect-proc 不符）" if not label_ok
+                  else "（前台 shell 但 status 非 null，异常态）"
+                  if session.is_shell()
+                  else "（前台与 --expect-proc 不符）")
+        raise DispatchError(
+            "session_occupied",
+            f"会话名 {request.target} 被占用：{session.address or request.target} "
+            f"前台={fg_desc} turn={session.turn} 状态={session.status_state or '未自报'}"
+            + suffix,
+            ["呈报占位者给用户；确需重建须经用户显式授权后带 --rebuild（只杀 idle/done）",
+             "或换 --target 到另一命名会话；不建不 kill、零发送、id 不消耗"],
+        )
+    if not route.is_fresh:
+        return
+    why = {"create": "目标会话不存在或已死，创建",
+           "revive": "目标是空闲 shell，复活",
+           "rebuild": "强制重建"}[route.value]
+    if not request.launch:
+        raise DispatchError(
+            "launch_required",
+            f"{why}需要 --launch（＋--cwd）",
+            ["补 --launch <shell 启动命令> --cwd <目录> 后用同一放行 id 重试（零发送、id 不消耗）",
+             "创建参数（会话名、启动命令、cwd、显示名）须随放行一并贴出，见 SKILL.md"],
+            returncode=2)
+    if request.display_name is None:
+        raise DispatchError(
+            "display_name_required",
+            f"{why}需要 --display-name",
+            ["补 --display-name <显示名> 后用同一放行 id 重试（零发送、id 不消耗）",
+             "显示名须随放行一并贴出，见 SKILL.md"],
+            returncode=2)
+    if route in (Route.create, Route.rebuild) and (
+            not SESSION_NAME_RE.match(request.target)
+            or RESERVED_ID_RE.match(request.target)):
+        raise DispatchError(
+            "bad_args",
+            f"--target {request.target} 不是合法会话名（1–32 位 a-z0-9-_），无法创建",
+            ["--target 推荐传会话名（<kind>-<repo> 或 bot slug）；t 号是保留地址、不能作名字"],
+            returncode=2)
+    if route is Route.rebuild and session.status_state not in ("idle", "done"):
+        raise DispatchError(
+            "rebuild_busy",
+            f"占位者状态是 {session.status_state or '未自报'}，不是 idle/done，拒杀",
+            ["等占位者落定或请用户到屏幕前处理；kill 只在 idle/done 时执行"],
+        )
+
+
+@dataclass(frozen=True)
+class Prestep:
+    """一次前置发送（ADR-0020 决定 6）：kind="reset"/"model"，command 是字面命令。"""
+
+    kind: str
+    command: str
+
+
+@dataclass(frozen=True)
+class PrestepPlan:
+    """前置纯函数的产出：次序固定的 specs，加「重置被新鲜会话豁免」的 fact。"""
+
+    specs: tuple[Prestep, ...]
+    reset_skipped: str | None
+
+
+def prestep_specs(request, route):
+    """前置次序纯函数（ADR-0020 决定 6）：重置 → 切模型。
+
+    新鲜会话（create/revive/rebuild）不产出重置 spec，并记
+    reset_skipped="fresh_launch"；切模型前置照跑。无 I/O、不碰台账。
+    """
+    specs = []
+    reset_skipped = None
+    if request.reset != "none":
+        if route.is_fresh:
+            reset_skipped = "fresh_launch"
+        else:
+            specs.append(Prestep("reset", "/" + request.reset))
+    if request.target_model:
+        specs.append(Prestep("model", "/model " + request.target_model))
+    return PrestepPlan(tuple(specs), reset_skipped)
+
+
 def main(argv=None, *, deps=None):
     args = parse_args(argv)
     deps = deps if deps is not None else Deps()
@@ -1839,97 +2013,23 @@ def main(argv=None, *, deps=None):
                                 ["某些机器非交互 shell 的 PATH 里没有 node；"
                                  "脚本已探 ~/.local/bin、homebrew、nvm node bin 仍未果"])
 
-        # 1) 预检分流（ADR-0009）：hc get 一律作分流判据（不用 hc ls 的 agent 派生字段）。
-        #    not_found/finished→创建（finished 同名重建、旧条目按 t 号留审计）；
-        #    live→既有路径（核身份→idle 核对→发送）。
+        # 1) 预检分流（ADR-0009 / ADR-0020 决定 4）：hc get 一律作分流判据（不用
+        #    hc ls 的 agent 派生字段）；纯函数 classify 出五路、gate_route 依次报
+        #    占位四后缀文案→launch_required→display_name_required→非法会话名→
+        #    rebuild_busy。not_found/finished→创建（finished 同名重建、旧条目按 t 号
+        #    留审计）；live 按标签/身份分流；occupied→rebuild 升格与 --rebuild 误传
+        #    校验同在 classify 内。
         try:
             g = herdr.session(args.target)
         except NotFound:
             g = None
-        if g is None or g.state == "finished":
-            branch = "create"
-        elif g.state != "live":
-            raise DispatchError("not_idle", "目标终端已结束，不发送", [])
-        else:
-            if g.address:
-                ctx["target_address"] = g.address
-            # 标签绑定（ADR-0009）：loop=1＋loop-agent=<expect-proc> 是收编凭据；
-            # 无 loop 标签或标签符不符的同名 live 终端拒收编→占位。
-            labels = g.labels
-            label_ok = (labels.get("loop") == "1"
-                        and (not args.expect_proc
-                             or labels.get("loop-agent") == args.expect_proc))
-            fg_shell = g.is_shell()
-            if not label_ok:
-                branch = "occupied"
-            elif fg_shell and g.status_state is None:
-                branch = "revive"      # 空闲 shell＋标签符→原地复活
-            elif not fg_shell and g.identity_ok(args.expect_proc):
-                branch = "existing"    # 前台 agent 身份符＋标签符→既有路径
-            else:
-                branch = "occupied"    # 别的 agent/程序（身份不符），或 shell 异常态
-        if branch == "occupied" and args.rebuild:
-            branch = "rebuild"
-        if args.rebuild and branch != "rebuild":
-            raise DispatchError(
-                "bad_args", "--rebuild 只在 session_occupied 占位分支生效，其余分流误传",
-                ["去掉 --rebuild；强制重建仅用于用户显式授权 kill 占位者后同名重建"],
-                returncode=2)
-        if branch == "occupied":
-            fg = g.foreground or {}
-            argv = fg.get("argv") or []
-            fg_desc = (argv[0] if isinstance(argv, list) and argv else "") or fg.get("name") or "未知"
-            raise DispatchError(
-                "session_occupied",
-                f"会话名 {args.target} 被占用：{ctx.get('target_address') or args.target} "
-                f"前台={fg_desc} turn={g.turn} 状态={g.status_state or '未自报'}"
-                + ("（无 loop 标签，拒收编）" if labels.get("loop") != "1"
-                   else "（loop 标签与 --expect-proc 不符）" if not label_ok
-                   else "（前台 shell 但 status 非 null，异常态）" if fg_shell
-                   else "（前台与 --expect-proc 不符）"),
-                ["呈报占位者给用户；确需重建须经用户显式授权后带 --rebuild（只杀 idle/done）",
-                 "或换 --target 到另一命名会话；不建不 kill、零发送、id 不消耗"],
-            )
-        if branch in ("create", "revive", "rebuild"):
-            # 创建/复活需 --launch（＋--cwd），缺则 launch_required（与 reset_required 同构：
-            # 退出码 2、零发送、放行 id 不消耗、补参同 id 重试）。
-            why = {"create": "目标会话不存在或已死，创建",
-                   "revive": "目标是空闲 shell，复活",
-                   "rebuild": "强制重建"}[branch]
-            if not args.launch:
-                raise DispatchError(
-                    "launch_required",
-                    f"{why}需要 --launch（＋--cwd）",
-                    ["补 --launch <shell 启动命令> --cwd <目录> 后用同一放行 id 重试（零发送、id 不消耗）",
-                     "创建参数（会话名、启动命令、cwd、显示名）须随放行一并贴出，见 SKILL.md"],
-                    returncode=2)
-            # 显示名必传（ADR-0010）：新鲜路径缺 --display-name → display_name_required，
-            # 与 launch_required 完全同构（退出码 2、零发送、id 不消耗、补参同 id 重试）。
-            # 两参同缺时 launch_required 先报（上面已判）。
-            if args.display_name is None:
-                raise DispatchError(
-                    "display_name_required",
-                    f"{why}需要 --display-name",
-                    ["补 --display-name <显示名> 后用同一放行 id 重试（零发送、id 不消耗）",
-                     "显示名须随放行一并贴出，见 SKILL.md"],
-                    returncode=2)
-            if branch in ("create", "rebuild") and (
-                    not SESSION_NAME_RE.match(args.target)
-                    or RESERVED_ID_RE.match(args.target)):
-                raise DispatchError(
-                    "bad_args",
-                    f"--target {args.target} 不是合法会话名（1–32 位 a-z0-9-_），无法创建",
-                    ["--target 推荐传会话名（<kind>-<repo> 或 bot slug）；t 号是保留地址、不能作名字"],
-                    returncode=2)
-            if branch == "rebuild" and g.status_state not in ("idle", "done"):
-                # 只杀 idle/done 占位者；working/blocked/未自报一律拒杀（在跑的工作与
-                # 等人决定的弹框绝不被杀；未自报无法确认空闲，保守拒）。
-                raise DispatchError(
-                    "rebuild_busy",
-                    f"占位者状态是 {g.status_state or '未自报'}，不是 idle/done，拒杀",
-                    ["等占位者落定或请用户到屏幕前处理；kill 只在 idle/done 时执行"],
-                )
-            fresh = True
+        if g is not None and g.state == "live" and g.address:
+            ctx["target_address"] = g.address
+        route = classify(g, args)
+        gate_route(route, g, args)
+        branch = route.value
+        fresh = route.is_fresh
+        if route.is_fresh:
             if branch == "revive":
                 # 复活同样过预检 pane 闸（US26：app 没开时所有轮次停摆，无隐性例外）；
                 # 启动机械本身不 run、不重写标签（Decision 5）。
@@ -2077,44 +2177,39 @@ def main(argv=None, *, deps=None):
                     "reason": "space_id_missing",
                     "detail": "--space 未能只读解析出唯一 space id，本轮序列/案例/few-shot 禁用"}
 
-        # 2.5) 重置前置（--reset != none）：同一 target 上先发字面命令 /new /clear /compact，
-        #      等落定（idle/done + 屏幕静置）后再发主任务。放行一并授权前置＋主任务：
-        #      前置按枚举校验（argparse choices），主任务仍逐字来自放行文件、校 sha256。
-        #      前置不抽取、不落 run_record；任一步发不出即整轮停（台账记部分状态）。
+        # 2.5/2.6) 前置发送（ADR-0020 决定 6）：纯函数 prestep_specs 产出次序固定的
+        #      「重置 → 切模型」。重置是同一 target 上的字面命令 /new /clear /compact，
+        #      切模型是字面 /model <名字>（名字原样透传、不核实生效）；两者都等落定
+        #      （idle/done + 屏幕静置）后再发下一步。放行一并授权前置＋主任务：前置按
+        #      枚举校验、不抽取、不落 run_record；任一步发不出即整轮停（台账记部分状态）。
         #      刚创建/复活的新鲜会话自动跳过重置发送（不在空会话上空等一次重置落定），
-        #      result 记 reset_skipped:"fresh_launch"；切模型前置照跑（ADR-0006 纪律平移）。
-        if args.reset != "none" and fresh:
-            ctx["reset_skipped"] = "fresh_launch"
-            ledger.update(reset_skipped="fresh_launch")
+        #      由纯函数记 reset_skipped:"fresh_launch"；切模型前置照跑（ADR-0006 纪律平移）。
+        plan = prestep_specs(args, route)
+        if plan.reset_skipped is not None:
+            ctx["reset_skipped"] = plan.reset_skipped
+            ledger.update(reset_skipped=plan.reset_skipped)
             write_json_atomic(ledger_path, ledger)
-        elif args.reset != "none":
-            reset_cmd = "/" + args.reset
-            ledger.update(phase="reset_sending")
-            write_json_atomic(ledger_path, ledger)
-            pre_send, pre_resent = do_send(herdr, args, reset_cmd, ledger, ledger_path)
-            reset_sent = True
-            ledger.update(phase="reset_waiting", reset_send=pre_send, reset_resent=pre_resent)
-            write_json_atomic(ledger_path, ledger)
-            wait_for_reset(deps, herdr, args, deps.monotonic() + args.wall_clock)
-            ledger.update(phase="reset_done", reset_done_at=now_iso())
-            write_json_atomic(ledger_path, ledger)
-
-        # 2.6) 切模型前置（--target-model，ADR-0006）：重置（如有）之后、主任务之前，
-        #      发字面命令 /model <名字>，等落定（idle/done + 屏幕静置）再发主任务。
-        #      名字原样透传：脚本不认识模型、不按 agent 映射、不核实生效、不预读跳过；
-        #      与 --reset 零耦合，可单独带。放行一并授权；前置不抽取、不落 run_record；
-        #      发不出即整轮停（台账记部分状态 model_sent）。
-        if args.target_model:
-            model_cmd = "/model " + args.target_model
-            ledger.update(phase="model_sending")
-            write_json_atomic(ledger_path, ledger)
-            pre_send, pre_resent = do_send(herdr, args, model_cmd, ledger, ledger_path)
-            model_sent = True
-            ledger.update(phase="model_waiting", model_send=pre_send, model_resent=pre_resent)
-            write_json_atomic(ledger_path, ledger)
-            wait_for_reset(deps, herdr, args, deps.monotonic() + args.wall_clock)
-            ledger.update(phase="model_done", model_done_at=now_iso())
-            write_json_atomic(ledger_path, ledger)
+        for spec in plan.specs:
+            if spec.kind == "reset":
+                ledger.update(phase="reset_sending")
+                write_json_atomic(ledger_path, ledger)
+                pre_send, pre_resent = do_send(herdr, args, spec.command, ledger, ledger_path)
+                reset_sent = True
+                ledger.update(phase="reset_waiting", reset_send=pre_send, reset_resent=pre_resent)
+                write_json_atomic(ledger_path, ledger)
+                wait_for_reset(deps, herdr, args, deps.monotonic() + args.wall_clock)
+                ledger.update(phase="reset_done", reset_done_at=now_iso())
+                write_json_atomic(ledger_path, ledger)
+            else:
+                ledger.update(phase="model_sending")
+                write_json_atomic(ledger_path, ledger)
+                pre_send, pre_resent = do_send(herdr, args, spec.command, ledger, ledger_path)
+                model_sent = True
+                ledger.update(phase="model_waiting", model_send=pre_send, model_resent=pre_resent)
+                write_json_atomic(ledger_path, ledger)
+                wait_for_reset(deps, herdr, args, deps.monotonic() + args.wall_clock)
+                ledger.update(phase="model_done", model_done_at=now_iso())
+                write_json_atomic(ledger_path, ledger)
 
         # 3) 主任务发送（墙钟从主任务发送成功起计，不重置）。
         started = deps.monotonic()
