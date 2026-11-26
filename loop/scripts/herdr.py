@@ -182,7 +182,8 @@ class Layout:
 
 @dataclass(frozen=True)
 class Receipt:
-    """send 的回执：resent 表示是否走过 done 补发；首次拒绝如实保留。"""
+    """send/resend 的回执：resent 表示本操作是否执行了补发；send 在「被拒且复核
+    为 done」时给出 first_refusal（resend 回执不重复该事实）。"""
 
     turn: int | None
     resent: bool
@@ -209,6 +210,14 @@ class Change:
                    reason=raw.get("reason"), status=raw.get("status"),
                    turn=raw.get("turn"), children=list(raw.get("children") or []),
                    raw=raw)
+
+
+@dataclass(frozen=True)
+class Readback:
+    """一次 hc read 的文本与完整原始结果（台账要记 complete/how/why）。"""
+
+    text: str
+    raw: dict
 
 
 def _iter_entries(raw):
@@ -354,10 +363,11 @@ class Herdr:
             self._hc(["label", target, *labels], QUERY_GUARD_S, op="label_session"))
 
     def send(self, target, text, guard="idle"):
-        """首发 --if idle；被拒且 hc get 为 done 才裸 send 补发一次。
+        """首发 --if idle；被拒且 hc get 复核为 done 时只返回拒绝回执，不在本操作内补发。
 
-        guard=None/False 表示裸发送（启动命令等命令文本）。回执带 resent 与
-        首次拒绝；补发至多一次。
+        guard=None/False 表示裸发送（启动命令等命令文本）。回执：成功时
+        first_refusal=None；被拒且复核为 done 时 first_refusal 非空、raw 为空，
+        调用方落账 phase=resending 后再调 resend（台账 phase 边界，见 ADR-0018 补记）。
         """
         if not guard:
             raw = self._hc(["send", "--", target, text], SEND_GUARD_S, op="send")
@@ -378,31 +388,33 @@ class Herdr:
             if g.status_state != "done":
                 raise StatusMismatch(
                     "status_mismatch",
-                    "hc send --if idle 被拒，复核状态是 %r 而非 done，不补发"
+                    "hc send --if idle 被拒，复核状态是 %s 而非 done，不补发"
                     % (g.status_state or "未自报"),
                     list(first.hints), first.returncode, op="send", source="hc",
                     native_kind=first.native_kind, stage="refused_not_done",
                     detail=first.detail,
                     partial_facts={"first_refusal": refusal,
                                    "status": g.status_state}) from first
-            g2 = self._get(target, op="send", stage="refused_before_resend",
-                           partial={"first_refusal": refusal})
-            if not g2.live or g2.status_state not in ("idle", "done"):
-                raise StatusMismatch(
-                    "status_mismatch",
-                    "补发前复核状态是 %r，不补发"
-                    % (g2.status_state or "未自报"),
-                    ["目标可能已重新开始工作或停在弹框；本轮未再发送"],
-                    first.returncode, op="send", source="hc",
-                    native_kind=first.native_kind,
-                    stage="refused_before_resend",
-                    partial_facts={"first_refusal": refusal,
-                                   "status": g2.status_state}) from first
-            raw2 = self._hc(["send", "--", target, text], SEND_GUARD_S,
-                            op="send", stage="resend",
-                            partial={"first_refusal": refusal})
-            return Receipt(turn=raw2.get("turn"), resent=True,
-                           first_refusal=refusal, raw=raw2)
+            return Receipt(turn=None, resent=False, first_refusal=refusal, raw={})
+
+    def resend(self, target, text):
+        """补发：第二次 hc get 复核（须 live 且 idle/done）后裸 send。
+
+        调用方在 send 与 resend 之间落账 phase=resending 与 first_refusal；
+        本操作只做复核＋发送，不碰台账（ADR-0018 决定 7/8 补记）。
+        """
+        g = self._get(target, op="send", stage="refused_before_resend")
+        if not g.live or g.status_state not in ("idle", "done"):
+            raise StatusMismatch(
+                "status_mismatch",
+                "补发前复核状态是 %s，不补发" % (g.status_state or "未自报"),
+                ["目标可能已重新开始工作或停在弹框；本轮未再发送"],
+                op="send", source="hc", stage="refused_before_resend",
+                partial_facts={"status": g.status_state})
+        raw = self._hc(["send", "--", target, text], SEND_GUARD_S,
+                       op="send", stage="resend")
+        return Receipt(turn=raw.get("turn"), resent=True,
+                       first_refusal=None, raw=raw)
 
     def wait_change(self, target, timeout):
         """hc wait 原语；等目标 agent 行为的循环留在管线（决定 11）。"""
@@ -412,6 +424,10 @@ class Herdr:
 
     def read(self, target, lines=READ_LINES):
         """回读文本；缺 text 键按输出层失败抛 HerdrFailure（不静默返回 None）。"""
+        return self.readback(target, lines).text
+
+    def readback(self, target, lines=READ_LINES):
+        """回读的文本＋完整原始结果（台账记 complete/how/why 用）。"""
         raw = self._hc(["read", target, "--lines", str(lines)],
                        QUERY_GUARD_S, op="read")
         text = raw.get("text") if isinstance(raw, dict) else None
@@ -420,7 +436,7 @@ class Herdr:
                 "hc_output", "hc read 未返回 text 字段", [str(raw)[:300]],
                 op="read", source="hc", stage="missing_text", detail=raw,
                 partial_facts={"raw": raw})
-        return text
+        return Readback(text=text, raw=raw)
 
     def kill(self, target):
         return Session.from_raw(

@@ -4,6 +4,18 @@ status: accepted
 
 # herdr 领域网关：封装命令字面量，seam 不动
 
+> 补记（#113 G2 在途裁决）：决定 5 把「`--if idle` 被拒且 done 才补发一次」收进
+> `send`，与决定 7「台账内容与写入时序不变」冲突——基线 `do_send` 在两次 `hc get`
+> 复核之间落盘 `phase="resending"`＋`first_refusal`，单操作收编必吞这个中间态。
+> 按决定 8「宁可多一个操作，不在单个操作内部吞掉一个台账 phase」，拆成两个操作：
+> `send(target, text, guard)` 到「被拒且第一次复核为 done」即返回回执
+> （`first_refusal` 非空、`raw` 为空），**不在操作内部补发**；`resend(target, text)`
+> 做第二次复核（非 live 或非 idle/done 抛 `StatusMismatch`，
+> stage=`refused_before_resend`）＋裸 send。台账写入由管线在两个操作之间完成，
+> 外部 kind、文案、hints、`first_refusal` 内容逐字不变。用户已批准此新决定
+> （#113 在途裁决）。Considered Options 中「按决定 8 切分后没有哪个台账写入需要
+> 发生在单个操作内部」的前提被本次实施证伪，予以订正。
+
 > 补记（ADR-0020，#75）：决定 1 里「`main` 内部用 `Herdr(deps)` 构造」改为由 `run`
 > 构造（`main` 退成薄壳，不碰网关）；「交接：一轮管线」七项均已关闭，落点见 ADR-0020
 > 决定 7（领养策略、`parse_space` 复用）、决定 8（等待循环）、决定 11（失败到外部 kind
@@ -173,6 +185,8 @@ adapter（真进程与 `FakeHerdr`），并经 ADR-0016 验证。把 seam 上移
   比统一 `None` 更不易出错。
 - **网关收 `progress` 回调、直接写台账**：否——台账收敛归候选④，网关不预支其形状；
   且按决定 8 切分后没有哪个台账写入需要发生在单个操作内部。
+  （后半句已被 #113 G2 在途裁决证伪并订正：`send` 的补发必须拆成两个操作，台账
+  写入发生在两次复核之间——见顶部补记。）
 - **`select` 与 `restore` 两个显式操作**：否——「恒还原」交给调用方写 `finally` 等于把
   不变量重新泄漏出去。
 - **故障键改成领域操作名**：否——见「对 ADR-0016 的修订」。

@@ -163,8 +163,9 @@ from pathlib import Path
 # sys.path），都先把脚本目录挂上，保证兄弟模块可导入。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import learning  # noqa: E402
-# 兄弟模块（部署单元是 loop/scripts/ 整目录）。依赖方向 dispatch → turn → errors，无环。
+# 兄弟模块（部署单元是 loop/scripts/ 整目录）。依赖方向 dispatch → herdr/turn → errors，无环。
 from errors import DispatchError  # noqa: E402,F401
+from herdr import Herdr, HerdrFailure, NotFound  # noqa: E402
 from turn import (  # noqa: E402,F401
     FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE, SESSION_START_SKILLS,
     closest_fragment, cut_turn, find_session_start_trigger, fold_hits,
@@ -267,6 +268,10 @@ SEND_GUARD_S = 120.0
 QUERY_GUARD_S = 30.0
 # hc wait 子进程护栏 = 本次 --timeout + 余量。
 WAIT_GUARD_MARGIN_S = 30.0
+# 迁移前 hc_json 只把「非零退出」包成 HcFailure；进程/输出层失败（run_cmd 的
+# missing_tool/tool_timeout 与 hc_json 的 hc_output）原样穿透。网关把这些也收进
+# HerdrFailure，这里按 kind 恢复逐字穿透（G2，ADR-0018 决定 9）。
+_HC_PASSTHROUGH_KINDS = frozenset({"missing_tool", "tool_timeout", "hc_output"})
 # 回读范围（ADR-0013，supersede 裁定 A3「只取当前屏」）：请求最近 1000 行拼接
 # 历史＋当前屏（hc stitched 历史上限）。长回复滚出当前屏的部分仍可取回；超过
 # 1000 行历史的开头仍不可得（如实声明，不承诺无限历史）。hc 自报 complete 只记
@@ -455,11 +460,6 @@ def app_json(app_bin, args, timeout_s):
             [p.stdout.strip()[:300]],
         )
     return data
-
-
-def status_state(terminal):
-    st = terminal.get("status")
-    return st.get("state") if isinstance(st, dict) else None
 
 
 def write_json_atomic(path, obj):
@@ -758,8 +758,8 @@ def find_app_bin(deps):
     return app_bin
 
 
-def dialog_error(terminal):
-    st = terminal.get("status") or {}
+def dialog_error(session):
+    st = session.status or {}
     kind = st.get("kind")
     msg = st.get("msg") or ""
     return DispatchError(
@@ -769,9 +769,9 @@ def dialog_error(terminal):
     )
 
 
-def wait_for_result(deps, args, baseline, deadline):
+def wait_for_result(deps, herdr, args, baseline, deadline):
     """hc wait 循环：状态变化即醒、到点 check-in、墙钟兜底。
-    返回落定复核通过后的 hc get 结果。"""
+    返回落定复核通过后的 Session。"""
     while True:
         remaining = deadline - deps.monotonic()
         if remaining <= 0:
@@ -782,133 +782,139 @@ def wait_for_result(deps, args, baseline, deadline):
             )
         t = min(args.check_in, remaining)
         try:
-            w = deps.hc_json(["wait", args.target, "--timeout", f"{t:.1f}"], t + WAIT_GUARD_MARGIN_S)
-        except HcFailure as e:
+            w = herdr.wait_change(args.target, t)
+        except HerdrFailure as e:
+            if e.kind in _HC_PASSTHROUGH_KINDS:
+                raise
             raise DispatchError("hc_failed", f"hc wait 失败：{e.message}", e.hints)
-        reason = w.get("reason")
-        if reason == "exit":
+        if w.reason == "exit":
             raise DispatchError(
                 "target_exited",
-                f"目标程序退出（exit_code={w.get('exit_code')} signal={w.get('signal')}）",
+                f"目标程序退出（exit_code={w.raw.get('exit_code')} signal={w.raw.get('signal')}）",
                 ["确认目标会话状态后另起一轮"],
             )
-        if reason == "not_started":
+        if w.reason == "not_started":
             raise DispatchError(
                 "not_started",
                 "提示词已发出，但目标没有进入 working",
                 ["确认提示词是否真的提交给了目标程序；本轮不再发送"],
             )
-        if reason == "status":
-            state = w.get("status")
+        if w.reason == "status":
+            state = w.status
             if state == "blocked":
-                raise dialog_error(deps.hc_json(["get", args.target], QUERY_GUARD_S))
+                # 未包装的原生 kind 穿透（ADR-0018 决定 2/9）：get 失败按原 kind 抛出。
+                raise dialog_error(herdr.session(args.target))
             if state == "error":
                 raise DispatchError("target_error", "目标自报 error", ["到目标会话屏幕前查看"])
-            if state in ("idle", "done") and w.get("turn", 0) > baseline:
-                outcome = settle(deps, args, w["turn"])
+            if state in ("idle", "done") and (w.turn or 0) > baseline:
+                outcome = settle(deps, herdr, args, w.turn)
                 if outcome is not None:
                     return outcome
                 continue
             # working、或 turn 未过基线：继续等
             continue
         # timeout（check-in）及其他 reason：用 hc get 兜底核对一次
-        g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
-        if g.get("state") != "live":
+        g = herdr.session(args.target)
+        if g.state != "live":
             raise DispatchError("target_exited", "目标终端已结束", ["hc get 查看 reason"])
-        state = status_state(g)
+        state = g.status_state
         if state == "blocked":
             raise dialog_error(g)
         if state == "error":
             raise DispatchError("target_error", "目标自报 error", ["到目标会话屏幕前查看"])
-        if state in ("idle", "done") and g.get("turn", 0) > baseline:
-            outcome = settle(deps, args, g["turn"])
+        if state in ("idle", "done") and (g.turn or 0) > baseline:
+            outcome = settle(deps, herdr, args, g.turn)
             if outcome is not None:
                 return outcome
 
 
-def settle(deps, args, wait_turn):
+def settle(deps, herdr, args, wait_turn):
     """落定复核：静置 settle_seconds 后 hc get，连续 settle_checks 次
     状态仍 idle/done 且 turn 不变才算落定。回到 working 等则返回 None 继续等。"""
     for _ in range(args.settle_checks):
         deps.sleep(args.settle_seconds)
-        g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
-        if g.get("state") != "live":
+        g = herdr.session(args.target)
+        if g.state != "live":
             raise DispatchError("target_exited", "落定复核时目标终端已结束", [])
-        state = status_state(g)
+        state = g.status_state
         if state == "blocked":
             raise dialog_error(g)
         if state == "error":
             raise DispatchError("target_error", "落定复核时目标自报 error", [])
-        if state not in ("idle", "done") or g.get("turn", 0) != wait_turn:
+        if state not in ("idle", "done") or (g.turn or 0) != wait_turn:
             return None
     return g
 
 
-def do_send(deps, args, text, ledger, ledger_path):
+def do_send(herdr, args, text, ledger, ledger_path):
     """--if idle 首发；被拒（status_mismatch）且 hc get 复核为 done 才补发一次。
     返回 (send, resent)。前置与主任务共用同一套发送护栏（裁定 6）：
-    永不 --force、不碰 hc keys；被拒时零字节进入，不算重发。"""
+    永不 --force、不碰 hc keys；被拒时零字节进入，不算重发。
+    首发与补发是两个网关操作（ADR-0018 决定 5/8 补记）：被拒且复核 done 时，
+    本层在两次复核之间落账 phase=resending＋first_refusal（与基线逐字一致），
+    再调 herdr.resend；外部 kind/文案/hints 映射仍在本调用点。"""
     try:
-        send = deps.hc_json(
-            ["send", "--if", "idle", "--", args.target, text],
-            SEND_GUARD_S,
-        )
-        return send, False
-    except HcFailure as e:
-        if e.kind != "status_mismatch":
+        receipt = herdr.send(args.target, text, guard="idle")
+    except HerdrFailure as e:
+        if e.stage == "send":
+            if e.kind in _HC_PASSTHROUGH_KINDS:
+                raise
             kind = "send_refused" if e.kind == "blocked" else "hc_failed"
             raise DispatchError(kind, f"hc send 失败：{e.message}",
                                 e.hints + ["未再发送；台账已记录本次尝试"])
-        g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
-        if status_state(g) != "done":
-            raise DispatchError(
-                "send_refused",
-                f"hc send --if idle 被拒，复核状态是 {status_state(g) or '未自报'} 而非 done，不补发",
-                e.hints,
-            )
-        ledger.update(phase="resending",
-                      first_refusal={"kind": e.kind, "returncode": e.returncode})
-        write_json_atomic(ledger_path, ledger)
-        g2 = deps.hc_json(["get", args.target], QUERY_GUARD_S)
-        if g2.get("state") != "live" or status_state(g2) not in ("idle", "done"):
-            raise DispatchError(
-                "send_refused",
-                f"补发前复核状态是 {status_state(g2) or '未自报'}，不补发",
-                ["目标可能已重新开始工作或停在弹框；本轮未再发送"],
-            )
-        try:
-            send = deps.hc_json(["send", "--", args.target, text], SEND_GUARD_S)
-        except HcFailure as e2:
-            raise DispatchError("send_refused", f"done 补发仍失败：{e2.message}",
-                                e2.hints + ["本轮不再发送；台账已记录两次尝试"])
-        return send, True
+        if e.stage == "refused_not_done":
+            if e.kind != "status_mismatch":
+                raise       # 复核 get 失败：原生 kind 穿透
+            raise DispatchError("send_refused", e.message, e.hints)
+        raise
+    if receipt.first_refusal is None:
+        return receipt.raw, False
+    # 被拒且复核 done：先记账后补发（基线在两次 get 复核之间写盘）。
+    ledger.update(phase="resending",
+                  first_refusal={"kind": receipt.first_refusal["kind"],
+                                 "returncode": receipt.first_refusal["returncode"]})
+    write_json_atomic(ledger_path, ledger)
+    try:
+        resent = herdr.resend(args.target, text)
+    except HerdrFailure as e:
+        if e.stage == "refused_before_resend":
+            if e.kind != "status_mismatch":
+                raise       # 第二次复核 get 失败：原生 kind 穿透
+            raise DispatchError("send_refused", e.message, e.hints)
+        if e.stage == "resend":
+            if e.kind in _HC_PASSTHROUGH_KINDS:
+                raise
+            raise DispatchError("send_refused", f"done 补发仍失败：{e.message}",
+                                e.hints + ["本轮不再发送；台账已记录两次尝试"])
+        raise
+    return resent.raw, True
 
 
-def reset_settle(hc_bin, args):
+def reset_settle(deps, herdr, args):
     """前置落定复核：idle/done 且屏幕连续 settle_checks 次静置不变。
     /clear 是本地命令、可能不进 working/不增 turn，故用屏幕内容稳定而非 turn 判据。
     屏幕仍在变或离开 idle/done 返回 False；blocked/error/退出照常抛错。"""
     prev = None
     for _ in range(args.settle_checks):
-        time.sleep(args.settle_seconds)
-        g = hc_json(hc_bin, ["get", args.target], QUERY_GUARD_S)
-        if g.get("state") != "live":
+        deps.sleep(args.settle_seconds)
+        g = herdr.session(args.target)
+        if g.state != "live":
             raise DispatchError("target_exited", "前置落定复核时目标终端已结束", [])
-        state = status_state(g)
+        state = g.status_state
         if state == "blocked":
             raise dialog_error(g)
         if state == "error":
             raise DispatchError("target_error", "前置落定复核时目标自报 error", [])
         if state not in ("idle", "done"):
             return False
-        screen = hc_json(hc_bin, ["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)["text"]
+        screen = herdr.read(args.target)
         if prev is not None and screen != prev:
             return False
         prev = screen
     return True
 
 
-def wait_for_reset(deps, args, deadline):
+def wait_for_reset(deps, herdr, args, deadline):
     """等前置（/new /clear /compact /model）落定：短轮询 hc get 至 idle/done，再屏幕静置复核。
     不要求 turn 增长（/clear、/model 可能不增 turn）。前置不抽取、不落 run_record。"""
     while True:
@@ -918,37 +924,22 @@ def wait_for_reset(deps, args, deadline):
                 "前置墙钟超时：目标仍未落定",
                 ["主任务未发送；本轮已停止，可经用户放行后另起一轮"],
             )
-        g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
-        if g.get("state") != "live":
+        g = herdr.session(args.target)
+        if g.state != "live":
             raise DispatchError("target_exited", "前置期间目标终端已结束", ["hc get 查看 reason"])
-        state = status_state(g)
+        state = g.status_state
         if state == "blocked":
             raise dialog_error(g)
         if state == "error":
             raise DispatchError("target_error", "前置期间目标自报 error", ["到目标会话屏幕前查看"])
         if state in ("idle", "done"):
-            if reset_settle(deps.hc_bin, args):
+            if reset_settle(deps, herdr, args):
                 return
             continue  # 屏幕仍在变（/clear 重绘 / /compact 收尾）：重新复核
         deps.sleep(RESET_POLL_S)  # working：短轮询
 
 
-# shell 包装（ADR-0009）：认作持久 shell 的进程名（basename、去登录前缀 -）。
-SHELL_NAMES = {"sh", "bash", "zsh", "nu", "fish", "dash", "ksh", "tcsh", "csh"}
-
-
-def _proc_base(name):
-    return (name or "").rsplit("/", 1)[-1].lstrip("-")
-
-
-def fg_is_shell(fg):
-    """前台进程是不是 shell（认 name 与 argv[0] 的 basename）。"""
-    argv = fg.get("argv") or []
-    first = argv[0] if isinstance(argv, list) and argv else ""
-    return _proc_base(fg.get("name")) in SHELL_NAMES or _proc_base(first) in SHELL_NAMES
-
-
-def wait_for_shell_ready(deps, target, deadline):
+def wait_for_shell_ready(deps, herdr, target, deadline):
     """创建后等 shell 就绪：短轮询 hc get 至 state live＋前台是 shell。
     刚 run 完名字可能短暂未解析（not_found 继续等）；终端结束/超时→launch_failed。"""
     while True:
@@ -956,78 +947,83 @@ def wait_for_shell_ready(deps, target, deadline):
             raise DispatchError("launch_failed", "等新终端 shell 就绪超时",
                                 ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
         try:
-            g = deps.hc_json(["get", target], QUERY_GUARD_S)
-        except HcFailure as e:
-            if e.kind == "not_found":
-                deps.sleep(RESET_POLL_S)
-                continue
+            g = herdr.session(target)
+        except NotFound:
+            deps.sleep(RESET_POLL_S)
+            continue
+        except HerdrFailure as e:
+            if e.kind in _HC_PASSTHROUGH_KINDS:
+                raise
             raise DispatchError("launch_failed", f"等 shell 就绪时 hc get 失败：{e.message}", e.hints)
-        if g.get("state") != "live":
+        if g.state != "live":
             raise DispatchError("launch_failed", "新终端 shell 就绪前已结束",
                                 ["hc get 查看 reason；经用户放行后另起一轮"])
-        if fg_is_shell(g.get("foreground") or {}):
+        if g.is_shell():
             return g
         deps.sleep(RESET_POLL_S)
 
 
-def wait_for_agent_ready(deps, args, deadline):
+def wait_for_agent_ready(deps, herdr, args, deadline):
     """等 agent 就绪：前台不再是 shell 且状态 idle/done。超时/终端结束→launch_failed；
-    弹框/error 照常抛（既有 kind 不动）。返回就绪时的 hc get。"""
+    弹框/error 照常抛（既有 kind 不动）。返回就绪时的 Session。"""
     while True:
         if deps.monotonic() >= deadline:
             raise DispatchError("launch_failed", "等 agent 就绪超时（启动命令已发）",
                                 ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
         try:
-            g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
-        except HcFailure as e:
-            if e.kind == "not_found":
-                # 名字只解析 live 终端：启动期间终端死亡即名字失解析。
-                raise DispatchError("launch_failed", "agent 启动期间终端已结束（名字失解析）",
-                                    ["hc get 按 t 号查看 reason；经用户放行后另起一轮"])
+            g = herdr.session(args.target)
+        except NotFound:
+            # 名字只解析 live 终端：启动期间终端死亡即名字失解析。
+            raise DispatchError("launch_failed", "agent 启动期间终端已结束（名字失解析）",
+                                ["hc get 按 t 号查看 reason；经用户放行后另起一轮"])
+        except HerdrFailure as e:
+            if e.kind in _HC_PASSTHROUGH_KINDS:
+                raise
             raise DispatchError("launch_failed", f"等 agent 就绪时 hc get 失败：{e.message}", e.hints)
-        if g.get("state") != "live":
+        if g.state != "live":
             raise DispatchError("launch_failed", "agent 启动期间终端已结束",
                                 ["hc get 查看 reason；经用户放行后另起一轮"])
-        state = status_state(g)
+        state = g.status_state
         if state == "blocked":
             raise dialog_error(g)
         if state == "error":
             raise DispatchError("target_error", "新 agent 自报 error", ["到目标会话屏幕前查看"])
-        fg = g.get("foreground") or {}
-        if not fg_is_shell(fg) and state in ("idle", "done"):
+        if not g.is_shell() and state in ("idle", "done"):
             return g
         deps.sleep(RESET_POLL_S)
 
 
-def send_launch_command(deps, args, ledger, ledger_path, ctx):
+def send_launch_command(herdr, args, ledger, ledger_path, ctx):
     """启动前置发送（创建/复活共用）：shell 不是 agent、不报 idle，用裸 send（不带 --if）。
     启动命令是命令不是提示词：不抽取、不落 run_record，占前置发送槽。
     只管发送不等就绪（#46 Bug3）：创建路径在发送与等就绪之间插领养（恒可见）。"""
     ledger.update(phase="launch_sending")
     write_json_atomic(ledger_path, ledger)
     try:
-        send = deps.hc_json(["send", "--", args.target, args.launch], SEND_GUARD_S)
-    except HcFailure as e:
+        receipt = herdr.send(args.target, args.launch, guard=None)
+    except HerdrFailure as e:
+        if e.kind in _HC_PASSTHROUGH_KINDS:
+            raise
         raise DispatchError("launch_failed", f"启动命令发送失败：{e.message}",
                             e.hints + ["主任务未发送；台账已记录本次尝试"])
     ctx["launch_sent"] = True
-    ledger.update(launch_sent=True, launch_send=send, phase="launch_waiting_agent")
+    ledger.update(launch_sent=True, launch_send=receipt.raw, phase="launch_waiting_agent")
     write_json_atomic(ledger_path, ledger)
 
 
-def wait_launch_agent(deps, args, ledger, ledger_path):
+def wait_launch_agent(deps, herdr, args, ledger, ledger_path):
     """等 agent 就绪＋核身份（创建/复活共用）。创建路径在领养之后跑（#46 Bug3）：
     卡弹框/超时失败时会话已领养可见，就绪失败另报状态、不影响可见性。"""
     ledger.update(phase="launch_waiting_agent")
     write_json_atomic(ledger_path, ledger)
-    g = wait_for_agent_ready(deps, args, deps.monotonic() + args.wall_clock)
-    check_identity(g, args)
+    g = wait_for_agent_ready(deps, herdr, args, deps.monotonic() + args.wall_clock)
+    check_identity(g.raw, args)
     ledger.update(phase="launch_done", launch_done_at=now_iso())
     write_json_atomic(ledger_path, ledger)
     return g
 
 
-def do_create(deps, args, ledger, ledger_path, ctx):
+def do_create(deps, herdr, args, ledger, ledger_path, ctx):
     """创建前置（ADR-0009，单形态 shell 包装）：hc run --bg --keep --no-parent --name
     --cwd -- zsh -l→打 loop=1＋loop-agent=<expect-proc> 标签→等 shell 就绪→send 启动命令。
     等 agent 就绪＋核身份拆在 wait_launch_agent（#46 Bug3：主流程在两者之间插领养，
@@ -1038,15 +1034,16 @@ def do_create(deps, args, ledger, ledger_path, ctx):
     try:
         # --no-parent（#46 Bug1）：命名会话无父链、独立于调用方终端——调用方背景
         # 终端退出/被杀不连带杀会话（die_with_parent 默认 true 会让会话活不过一轮），跨轮持久。
-        r = deps.hc_json(["run", "--bg", "--keep", "--no-parent", "--name", args.target,
-                             "--cwd", args.cwd, "--", "zsh", "-l"], SEND_GUARD_S)
-    except HcFailure as e:
+        created = herdr.create_session(args.target, args.cwd)
+    except HerdrFailure as e:
+        if e.stage == "missing_address":
+            raise DispatchError("launch_failed", e.message, e.hints)
+        if e.kind in _HC_PASSTHROUGH_KINDS:
+            raise
         raise DispatchError("launch_failed", f"hc run 创建命名会话失败（{e.kind}）：{e.message}",
                             e.hints + ["同名 live 终端存在（name_taken）时不建不 kill；"
                                        "经用户放行后另起一轮或改用既有会话"])
-    addr = r.get("address")
-    if not addr:
-        raise DispatchError("launch_failed", "hc run 未返回新终端地址", [str(r)[:200]])
+    addr = created.address
     ctx["target_address"] = addr
     ctx["launched"] = True
     ledger.update(target_address=addr, launched=True, phase="launch_labeling")
@@ -1055,14 +1052,16 @@ def do_create(deps, args, ledger, ledger_path, ctx):
     if args.expect_proc:
         labels.append("loop-agent=" + args.expect_proc)
     try:
-        deps.hc_json(["label", args.target, *labels], QUERY_GUARD_S)
-    except HcFailure as e:
+        herdr.label_session(args.target, labels)
+    except HerdrFailure as e:
+        if e.kind in _HC_PASSTHROUGH_KINDS:
+            raise
         raise DispatchError("launch_failed", f"打 loop 标签失败：{e.message}",
                             e.hints + ["终端已建（launched:true）；无标签终端下轮会被拒收编"])
     ledger.update(phase="launch_waiting_shell")
     write_json_atomic(ledger_path, ledger)
-    wait_for_shell_ready(deps, args.target, deps.monotonic() + args.wall_clock)
-    send_launch_command(deps, args, ledger, ledger_path, ctx)
+    wait_for_shell_ready(deps, herdr, args.target, deps.monotonic() + args.wall_clock)
+    send_launch_command(herdr, args, ledger, ledger_path, ctx)
 
 
 def find_pane(ls_data, address):
@@ -1798,6 +1797,7 @@ def io_failed_error(e, ledger_opened):
 def main(argv=None, *, deps=None):
     args = parse_args(argv)
     deps = deps if deps is not None else Deps()
+    herdr = Herdr(deps)
     ledger = None
     # 台账已开＝首版台账成功落盘（ADR-0024）：io_failed 两态 hints 的机械判据。
     # 首写失败时 ledger dict 虽在内存，文件未落盘、duplicate 闸不拦，id 未消耗。
@@ -1977,30 +1977,28 @@ def main(argv=None, *, deps=None):
         #    not_found/finished→创建（finished 同名重建、旧条目按 t 号留审计）；
         #    live→既有路径（核身份→idle 核对→发送）。
         try:
-            g = deps.hc_json(["get", args.target], QUERY_GUARD_S)
-        except HcFailure as e:
-            if e.kind != "not_found":
-                raise
+            g = herdr.session(args.target)
+        except NotFound:
             g = None
-        if g is None or g.get("state") == "finished":
+        if g is None or g.state == "finished":
             branch = "create"
-        elif g.get("state") != "live":
+        elif g.state != "live":
             raise DispatchError("not_idle", "目标终端已结束，不发送", [])
         else:
-            if g.get("address"):
-                ctx["target_address"] = g["address"]
+            if g.address:
+                ctx["target_address"] = g.address
             # 标签绑定（ADR-0009）：loop=1＋loop-agent=<expect-proc> 是收编凭据；
             # 无 loop 标签或标签符不符的同名 live 终端拒收编→占位。
-            labels = g.get("labels") or {}
+            labels = g.labels
             label_ok = (labels.get("loop") == "1"
                         and (not args.expect_proc
                              or labels.get("loop-agent") == args.expect_proc))
-            fg_shell = fg_is_shell(g.get("foreground") or {})
+            fg_shell = g.is_shell()
             if not label_ok:
                 branch = "occupied"
-            elif fg_shell and status_state(g) is None:
+            elif fg_shell and g.status_state is None:
                 branch = "revive"      # 空闲 shell＋标签符→原地复活
-            elif not fg_shell and identity_ok(g, args.expect_proc):
+            elif not fg_shell and g.identity_ok(args.expect_proc):
                 branch = "existing"    # 前台 agent 身份符＋标签符→既有路径
             else:
                 branch = "occupied"    # 别的 agent/程序（身份不符），或 shell 异常态
@@ -2012,13 +2010,13 @@ def main(argv=None, *, deps=None):
                 ["去掉 --rebuild；强制重建仅用于用户显式授权 kill 占位者后同名重建"],
                 returncode=2)
         if branch == "occupied":
-            fg = g.get("foreground") or {}
+            fg = g.foreground or {}
             argv = fg.get("argv") or []
             fg_desc = (argv[0] if isinstance(argv, list) and argv else "") or fg.get("name") or "未知"
             raise DispatchError(
                 "session_occupied",
                 f"会话名 {args.target} 被占用：{ctx.get('target_address') or args.target} "
-                f"前台={fg_desc} turn={g.get('turn')} 状态={status_state(g) or '未自报'}"
+                f"前台={fg_desc} turn={g.turn} 状态={g.status_state or '未自报'}"
                 + ("（无 loop 标签，拒收编）" if labels.get("loop") != "1"
                    else "（loop 标签与 --expect-proc 不符）" if not label_ok
                    else "（前台 shell 但 status 非 null，异常态）" if fg_shell
@@ -2057,12 +2055,12 @@ def main(argv=None, *, deps=None):
                     f"--target {args.target} 不是合法会话名（1–32 位 a-z0-9-_），无法创建",
                     ["--target 推荐传会话名（<kind>-<repo> 或 bot slug）；t 号是保留地址、不能作名字"],
                     returncode=2)
-            if branch == "rebuild" and status_state(g) not in ("idle", "done"):
+            if branch == "rebuild" and g.status_state not in ("idle", "done"):
                 # 只杀 idle/done 占位者；working/blocked/未自报一律拒杀（在跑的工作与
                 # 等人决定的弹框绝不被杀；未自报无法确认空闲，保守拒）。
                 raise DispatchError(
                     "rebuild_busy",
-                    f"占位者状态是 {status_state(g) or '未自报'}，不是 idle/done，拒杀",
+                    f"占位者状态是 {g.status_state or '未自报'}，不是 idle/done，拒杀",
                     ["等占位者落定或请用户到屏幕前处理；kill 只在 idle/done 时执行"],
                 )
             fresh = True
@@ -2076,10 +2074,10 @@ def main(argv=None, *, deps=None):
             # 身份已在分流核过（identity_ok）。恒可见（ADR-0009）：既有路径每轮预检
             # （写台账前）核 pane，缺则补领养（park 等造成的可见性漂移自愈）；补不成→
             # adopt_failed，零发送、id 不消耗、同 id 重试。app 没开时所有轮次停摆（已接受的代价）。
-            adopt(deps, g.get("address") or args.target,
+            adopt(deps, g.address or args.target,
                   None, None, ctx, True, args.space,
                   adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
-            state = status_state(g)
+            state = g.status_state
             if state not in ("idle", "done"):
                 raise DispatchError(
                     "not_idle",
@@ -2098,7 +2096,7 @@ def main(argv=None, *, deps=None):
         if args.reset == "none" and not fresh:
             hit = find_session_start_trigger(text)
             if hit is not None:
-                turn = g.get("turn")
+                turn = g.turn
                 is_fresh = isinstance(turn, int) and not isinstance(turn, bool) and turn == 0
                 if not is_fresh:
                     skill, lineno = hit
@@ -2168,24 +2166,26 @@ def main(argv=None, *, deps=None):
                 ledger.update(phase="rebuild_killing")
                 write_json_atomic(ledger_path, ledger)
                 try:
-                    deps.hc_json(["kill", args.target], SEND_GUARD_S)
-                except HcFailure as e:
+                    herdr.kill(args.target)
+                except HerdrFailure as e:
+                    if e.kind in _HC_PASSTHROUGH_KINDS:
+                        raise
                     raise DispatchError("launch_failed", f"重建 kill 占位者失败：{e.message}",
                                         e.hints + ["占位者未死；本轮停止，经用户放行后另起一轮"])
                 ctx["rebuilt"] = True
                 ctx["rebuilt_old_target"] = ctx.get("target_address")
                 ledger.update(rebuilt=True, rebuilt_old_target=ctx["rebuilt_old_target"])
                 write_json_atomic(ledger_path, ledger)
-            do_create(deps, args, ledger, ledger_path, ctx)
+            do_create(deps, herdr, args, ledger, ledger_path, ctx)
             adopt(deps, ctx["target_address"],
                   ledger, ledger_path, ctx, False, args.space,
                   adopt_timeout=args.adopt_timeout, adopt_poll=args.adopt_poll)
-            wait_launch_agent(deps, args, ledger, ledger_path)
+            wait_launch_agent(deps, herdr, args, ledger, ledger_path)
         elif branch == "revive":
             # 复活（ADR-0009）：不 run、不重写标签；原地重发启动命令→等 agent 就绪→核身份
             # （领养已在预检做过）。名字/cwd/终端级历史不动，会话是空的。
-            send_launch_command(deps, args, ledger, ledger_path, ctx)
-            wait_launch_agent(deps, args, ledger, ledger_path)
+            send_launch_command(herdr, args, ledger, ledger_path, ctx)
+            wait_launch_agent(deps, herdr, args, ledger, ledger_path)
 
         # 2.45) 显示名落地（ADR-0010）：领养复核 pane 落地后、前置/主任务发送前。
         #       创建/重建在领养成功之后、复活在启动命令发出 agent 就绪之后（上面各分支已就绪）；
@@ -2225,11 +2225,11 @@ def main(argv=None, *, deps=None):
             reset_cmd = "/" + args.reset
             ledger.update(phase="reset_sending")
             write_json_atomic(ledger_path, ledger)
-            pre_send, pre_resent = do_send(deps, args, reset_cmd, ledger, ledger_path)
+            pre_send, pre_resent = do_send(herdr, args, reset_cmd, ledger, ledger_path)
             reset_sent = True
             ledger.update(phase="reset_waiting", reset_send=pre_send, reset_resent=pre_resent)
             write_json_atomic(ledger_path, ledger)
-            wait_for_reset(deps, args, deps.monotonic() + args.wall_clock)
+            wait_for_reset(deps, herdr, args, deps.monotonic() + args.wall_clock)
             ledger.update(phase="reset_done", reset_done_at=now_iso())
             write_json_atomic(ledger_path, ledger)
 
@@ -2242,17 +2242,17 @@ def main(argv=None, *, deps=None):
             model_cmd = "/model " + args.target_model
             ledger.update(phase="model_sending")
             write_json_atomic(ledger_path, ledger)
-            pre_send, pre_resent = do_send(deps, args, model_cmd, ledger, ledger_path)
+            pre_send, pre_resent = do_send(herdr, args, model_cmd, ledger, ledger_path)
             model_sent = True
             ledger.update(phase="model_waiting", model_send=pre_send, model_resent=pre_resent)
             write_json_atomic(ledger_path, ledger)
-            wait_for_reset(deps, args, deps.monotonic() + args.wall_clock)
+            wait_for_reset(deps, herdr, args, deps.monotonic() + args.wall_clock)
             ledger.update(phase="model_done", model_done_at=now_iso())
             write_json_atomic(ledger_path, ledger)
 
         # 3) 主任务发送（墙钟从主任务发送成功起计，不重置）。
         started = deps.monotonic()
-        send, resent = do_send(deps, args, text, ledger, ledger_path)
+        send, resent = do_send(herdr, args, text, ledger, ledger_path)
         baseline = send["turn"]
         ledger.update(phase="sent_waiting", sent_at=now_iso(), send=send, resent=resent)
         write_json_atomic(ledger_path, ledger)
@@ -2270,11 +2270,11 @@ def main(argv=None, *, deps=None):
 
         # 4) 等待落定（墙钟从主任务发送成功起计）。
         deadline = started + args.wall_clock
-        final = wait_for_result(deps, args, baseline, deadline)
+        final = wait_for_result(deps, herdr, args, baseline, deadline)
 
         # 5) 回读（最近 1000 行拼接历史＋当前屏，ADR-0013）＋断轮＋完整性检查。
-        read = deps.hc_json(["read", args.target, "--lines", str(READ_LINES)], QUERY_GUARD_S)
-        screen = read["text"]
+        read = herdr.readback(args.target)
+        screen = read.text
         # 锚点（提示词回声首行前缀）只作信息、不阻断：本步已在 turn>基线＋落定之后，
         # 本轮确已被处理；超过 1000 行历史时回声仍可能不可得，锚点搜不到不代表
         # 回复不完整（PAW 实测多次误判后降级，ADR-0013 维持信息字段）。
@@ -2293,10 +2293,11 @@ def main(argv=None, *, deps=None):
         turn_path.write_text(turn_text, encoding="utf-8", newline="")
         ledger.update(
             phase="read", read_at=now_iso(),
-            turn=final.get("turn"), status=status_state(final),
+            turn=final.turn, status=final.status_state,
             elapsed_s=elapsed, chars=len(screen),
             echo_found=echo_found, turn_cut_line=cut_line, turn_chars=len(turn_text),
-            hc_read={"complete": read.get("complete"), "how": read.get("how"), "why": read.get("why")},
+            hc_read={"complete": read.raw.get("complete"), "how": read.raw.get("how"),
+                     "why": read.raw.get("why")},
             complete=complete, complete_reason=reasons, anchor_found=anchor_found,
             run_record=str(raw_path), raw_record=str(raw_path), turn_record=str(turn_path),
         )
@@ -2347,8 +2348,8 @@ def main(argv=None, *, deps=None):
             "task_name": task_name,
             "target": original_target,
             "reset": args.reset,
-            "turn": final.get("turn"),
-            "status": status_state(final),
+            "turn": final.turn,
+            "status": final.status_state,
             "complete": complete,
             "complete_reason": reasons,
             "anchor_found": anchor_found,

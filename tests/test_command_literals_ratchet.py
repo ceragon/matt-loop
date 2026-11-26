@@ -20,24 +20,14 @@ from pathlib import Path
 DISPATCH = Path(__file__).resolve().parent.parent / "loop" / "scripts" / "dispatch.py"
 
 # 白名单：函数名 -> (理由, 退役切片)。只许缩小；陈旧条目自检必红。
-# 首版以实际扫描推导（G1）：15 个函数、35 处字面量。G2 迁会话簇后删 G2 条，
+# 首版以实际扫描推导（G1）：15 个函数、35 处字面量。G2 已迁会话簇（删 10 条），
 # G3 迁空间簇后清空。
 WHITELIST = {
     "adopt": ("领养：status/ls/space.new/terminal.keep/tab.close 与 hc get/rm 混用", "G3"),
     "apply_display_name": ("显示名落地：ls 定位与 tab.rename", "G3"),
-    "do_create": ("创建前置：hc run 与 label", "G2"),
-    "do_send": ("发送：hc send --if idle 与 done 复核 get / 补发", "G2"),
-    "main": ("主流程残留：hc get / kill / read", "G2"),
-    "reset_settle": ("前置落定：hc get 与 read", "G2"),
     "resolve_space_id_for_learning": ("学习侧空间解析：只读 ls", "G3"),
     "restore_space": ("选中还原：status 读当前选中", "G3"),
     "select_and_verify": ("空间切换：space.select 与 status 复核", "G3"),
-    "send_launch_command": ("启动命令：裸 hc send", "G2"),
-    "settle": ("落定复核：hc get", "G2"),
-    "wait_for_agent_ready": ("等 agent 就绪：hc get", "G2"),
-    "wait_for_reset": ("等前置落定：hc get", "G2"),
-    "wait_for_result": ("等结果：hc wait 与兜底 hc get", "G2"),
-    "wait_for_shell_ready": ("等 shell 就绪：hc get", "G2"),
 }
 
 
@@ -150,7 +140,7 @@ def main():
     hits = collect(source)
     problems = scan(source, WHITELIST)
     assert problems == [], "命令字面量棘轮失败：\n  " + "\n  ".join(problems)
-    print("ratchet: %d functions / %d literal sites whitelisted for G2/G3"
+    print("ratchet: %d functions / %d literal sites whitelisted for G3"
           % (len(hits), sum(len(v) for v in hits.values())))
     print("all command-literal ratchet tests passed")
 

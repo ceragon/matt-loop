@@ -268,13 +268,47 @@ def send_resend():
     assert w.sends == [("t99", "first", True)]
     print("16 send: idle guard accepted, no resend")
 
+    # 被拒且第一次复核为 done：send 只返回拒绝回执，操作内部不补发（台账 phase 边界）
     w.set_status("t99", "done")
+    before = list(w.sends)
     r = h.send("t99", "second", guard="idle")
-    assert r.resent is True
-    assert r.first_refusal["kind"] == "status_mismatch"
+    assert isinstance(r, Receipt) and r.resent is False
+    assert r.first_refusal["kind"] == "status_mismatch" and r.raw == {}
+    assert w.sends == before          # 零补发
+    # resend：第二次复核＋裸补发一次
+    r2 = h.resend("t99", "second")
+    assert r2.resent is True and r2.turn is not None
     assert w.sends[-1] == ("t99", "second", False)
     assert len([s for s in w.sends if s[1] == "second"]) == 1
-    print("17 send: refused but done -> exactly one bare resend, receipt.resent")
+    print("17 send refused+done -> refusal receipt; resend rechecks and sends bare once")
+
+    # 被拒且复核非 done：send 抛 StatusMismatch(refused_not_done)，文案/hints 逐字
+    w.set_status("t99", "working")
+    try:
+        h.send("t99", "third", guard="idle")
+    except StatusMismatch as e:
+        assert e.stage == "refused_not_done"
+        assert e.message == "hc send --if idle 被拒，复核状态是 working 而非 done，不补发"
+        assert e.hints == []
+    else:
+        raise AssertionError("--if idle 被拒且非 done 须抛 StatusMismatch")
+
+    # resend 第二次复核非 idle/done：StatusMismatch(refused_before_resend)，文案/hints 逐字
+    w.set_status("t99", "done")
+    r = h.send("t99", "fourth", guard="idle")
+    assert r.first_refusal is not None
+    w.set_status("t99", "working")
+    before = list(w.sends)
+    try:
+        h.resend("t99", "fourth")
+    except StatusMismatch as e:
+        assert e.stage == "refused_before_resend"
+        assert e.message == "补发前复核状态是 working，不补发"
+        assert e.hints == ["目标可能已重新开始工作或停在弹框；本轮未再发送"]
+        assert w.sends == before      # 复核不过不发送
+    else:
+        raise AssertionError("补发前复核非 idle/done 须抛 StatusMismatch")
+    print("17b send/resend refusal messages verbatim at both recheck stages")
 
     w.set_status("t99", "working")
     before = len(w.sends)
