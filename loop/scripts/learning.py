@@ -416,7 +416,6 @@ class LearningStore:
                 "predict_release_id": pred.get("release_id"),
                 "actual_release_id": release_id,
                 "ts": self._now(),
-                "predicted_at": pred.get("ts"),
                 "verdict": verdict,
                 "invalid": invalid,
                 "reply": pred.get("reply", ""),
@@ -424,7 +423,6 @@ class LearningStore:
                 "actual_skill": actual_skill,
                 "actual_type": actual_type,
                 "sequence": pred.get("sequence", []),
-                "examples_used": pred.get("examples_used", 0),
             }
             if exclusion:
                 case["learning_excluded"] = exclusion

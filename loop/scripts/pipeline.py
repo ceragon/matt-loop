@@ -43,8 +43,7 @@ from turn import (  # noqa: E402
     verify_extraction, verify_reply,
 )
 
-# hc 任务名规则
-TASK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,31}$")
+# 保留地址规则：t 号是保留地址、不能作会话名。
 RESERVED_ID_RE = re.compile(r"^t\d+$")
 # herdr 会话名规则（hc run --name：1–32 位 a-z 0-9 - _）；t 号是保留地址、不能作名字。
 SESSION_NAME_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
@@ -123,11 +122,6 @@ def now_iso():
 def has_internal_newline(text):
     """内部换行＝剥掉尾部换行（含连续多个）后仍含换行（尾换行豁免，ADR-0017 定案 A）。"""
     return "\n" in text.rstrip("\n")
-
-
-def validate_task_name(name: str) -> None:
-    if not TASK_NAME_RE.match(name) or RESERVED_ID_RE.match(name):
-        raise DispatchError("bad_task_name", f"任务名不合法：{name}", ["使用自动生成的短名称"])
 
 
 # ---------------------------------------------------------------- 入口类型
@@ -239,7 +233,6 @@ class RunState:
         self.session = None
         self.final = None
         self.baseline = None
-        self.screen = None
         self.turn_text = None
         # 成功载荷里的轮次标量（run 在 finish 前填）
         self.final_turn = None
@@ -1119,14 +1112,13 @@ def adopt(state, herdr, address, precheck):
         # 落地复核所在空间（#43）：pane 存在还不够，须在目标空间。keep 异步
         # 落地，窗口内选中被切走时 pane 会落进别的空间——如实告警不静默；
         # pane 已落地恒可见满足，不丢放行（多半是用户自己切走所致）。
-        if space_target is not None:
-            actual = placement.space_id
-            state.fact("space_landed", actual)
-            if actual != space_target:
-                w = {"reason": "landed_elsewhere", "actual": actual,
-                     "detail": f"pane 落进空间 {actual!r} ≠ 目标 {space_target!r}"
-                               "（落地窗口内选中被切走）"}
-                state.fact("space_target_warning", w)
+        actual = placement.space_id
+        state.fact("space_landed", actual)
+        if actual != space_target:
+            w = {"reason": "landed_elsewhere", "actual": actual,
+                 "detail": f"pane 落进空间 {actual!r} ≠ 目标 {space_target!r}"
+                           "（落地窗口内选中被切走）"}
+            state.fact("space_target_warning", w)
         return placement
 
     retry = (["打开 herdr-app 后用同一放行 id 重试（零发送、id 未消耗）"] if precheck
@@ -1312,7 +1304,6 @@ def admit(state):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", request.release_id):
         raise DispatchError("bad_release_id", "放行 id 只允许字母数字与 ._-，且不以符号开头", [])
     state.task_name = generate_short_task_name(request.release_id)
-    validate_task_name(state.task_name)
     prompt_path = Path(request.prompt_file)
     try:
         raw = prompt_path.read_bytes()
@@ -1629,7 +1620,6 @@ def readback(state, herdr, admitted):
     elapsed = round(deps.monotonic() - state.started, 1)
     admitted.raw_path.write_text(screen, encoding="utf-8", newline="")
     admitted.turn_path.write_text(turn_text, encoding="utf-8", newline="")
-    state.screen = screen
     state.turn_text = turn_text
     state.complete = complete
     state.complete_reason = reasons
