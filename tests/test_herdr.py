@@ -211,15 +211,16 @@ def session_operations():
     h, _ = make_herdr(w)
     s = h.create_session("claude-test", "/proj")
     assert s.address and s.live and s.turn == 0
-    s2 = h.label_session("claude-test", ["loop=1", "loop-agent=claude"])
-    assert s2.labels == {"loop": "1", "loop-agent": "claude"}
+    h.label_session("claude-test", ["loop=1", "loop-agent=claude"])
+    assert h.session("claude-test").labels == {"loop": "1", "loop-agent": "claude"}
     w.screen(s.address, "屏幕内容")
     assert h.read("claude-test", 10) == "屏幕内容"
     change = h.wait_change("claude-test", 1)
     assert isinstance(change, Change)
-    assert change.reason == "status" and change.terminal == s.address
-    assert h.kill("claude-test").finished is True
-    print("13 create_session/label_session/read/wait_change/kill return facts")
+    assert change.reason == "status" and change.raw["terminal"] == s.address
+    h.kill("claude-test")
+    assert h.session(s.address).finished is True
+    print("13 create_session/label_session/read/wait_change/kill effects observable")
 
     # read 缺 text 键不得静默返回 None：按输出层失败抛 HerdrFailure（hc_output）
     def read_without_text(hc_bin, args, timeout_s):
@@ -264,7 +265,7 @@ def send_resend():
     h, _ = make_herdr(w)
     r = h.send("t99", "first", guard="idle")
     assert isinstance(r, Receipt)
-    assert r.resent is False and r.first_refusal is None
+    assert r.first_refusal is None and r.raw["turn"] is not None
     assert w.sends == [("t99", "first", True)]
     print("16 send: idle guard accepted, no resend")
 
@@ -272,12 +273,12 @@ def send_resend():
     w.set_status("t99", "done")
     before = list(w.sends)
     r = h.send("t99", "second", guard="idle")
-    assert isinstance(r, Receipt) and r.resent is False
+    assert isinstance(r, Receipt) and r.first_refusal is not None
     assert r.first_refusal["kind"] == "status_mismatch" and r.raw == {}
     assert w.sends == before          # 零补发
     # resend：第二次复核＋裸补发一次
     r2 = h.resend("t99", "second")
-    assert r2.resent is True and r2.turn is not None
+    assert r2.first_refusal is None and r2.raw["turn"] is not None
     assert w.sends[-1] == ("t99", "second", False)
     assert len([s for s in w.sends if s[1] == "second"]) == 1
     print("17 send refused+done -> refusal receipt; resend rechecks and sends bare once")
@@ -313,7 +314,7 @@ def send_resend():
     w.set_status("t99", "working")
     before = len(w.sends)
     r = h.send("t99", "command", guard=None)
-    assert r.resent is False and r.first_refusal is None
+    assert r.first_refusal is None and r.raw["turn"] is not None
     assert w.sends[-1] == ("t99", "command", False)
     assert len(w.sends) == before + 1
     print("18 send: guard=None sends bare without resend logic")

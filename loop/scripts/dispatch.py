@@ -175,7 +175,7 @@ from pipeline import (  # noqa: E402,F401  （兼容重导出：既有测试零�
     RESERVED_ID_RE, SESSION_NAME_RE,
 )
 from turn import (  # noqa: E402,F401
-    FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE, SESSION_START_SKILLS,
+    FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE,
     closest_fragment, cut_turn, find_session_start_trigger, fold_hits,
     generate_short_task_name, normalize_paste, utf16_units, verbatim_present,
     verify_extraction, verify_reply,

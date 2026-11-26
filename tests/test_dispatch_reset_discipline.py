@@ -31,6 +31,12 @@ from fake_herdr import FakeHerdr
 from helpers import SCREEN, ext
 from helpers import ANCHOR as ANCHOR_SRC, EXT5 as EXT
 
+# 期望值独立声明（#133 R4）：生产侧只有 SESSION_START_RE 正则，本清单是测试的
+# 外部真值，不从被测模块导入——改漏一处即红。
+SESSION_START_SKILLS = (
+    "wayfinder", "grill-with-docs", "implement", "implement-spec", "prototype",
+)
+
 
 def _world(turn=5, status="idle"):
     """既有 agent t99＋main 空间 pane 已在＋稳定屏幕；turn=None 缺失、False 非整数。"""
@@ -67,7 +73,7 @@ def main():
     f = dispatch.find_session_start_trigger
 
     # 1 纯函数：命中
-    for skill in dispatch.SESSION_START_SKILLS:
+    for skill in SESSION_START_SKILLS:
         assert f("/" + skill) == (skill, 1), skill
         assert f("/" + skill + " #7") == (skill, 1), skill
     assert f("/wayfinder#7") == ("wayfinder", 1)          # 无空格带参
