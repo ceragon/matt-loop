@@ -42,9 +42,11 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
     创建路径保留已建终端、id 消耗；预检路径零发送、id 不消耗。app 没开时所有轮次停摆
     （已接受的代价）。
   - 空间定位（--space 必传，ADR-0011，#43 grill 定稿）：keep 无空间定位参数（place 只管
-    相对焦点 pane 位置），无 pane 终端落进当前选中空间。--space 三态解析：/ 或 ~ 开头→路径
-    （按 space.folder 匹配：唯一复用／零个 space.new{name:目录名,folder,focus:false}／多个
-    space_ambiguous；路径须已存在目录否则 bad_args）；sp 前缀→id 直配；其余→名（ls 唯一匹配，
+    相对焦点 pane 位置），无 pane 终端落进当前选中空间。--space 三态解析归一纯函数
+    parse_space（#70，唯一匹配实现，领养与学习共用；建不建空间是调用方策略——领养路径
+    零匹配建、学习只读不建）：/ 或 ~ 开头→路径（按 space.folder 匹配：唯一复用／零个
+    领养执行 space.new{name:目录名,folder,focus:false}／多个 space_ambiguous；路径须
+    已存在目录否则 bad_args）；sp 前缀→id 直配；其余→名（ls 唯一匹配，
     重名 bad_args，不存在 space_not_found）。与 --cwd 独立。只在需要 keep 时生效：目标≠当前
     shown 才 space.select→status 复核（不符先走还原护栏再 select_error，keep 不发）；
     目标==shown 不 select。keep→复核 pane 及其所在空间（落进非目标空间→space_target_warning
@@ -1246,30 +1248,89 @@ def select_and_verify(deps, space_id):
     return deps.app_json(["status"], QUERY_GUARD_S).get("space")
 
 
-def resolve_space_id_for_learning(app_bin, space):
-    """只读把 --space 三态解析成 space id（ADR-0012 学习用），不建空间、不 select、不抛错。
+def parse_space(space, spaces):
+    """--space 三态解析（ADR-0011，#70 归一）：唯一匹配实现，领养与学习共用。
 
-    与领养的三态匹配同规则，但纯只读：路径按 folder 唯一匹配、sp 前缀按 id、其余按名唯一。
-    零匹配/多匹配/缺 id/ls 失败一律返回 None——学习侧据此禁用本轮 space scoped 学习并告警
-    （id 缺失禁用该轮学习，ADR-0012）。绝不触发 space.new（那是领养路径的显式 opt-in）。
+    三态：/ 或 ~ 开头→路径（expanduser＋normpath 归一后按 space.folder 匹配：
+    唯一→复用 id；零个→给出 new_space 提案 {name:目录名, folder:路径, focus:False}，
+    是否执行 space.new 由调用方决定；多个→space_ambiguous）；sp 前缀→id 直配
+    （不存在→space_not_found）；其余→名（唯一匹配；重名→bad_args；不存在→
+    space_not_found，名不自动建空间）。命中空间缺 id→space_not_found（不静默退化）。
+
+    返回 {"target_id": 解析出的 id 或 None, "new_space": space.new 参数或 None,
+    "error": None 或 {"reason", "message", "hint"}}：reason 为 space_ambiguous／
+    space_not_found／bad_args（名重名），hint 是附加改正指引（可为 None）。
+    纯函数：不做 I/O、不建空间、不 select、不抛错；「建不建空间」与错误映射
+    （adopt_failed 还是 bad_args、retry 前缀）是调用方策略，不进本函数。
+    """
+    result = {"target_id": None, "new_space": None, "error": None}
+    if space.startswith(("/", "~")):
+        path = os.path.normpath(str(Path(space).expanduser()))
+        matches = [sp for sp in spaces if sp.get("folder") == path]
+        if len(matches) > 1:
+            result["error"] = {
+                "reason": "space_ambiguous",
+                "message": f"--space 路径 {path} 按 folder 命中 {len(matches)} 个空间，无法定夺",
+                "hint": "改传空间 id（sp…）或唯一名消除歧义"}
+        elif matches:
+            sid = matches[0].get("id")
+            if sid:
+                result["target_id"] = sid
+            else:
+                result["error"] = {
+                    "reason": "space_not_found",
+                    "message": f"--space 路径 {path} 命中的空间缺 id，无法定位",
+                    "hint": None}
+        else:
+            result["new_space"] = {"name": os.path.basename(path),
+                                   "folder": path, "focus": False}
+    elif space.startswith("sp"):
+        if any(sp.get("id") == space for sp in spaces):
+            result["target_id"] = space
+        else:
+            result["error"] = {"reason": "space_not_found",
+                               "message": f"--space id {space} 在 ls 里找不到",
+                               "hint": None}
+    else:
+        matches = [sp for sp in spaces if sp.get("name") == space]
+        if not matches:
+            result["error"] = {
+                "reason": "space_not_found",
+                "message": f"--space 名 {space} 在 ls 里找不到",
+                "hint": "核对目标空间名/id/路径；名不自动建空间，传路径零匹配才建"}
+        elif len(matches) > 1:
+            result["error"] = {
+                "reason": "bad_args",
+                "message": f"--space {space} 重名命中 {len(matches)} 个空间，无法定夺",
+                "hint": None}
+        else:
+            sid = matches[0].get("id")
+            if sid:
+                result["target_id"] = sid
+            else:
+                result["error"] = {
+                    "reason": "space_not_found",
+                    "message": f"--space {space} 命中的空间缺 id，无法定位",
+                    "hint": None}
+    return result
+
+
+def resolve_space_id_for_learning(app_bin, space):
+    """--space 三态解析的只读投影（ADR-0012 学习用，#70 归一）：不建空间、不 select、不抛错。
+
+    匹配与领养共用 parse_space（ADR-0011 规则唯一实现）；本函数只加只读策略：
+    error／new_space 提案（路径零匹配）／ls 失败一律返回 None——学习侧据此禁用
+    本轮 space scoped 学习并告警（id 缺失禁用该轮学习，ADR-0012）。
+    绝不触发 space.new（那是领养路径的显式 opt-in）。
     """
     try:
         ls = app_json(app_bin, ["ls"], QUERY_GUARD_S)
     except DispatchError:
         return None
-    spaces = ls.get("spaces") or []
-    if space.startswith(("/", "~")):
-        path = os.path.normpath(str(Path(space).expanduser()))
-        matches = [sp for sp in spaces if sp.get("folder") == path]
-        if len(matches) == 1:
-            return matches[0].get("id") or None
+    parsed = parse_space(space, ls.get("spaces") or [])
+    if parsed["error"] is not None or parsed["new_space"] is not None:
         return None
-    if space.startswith("sp"):
-        return space if any(sp.get("id") == space for sp in spaces) else None
-    matches = [sp for sp in spaces if sp.get("name") == space]
-    if len(matches) == 1:
-        return matches[0].get("id") or None
-    return None
+    return parsed["target_id"]
 
 
 def find_tab(ls_data, address):
@@ -1383,9 +1444,9 @@ def adopt(deps, address, ledger, ledger_path, ctx, precheck, space,
     领养任一步失败抛 adopt_failed，ctx 记部分状态（workspace:"failed"＋
     adopt_reason＋space_created/pane_adopted 如实报）。
     空间定位（#43 grill 定稿，ADR-0011，space 必传）：只在需要 keep 时解析——
-    / 或 ~ 开头→路径（folder 匹配：唯一复用／零个 space.new{name:目录名,folder:路径,
-    focus:false}／多个 space_ambiguous）；sp 前缀→id 直配；其余→名（唯一匹配，
-    重名 bad_args，不存在 space_not_found）。目标≠当前 shown 才 space.select→status
+    三态匹配归一纯函数 parse_space（#70，唯一实现，规则见该函数）；本调用方策略：
+    路径零匹配→执行 space.new{name:目录名,folder:路径,focus:false}，error 按 reason
+    映射（名重名 bad_args，其余 adopt_failed）。目标≠当前 shown 才 space.select→status
     复核（不符先走还原护栏再 select_error，keep 不发）；目标==shown 不 select。
     keep→复核 pane 及其所在空间（落错空间→space_target_warning 告警不丢放行）→
     还原选中（restore_space 护栏，keep 失败路径也还原）。pane 已在则提前返回不抢。
@@ -1427,42 +1488,24 @@ def adopt(deps, address, ledger, ledger_path, ctx, precheck, space,
             write_json_atomic(ledger_path, ledger)
         return
     # 空间定位三态解析（#43 grill 定稿，ADR-0011）：只在需要 keep 时解析（pane 已在
-    # 上面已返回）。/ 或 ~ 开头→路径（folder 匹配）；sp 前缀→id 直配；其余→名。
-    # 显式传路径 opt-in 自动建（零匹配时）；--space 必传，无「不传参静默按 cwd 猜」分支
-    # （多空间可共享同一 folder，静默 cwd 路由会拆散既有组织——issue #43 关键约束）。
+    # 上面已返回）。匹配归一纯函数 parse_space（#70，唯一实现）；本调用方策略：
+    # 显式传路径 opt-in 自动建（零匹配时执行 space.new）；--space 必传，无「不传参
+    # 静默按 cwd 猜」分支（多空间可共享同一 folder，静默 cwd 路由会拆散既有组织——
+    # issue #43 关键约束）。
     spaces = ls.get("spaces") or []
-    space_target = None
-    space_new = None
-    if space.startswith(("/", "~")):
-        path = os.path.normpath(str(Path(space).expanduser()))
-        matches = [sp for sp in spaces if sp.get("folder") == path]
-        if len(matches) > 1:
-            fail("space_ambiguous",
-                 f"--space 路径 {path} 按 folder 命中 {len(matches)} 个空间，无法定夺",
-                 retry + ["改传空间 id（sp…）或唯一名消除歧义"])
-        if matches:
-            space_target = matches[0].get("id")
-            if not space_target:
-                fail("space_not_found", f"--space 路径 {path} 命中的空间缺 id，无法定位", retry)
-        else:
-            space_new = {"name": os.path.basename(path), "folder": path, "focus": False}
-    elif space.startswith("sp"):
-        if not any(sp.get("id") == space for sp in spaces):
-            fail("space_not_found", f"--space id {space} 在 ls 里找不到", retry)
-        space_target = space
-    else:
-        matches = [sp for sp in spaces if sp.get("name") == space]
-        if not matches:
-            fail("space_not_found", f"--space 名 {space} 在 ls 里找不到",
-                 retry + ["核对目标空间名/id/路径；名不自动建空间，传路径零匹配才建"])
-        if len(matches) > 1:
+    parsed = parse_space(space, spaces)
+    if parsed["error"] is not None:
+        err = parsed["error"]
+        if err["reason"] == "bad_args":
+            # 名重名属参数错误：bad_args（退出码 2、id 不消耗），不走 fail 的部分状态。
             raise DispatchError(
-                "bad_args", f"--space {space} 重名命中 {len(matches)} 个空间，无法定夺",
+                "bad_args", err["message"],
                 ["改传空间 id（sp…）或路径；改正后用同一放行 id 重试（零发送、id 不消耗）"],
                 returncode=2)
-        space_target = matches[0].get("id")
-        if not space_target:
-            fail("space_not_found", f"--space {space} 命中的空间缺 id，无法定位", retry)
+        fail(err["reason"], err["message"],
+             retry + ([err["hint"]] if err["hint"] else []))
+    space_target = parsed["target_id"]
+    space_new = parsed["new_space"]
     # 路径零匹配→建空间（统一分支，废旧「零空间自动 space.new{name:会话名}」）：
     # name=目录名、folder=路径、focus:false 不抢视图；赠送 shell 清理绑 space_created。
     if space_new is not None:
@@ -1794,10 +1837,12 @@ def parse_args(argv=None):
                     "落地 tab.rename＋ls 复核，失败降级 display_name_warning 不丢放行")
     ap.add_argument("--space", required=True,
                     help="空间定位（#43 grill 定稿，ADR-0011，必传）：领养 keep 的落点空间。"
-                    "三态解析：/ 或 ~ 开头→路径（按 space.folder 匹配：唯一复用／零个 "
+                    "三态解析（归一纯函数 parse_space，#70，领养与学习共用匹配）：/ 或 ~ 开头→路径"
+                    "（按 space.folder 匹配：唯一复用／零个领养执行 "
                     "space.new{name:目录名,folder:路径,focus:false}／多个 space_ambiguous；"
                     "路径须已存在目录否则 bad_args）；sp 前缀→id 直配；其余→名（ls 唯一匹配，"
-                    "重名 bad_args，不存在 space_not_found）。与 --cwd 独立（空间 folder 未必"
+                    "重名 bad_args，不存在 space_not_found）。学习侧是只读投影：零匹配不建空间。"
+                    "与 --cwd 独立（空间 folder 未必"
                     "等于终端 cwd）。只在需要 keep（pane 缺）时生效：目标≠当前 shown 才 "
                     "space.select→keep→复核→还原选中（用户接管即跳过）；pane 已在提前返回不抢")
     ap.add_argument("--rebuild", action="store_true",
@@ -1913,7 +1958,8 @@ def main(argv=None, *, deps=None):
                     returncode=2)
         # --space 机械校验（#43 grill 定稿）：必传（argparse required）；空/纯空白 →
         # bad_args；路径形态（/ 或 ~ 开头）须是已存在目录，否则 bad_args（退出码 2、
-        # 零发送、id 不消耗）。名/id/路径匹配是数据问题，领养时对着 ls 三态解析。
+        # 零发送、id 不消耗）。名/id/路径匹配是数据问题，领养时对着 ls 经 parse_space
+        # 三态解析（#70 归一）。
         ctx["space"] = args.space   # 请求值回显（传了就带，成功与 error 都带，同 target_model 哲学）
         if not args.space.strip():
             raise DispatchError("bad_args", "--space 非法（须非空）",
