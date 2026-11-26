@@ -159,55 +159,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-# learning.py 与本脚本同目录；无论 dispatch 被直跑还是经 importlib 加载（部分测试不加
-# sys.path），都先把脚本目录挂上，保证兄弟模块可导入。
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import learning  # noqa: E402
-# 兄弟模块（部署单元是 loop/scripts/ 整目录）。依赖方向 dispatch → pipeline →
-# {herdr, turn, learning, errors}，无环；pipeline 不 import 本脚本。
-import pipeline  # noqa: E402
-from errors import DispatchError  # noqa: E402,F401
-from herdr import Herdr, HerdrFailure, NotFound  # noqa: E402,F401  （供测试重导出）
-from pipeline import (  # noqa: E402,F401  （兼容重导出：既有测试零改动，同 turn 先例）
-    ADOPT_POLL_S, ADOPT_TIMEOUT_S, Prestep, PrestepPlan, Route, SpacePlan,
-    check_identity, classify, gate_route, has_internal_newline, identity_ok,
-    parse_space, plan_space, prestep_specs,
-    RESERVED_ID_RE, SESSION_NAME_RE,
-)
-from turn import (  # noqa: E402,F401
-    FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE,
-    closest_fragment, cut_turn, find_session_start_trigger, fold_hits,
-    generate_short_task_name, normalize_paste, utf16_units, verbatim_present,
-    verify_extraction, verify_reply,
-)
-
-# 成功通知投影白名单（ADR-0014，#52 阶段一；ADR-0019 增补完整性标记）：成功通知严格只含这 13 个判读/交回字段，
-# 顺序即下列顺序。error 通知不套白名单、保留发送前完整对象。webhook/webhook_error/
-# webhook_error_detail 是 POST 后才产生的发送诊断，只归全量结果，绝不进投影。
-NOTIFY_SUCCESS_FIELDS = (
-    "ok", "release_id", "target", "needs_user", "questions", "conclusion",
-    "blocked", "rewritten", "run_record", "elapsed_s", "next_skill",
-    "complete", "complete_reason",
-)
-
-# 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
-WEBHOOK_TIMEOUT_S = 10.0
-# webhook 主出口重试退避（共 3 次：首发 + 2 次重试）；全败且用了代理时再直连兜底 1 次。
-WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
-# summary 已移除（原文才是重点）：抽取器若仍多给 summary，投影时直接丢弃，
-# 不算坏行、不进 rewritten。
-# next_skill（ADR-0008 修订，#48）是唯一推测字段：下一轮应使用的纯 skill 名（不带斜杠、
-# 不含参数），候选固定七项；缺失/非字符串/带斜杠/带参数/集外值均宽容投影为 ""，不整轮
-# 报错；不参与逐字校验。格式错误另记 invalid（learning.project_next_skill），供阶段二
-# 统计 invalid_prediction，不得把格式错误算作正确弃答。
-# 顺序即抽取指令里的字段列举顺序（#133 R6：指令由本常量派生，见 _EXTRACT_INSTRUCTION）；
-# 结果载荷的字段序不受影响——reply 被单独取出后，其余五字段的相对顺序不变。
-EXTRACT_FIELDS = ("needs_user", "reply", "questions", "conclusion", "blocked", "next_skill")
-# 抽取后端（ADR-0005）：默认直连 API（OpenAI 兼容 chat completions），pi 为显式备选。
-# API 参数全走 env、全必填、无内置默认；密钥与 URL 零回显。
-EXTRACT_BACKENDS = ("api", "pi")
-API_MAX_TOKENS_DEFAULT = 32768
-
+# 版本门必须先于任何兄弟模块 import（#135）：兄弟模块用 3.10+ 语法（如 `str | None`），
+# 在 <3.10 的解释器上 import 会先 SyntaxError，永远走不到门里。下面三个函数因此只用
+# 标准库、并在兄弟 import 之前定义。
 
 def default_tool_dirs():
     """PATH 之外的常见工具目录：后台 job 常缺 PATH（pi 在 nvm node bin、hc 在 ~/.local/bin）。
@@ -261,6 +215,55 @@ def handle_old_python():
 # （3.9 的 Path.write_text 没有 newline 参数，会在落盘时半路崩）。
 if sys.version_info < (3, 10):
     handle_old_python()
+
+# learning.py 与本脚本同目录；无论 dispatch 被直跑还是经 importlib 加载（部分测试不加
+# sys.path），都先把脚本目录挂上，保证兄弟模块可导入。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import learning  # noqa: E402
+# 兄弟模块（部署单元是 loop/scripts/ 整目录）。依赖方向 dispatch → pipeline →
+# {herdr, turn, learning, errors}，无环；pipeline 不 import 本脚本。
+import pipeline  # noqa: E402
+from errors import DispatchError  # noqa: E402,F401
+from herdr import Herdr, HerdrFailure, NotFound  # noqa: E402,F401  （供测试重导出）
+from pipeline import (  # noqa: E402,F401  （兼容重导出：既有测试零改动，同 turn 先例）
+    ADOPT_POLL_S, ADOPT_TIMEOUT_S, Prestep, PrestepPlan, Route, SpacePlan,
+    check_identity, classify, gate_route, has_internal_newline, identity_ok,
+    parse_space, plan_space, prestep_specs,
+    RESERVED_ID_RE, SESSION_NAME_RE,
+)
+from turn import (  # noqa: E402,F401
+    FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE,
+    closest_fragment, cut_turn, find_session_start_trigger, fold_hits,
+    generate_short_task_name, normalize_paste, utf16_units, verbatim_present,
+    verify_extraction, verify_reply,
+)
+
+# 成功通知投影白名单（ADR-0014，#52 阶段一；ADR-0019 增补完整性标记）：成功通知严格只含这 13 个判读/交回字段，
+# 顺序即下列顺序。error 通知不套白名单、保留发送前完整对象。webhook/webhook_error/
+# webhook_error_detail 是 POST 后才产生的发送诊断，只归全量结果，绝不进投影。
+NOTIFY_SUCCESS_FIELDS = (
+    "ok", "release_id", "target", "needs_user", "questions", "conclusion",
+    "blocked", "rewritten", "run_record", "elapsed_s", "next_skill",
+    "complete", "complete_reason",
+)
+
+# 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
+WEBHOOK_TIMEOUT_S = 10.0
+# webhook 主出口重试退避（共 3 次：首发 + 2 次重试）；全败且用了代理时再直连兜底 1 次。
+WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
+# summary 已移除（原文才是重点）：抽取器若仍多给 summary，投影时直接丢弃，
+# 不算坏行、不进 rewritten。
+# next_skill（ADR-0008 修订，#48）是唯一推测字段：下一轮应使用的纯 skill 名（不带斜杠、
+# 不含参数），候选固定七项；缺失/非字符串/带斜杠/带参数/集外值均宽容投影为 ""，不整轮
+# 报错；不参与逐字校验。格式错误另记 invalid（learning.project_next_skill），供阶段二
+# 统计 invalid_prediction，不得把格式错误算作正确弃答。
+# 顺序即抽取指令里的字段列举顺序（#133 R6：指令由本常量派生，见 _EXTRACT_INSTRUCTION）；
+# 结果载荷的字段序不受影响——reply 被单独取出后，其余五字段的相对顺序不变。
+EXTRACT_FIELDS = ("needs_user", "reply", "questions", "conclusion", "blocked", "next_skill")
+# 抽取后端（ADR-0005）：默认直连 API（OpenAI 兼容 chat completions），pi 为显式备选。
+# API 参数全走 env、全必填、无内置默认；密钥与 URL 零回显。
+EXTRACT_BACKENDS = ("api", "pi")
+API_MAX_TOKENS_DEFAULT = 32768
 
 
 def resolve_extract_backend(env=None):
