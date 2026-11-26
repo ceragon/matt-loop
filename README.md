@@ -6,7 +6,8 @@ tracker.
 
 ## What this is
 
-One skill directory plus one Python script (`loop/scripts/dispatch.py`). A
+One skill directory plus one scripts directory (`loop/scripts/`), the deployment
+unit — `dispatch.py` and its sibling modules are synced together as a whole. A
 caller agent (any LLM agent that can run shell commands) uses it to:
 
 1. send an explicitly released prompt into a running executor-agent terminal
