@@ -656,6 +656,35 @@ def dialog_error(session):
     )
 
 
+# ---------------------------------------------------------------- 等待小件
+
+
+def poll(deps, step, *, deadline, interval, on_timeout):
+    """重复的轮询骨架（ADR-0020 决定 8）：到 deadline 抛调用方给的 on_timeout；
+    step 返回 None 表示继续，返回非 None 即返回值；每轮未落定后 sleep(interval)。
+    时钟全走 Deps（monotonic/sleep）；六个就绪判据留在各具名等待函数里。"""
+    while True:
+        if deps.monotonic() >= deadline:
+            raise on_timeout
+        outcome = step()
+        if outcome is not None:
+            return outcome
+        deps.sleep(interval)
+
+
+def guard(session, *, exited, error):
+    """重复六次的判读（ADR-0020 决定 8）：终端已结束 → 抛调用方传入的 exited；
+    blocked → 既有 dialog_blocked；error → 抛调用方传入的 error。
+    kind 与文案由各阶段传入（逐字不变），helper 不自造。"""
+    if session.state != "live":
+        raise exited
+    state = session.status_state
+    if state == "blocked":
+        raise dialog_error(session)
+    if state == "error":
+        raise error
+
+
 # await_result 阶段：wait_change 包装成 hc_failed；未包装的 get 是显式 PASS
 # （ADR-0020 决定 11 的第二处原生 kind 穿透）。
 _AWAIT_RESULT_RULES = (
@@ -702,6 +731,9 @@ def wait_for_result(deps, herdr, request, baseline, deadline):
             )
         if w.reason == "status":
             state = w.status
+            # 这里只有 wait 事件的 status 字符串、没有 Session，故不走 guard：
+            # blocked 要额外 get 一次才拿得到弹框 kind/msg，而 error 路径基线不发 get
+            # （命令序列是冻结契约）。blocked 仍经同一条 dialog_error 生成。
             if state == "blocked":
                 # 未包装的原生 kind 穿透（ADR-0018 决定 2/9）：get 失败按原 kind 抛出。
                 raise dialog_error(_await_session(herdr, request.target))
@@ -716,13 +748,10 @@ def wait_for_result(deps, herdr, request, baseline, deadline):
             continue
         # timeout（check-in）及其他 reason：用 hc get 兜底核对一次
         g = _await_session(herdr, request.target)
-        if g.state != "live":
-            raise DispatchError("target_exited", "目标终端已结束", ["hc get 查看 reason"])
+        guard(g,
+              exited=DispatchError("target_exited", "目标终端已结束", ["hc get 查看 reason"]),
+              error=DispatchError("target_error", "目标自报 error", ["到目标会话屏幕前查看"]))
         state = g.status_state
-        if state == "blocked":
-            raise dialog_error(g)
-        if state == "error":
-            raise DispatchError("target_error", "目标自报 error", ["到目标会话屏幕前查看"])
         if state in ("idle", "done") and (g.turn or 0) > baseline:
             outcome = settle(deps, herdr, request, g.turn)
             if outcome is not None:
@@ -735,13 +764,10 @@ def settle(deps, herdr, request, wait_turn):
     for _ in range(request.timing.settle_checks):
         deps.sleep(request.timing.settle_seconds)
         g = _await_session(herdr, request.target)
-        if g.state != "live":
-            raise DispatchError("target_exited", "落定复核时目标终端已结束", [])
+        guard(g,
+              exited=DispatchError("target_exited", "落定复核时目标终端已结束", []),
+              error=DispatchError("target_error", "落定复核时目标自报 error", []))
         state = g.status_state
-        if state == "blocked":
-            raise dialog_error(g)
-        if state == "error":
-            raise DispatchError("target_error", "落定复核时目标自报 error", [])
         if state not in ("idle", "done") or (g.turn or 0) != wait_turn:
             return None
     return g
@@ -799,13 +825,10 @@ def reset_settle(deps, herdr, request):
     for _ in range(request.timing.settle_checks):
         deps.sleep(request.timing.settle_seconds)
         g = herdr.session(request.target)
-        if g.state != "live":
-            raise DispatchError("target_exited", "前置落定复核时目标终端已结束", [])
+        guard(g,
+              exited=DispatchError("target_exited", "前置落定复核时目标终端已结束", []),
+              error=DispatchError("target_error", "前置落定复核时目标自报 error", []))
         state = g.status_state
-        if state == "blocked":
-            raise dialog_error(g)
-        if state == "error":
-            raise DispatchError("target_error", "前置落定复核时目标自报 error", [])
         if state not in ("idle", "done"):
             return False
         screen = herdr.read(request.target)
@@ -817,27 +840,24 @@ def reset_settle(deps, herdr, request):
 
 def wait_for_reset(deps, herdr, request, deadline):
     """等前置（/new /clear /compact /model）落定：短轮询 hc get 至 idle/done，再屏幕静置复核。
-    不要求 turn 增长（/clear、/model 可能不增 turn）。前置不抽取、不落 run_record。"""
-    while True:
-        if deps.monotonic() >= deadline:
-            raise DispatchError(
-                "timeout",
-                "前置墙钟超时：目标仍未落定",
-                ["主任务未发送；本轮已停止，可经用户放行后另起一轮"],
-            )
+    不要求 turn 增长（/clear、/model 可能不增 turn）。前置不抽取、不落 run_record。
+    轮询骨架走 poll（ADR-0020 决定 8）；落定判据在本函数里（idle/done＋屏幕静置）。"""
+    def step():
         g = herdr.session(request.target)
-        if g.state != "live":
-            raise DispatchError("target_exited", "前置期间目标终端已结束", ["hc get 查看 reason"])
-        state = g.status_state
-        if state == "blocked":
-            raise dialog_error(g)
-        if state == "error":
-            raise DispatchError("target_error", "前置期间目标自报 error", ["到目标会话屏幕前查看"])
-        if state in ("idle", "done"):
-            if reset_settle(deps, herdr, request):
-                return
-            continue  # 屏幕仍在变（/clear 重绘 / /compact 收尾）：重新复核
-        deps.sleep(RESET_POLL_S)  # working：短轮询
+        guard(g,
+              exited=DispatchError("target_exited", "前置期间目标终端已结束",
+                                   ["hc get 查看 reason"]),
+              error=DispatchError("target_error", "前置期间目标自报 error",
+                                  ["到目标会话屏幕前查看"]))
+        if g.status_state in ("idle", "done") and reset_settle(deps, herdr, request):
+            return True
+        # working 或屏幕仍在变（/clear 重绘 / /compact 收尾）：继续短轮询。
+        return None
+
+    poll(deps, step, deadline=deadline, interval=RESET_POLL_S,
+         on_timeout=DispatchError(
+             "timeout", "前置墙钟超时：目标仍未落定",
+             ["主任务未发送；本轮已停止，可经用户放行后另起一轮"]))
 
 
 # 等 shell / 等 agent 的 get 同是 (session, None)，文案不同，故各一张小表。
@@ -851,33 +871,31 @@ _AGENT_READY_RULES = (
 
 def wait_for_shell_ready(deps, herdr, target, deadline):
     """创建后等 shell 就绪：短轮询 hc get 至 state live＋前台是 shell。
-    刚 run 完名字可能短暂未解析（not_found 继续等）；终端结束/超时→launch_failed。"""
-    while True:
-        if deps.monotonic() >= deadline:
-            raise DispatchError("launch_failed", "等新终端 shell 就绪超时",
-                                ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
+    刚 run 完名字可能短暂未解析（not_found 继续等）；终端结束/超时→launch_failed。
+    轮询骨架走 poll（ADR-0020 决定 8）；就绪判据在本函数里。"""
+    def step():
         try:
             g = herdr.session(target)
         except NotFound:
-            deps.sleep(RESET_POLL_S)
-            continue
+            return None  # 名字片刻未解析：继续等
         except HerdrFailure as e:
             raise translate(e, _SHELL_READY_RULES)
         if g.state != "live":
             raise DispatchError("launch_failed", "新终端 shell 就绪前已结束",
                                 ["hc get 查看 reason；经用户放行后另起一轮"])
-        if g.is_shell():
-            return g
-        deps.sleep(RESET_POLL_S)
+        return g if g.is_shell() else None
+
+    return poll(deps, step, deadline=deadline, interval=RESET_POLL_S,
+                on_timeout=DispatchError(
+                    "launch_failed", "等新终端 shell 就绪超时",
+                    ["主任务未发送；本轮已停止，可经用户放行后另起一轮"]))
 
 
 def wait_for_agent_ready(deps, herdr, target, deadline):
     """等 agent 就绪：前台不再是 shell 且状态 idle/done。超时/终端结束→launch_failed；
-    弹框/error 照常抛（既有 kind 不动）。返回就绪时的 Session。"""
-    while True:
-        if deps.monotonic() >= deadline:
-            raise DispatchError("launch_failed", "等 agent 就绪超时（启动命令已发）",
-                                ["主任务未发送；本轮已停止，可经用户放行后另起一轮"])
+    弹框/error 照常抛（既有 kind 不动）。返回就绪时的 Session。
+    轮询骨架走 poll（ADR-0020 决定 8）；就绪判据在本函数里。"""
+    def step():
         try:
             g = herdr.session(target)
         except NotFound:
@@ -886,17 +904,19 @@ def wait_for_agent_ready(deps, herdr, target, deadline):
                                 ["hc get 按 t 号查看 reason；经用户放行后另起一轮"])
         except HerdrFailure as e:
             raise translate(e, _AGENT_READY_RULES)
-        if g.state != "live":
-            raise DispatchError("launch_failed", "agent 启动期间终端已结束",
-                                ["hc get 查看 reason；经用户放行后另起一轮"])
-        state = g.status_state
-        if state == "blocked":
-            raise dialog_error(g)
-        if state == "error":
-            raise DispatchError("target_error", "新 agent 自报 error", ["到目标会话屏幕前查看"])
-        if not g.is_shell() and state in ("idle", "done"):
+        guard(g,
+              exited=DispatchError("launch_failed", "agent 启动期间终端已结束",
+                                   ["hc get 查看 reason；经用户放行后另起一轮"]),
+              error=DispatchError("target_error", "新 agent 自报 error",
+                                  ["到目标会话屏幕前查看"]))
+        if not g.is_shell() and g.status_state in ("idle", "done"):
             return g
-        deps.sleep(RESET_POLL_S)
+        return None
+
+    return poll(deps, step, deadline=deadline, interval=RESET_POLL_S,
+                on_timeout=DispatchError(
+                    "launch_failed", "等 agent 就绪超时（启动命令已发）",
+                    ["主任务未发送；本轮已停止，可经用户放行后另起一轮"]))
 
 
 # 启动命令用裸 send（guard=None，stage=None）：外部 kind 是 launch_failed。
