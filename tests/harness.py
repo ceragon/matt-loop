@@ -4,14 +4,22 @@
 run(...) 只做一件事：装配依赖对象、调用分发脚本入口、把返回码与产物整理成
 测试可断言的东西。不解释业务含义。
 
-全局副作用纪律（ADR-0016 决定 7）：时钟、环境变量、工具定位全走 Deps 注入，
-不写 os.environ。残留洞——reset_settle 与 resolve_space_id_for_learning 仍读
-模块级 hc_json/app_json/time，check_structure_and_tools 仍读模块级 find_tool
-（收口归管线片 P2）——在作用域内替换、退出无条件恢复，不留共享污染。
+全局副作用纪律（ADR-0016 决定 7）：时钟、环境变量、工具定位全走 Deps 注入。
+残留洞在作用域内替换、退出无条件恢复，不留共享污染（清单随收口逐项删除）：
+  - reset_settle 与 resolve_space_id_for_learning 仍读模块级 hc_json/app_json/time，
+    check_structure_and_tools 仍读模块级 find_tool（收口归管线片 P2）。
+  - learning.enabled/learning_dir 与默认抽取链的环境读者直读 os.environ（绕过 Deps.env）：
+    合并后的 env 映射作用域内应用到 os.environ（设置＋退出恢复原值、原本不存在的键退出
+    删除）。这是 ADR-0016 决定 7 学习环境洞例外的延伸，随 ⑤/P2 收口退役；同时堵住
+    T3 实证的真学习目录污染。
+  - 默认抽取链（extract_via_api/extract_via_pi）读模块级 webhook_open/run_cmd（绕过 Deps）：
+    调用方注入 http_open/run_cmd 时作用域内替换模块级 webhook_open/run_cmd，退出无条件
+    恢复；随 P2 收口退役。
 """
 import contextlib
 import io
 import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -58,7 +66,7 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
     """装配 Deps、跑一轮 dispatch.main、整理返回码与产物。
 
     world：FakeHerdr（两个命令层入口填进 Deps 的 hc_json/app_json 字段）。
-    env：隔离环境变量映射（合并 DEFAULT_ENV，不写 os.environ）。
+    env：隔离环境变量映射（合并 DEFAULT_ENV，作用域内应用到 os.environ、退出恢复原样）。
     extract/locate/http_open/run_cmd：可选依赖覆盖；clock 缺省虚拟时钟。
     返回 SimpleNamespace：rc、stdout、stderr、result（stdout JSON）、
     ledger/notify（落盘 JSON，存在才读）、各产物路径与 loop_dir。
@@ -75,20 +83,33 @@ def run(argv, *, world, env=None, extract=None, locate=None, http_open=None,
                          env=env_map, locate=locate, http_open=http_open,
                          run_cmd=run_cmd, extract=extract)
     # 残留全局洞的作用域内覆盖（模块 docstring 所列），退出无条件恢复。
-    # 临时产物：这四行 dispatch.<名> = 赋值随 P2 收口残留洞后删除；T4 立测试侧
-    # 棘轮时本文件须进白名单（ADR-0021 决定 4），白名单只许缩小。
-    saved = (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool)
+    # 临时产物：这些 dispatch.<名> = 赋值与 os.environ 写入随 P2/⑤ 收口残留洞后删除；
+    # T4 立测试侧棘轮时本文件须进白名单（ADR-0021 决定 4），白名单只许缩小。
+    saved = (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
+             dispatch.webhook_open, dispatch.run_cmd)
+    saved_env = {k: os.environ.get(k) for k in env_map}
     dispatch.hc_json = world.hc_json
     dispatch.app_json = world.app_json
     dispatch.time = types.SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep)
     dispatch.find_tool = locate
+    if http_open is not None:
+        dispatch.webhook_open = http_open
+    if run_cmd is not None:
+        dispatch.run_cmd = run_cmd
     out, err = io.StringIO(), io.StringIO()
     try:
+        for k, v in env_map.items():
+            os.environ[k] = v
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = dispatch.main(list(argv), deps=deps)
     finally:
-        (dispatch.hc_json, dispatch.app_json,
-         dispatch.time, dispatch.find_tool) = saved
+        (dispatch.hc_json, dispatch.app_json, dispatch.time, dispatch.find_tool,
+         dispatch.webhook_open, dispatch.run_cmd) = saved
+        for k, old in saved_env.items():
+            if old is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = old
     stdout = out.getvalue()
     result = json.loads(stdout.strip()) if stdout.strip() else None
     loop_dir = _argv_value(argv, "--loop-dir")

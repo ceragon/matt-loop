@@ -37,6 +37,7 @@ class FakeHerdr:
         self.hc_calls = []           # 每次 hc 调用的完整 args
         self.app_calls = []          # 每次 app 调用的完整 args
         self._screens = {}           # address -> read 屏幕文本
+        self._screen_seq = {}        # address -> 待消费屏幕序列（read 逐次取一条）
         self._launch = None          # (启动命令文本, 效果)
         self._fails = []             # 故障旋钮声明（命令, 模式, 参数）
         self._delays = []            # 延迟旋钮声明（同形）
@@ -99,6 +100,14 @@ class FakeHerdr:
     def screen(self, address, text):
         """场景方法：摆 read 回读的屏幕文本。"""
         self._screens[address] = text
+
+    def screen_sequence(self, address, texts):
+        """场景方法：摆一串屏幕文本，read 逐次消费一条；序列耗尽后重复最后一条。
+        使「先变后静置」可在 CLI 缝构造（前置落定复核：屏幕一直变→未落定，静置→落定）。
+        返回形状不变（仍是一条 ReadResult），契约自检照过。"""
+        if not texts:
+            raise ValueError("屏幕序列不能为空")
+        self._screen_seq[address] = list(texts)
 
     def will_launch(self, text, effect="agent"):
         """场景方法：shell 收到启动命令文本后的世界反应。
@@ -304,8 +313,12 @@ class FakeHerdr:
                    "children": []}
         elif cmd == "read":
             d = self._require(args[1])
-            ret = {"text": self._screens.get(d["address"], ""),
-                   "complete": True, "how": "screen", "why": None}
+            seq = self._screen_seq.get(d["address"])
+            if seq is not None:
+                text = seq.pop(0) if len(seq) > 1 else seq[0]
+            else:
+                text = self._screens.get(d["address"], "")
+            ret = {"text": text, "complete": True, "how": "screen", "why": None}
         else:
             raise AssertionError("unexpected hc cmd: " + cmd)
         contract.check("hc." + cmd, ret)

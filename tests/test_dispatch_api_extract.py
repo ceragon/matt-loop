@@ -15,9 +15,15 @@
     响应缺 content/非 JSON→extraction_invalid。密钥与 URL 不进 stdout/result/stderr。
   6 pi 备选回归：backend=pi 走 extract_via_pi（mock run_cmd），--pi-model 透传，
     result extract_backend=pi。
+
+T4（ADR-0021）：本文件业务用例已迁 FakeHerdr＋harness.run（唯一 CLI 缝）；后端专项用例把
+真实抽取入口 dispatch.extract 作为 extract 依赖传入，经 harness 残留洞吸收（env 应用到
+os.environ、注入 http_open/run_cmd 替换模块级）密闭跑真实抽取链。下方 FakeHc、FakeResp、
+env、api_env 与 PROMPT/SCREEN/EXT/BASE/KEY/MODEL 是**残留兼容面**，供未迁消费方
+（next_skill/learning/turn_cut）跨文件 import，原地保留、随 R 删除；棘轮白名单在册。
+无人引用的旧跑用例助手 run_main/ok_payload 已在本片删除。
 """
 import contextlib
-import io
 import json
 import os
 import subprocess
@@ -28,7 +34,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
-from test_dispatch_reset import FakeApp  # noqa: E402
+import harness  # noqa: E402
+from fake_herdr import FakeHerdr  # noqa: E402
 
 PROMPT = "请实现某个功能\n第二行说明"
 ANCHOR = PROMPT.splitlines()[0][:24]
@@ -42,6 +49,9 @@ ENV_KEYS = ["LOOP_EXTRACT_BACKEND", "LOOP_API_BASE", "LOOP_API_KEY",
             "LOOP_API_MODEL", "LOOP_API_MAX_TOKENS"]
 
 
+# ---- 残留兼容面（随 R 删）：env/api_env 环境写入助手与旧桩，供未迁消费方跨文件 import ----
+# 本文件 main() 已迁 harness（环境经注入 dict / harness env，不再写 os.environ）；保留仅为
+# 消费方（next_skill/learning/turn_cut import env/api_env/FakeHc/FakeResp/常量）。棘轮白名单在册。
 @contextlib.contextmanager
 def env(**kw):
     old = {k: os.environ.pop(k, None) for k in ENV_KEYS}
@@ -101,73 +111,68 @@ class FakeResp:
         return False
 
 
-def ok_payload():
+def _world():
+    """既有 idle agent t99＋main 空间 pane 已在＋稳定屏幕（回读逐字校验语料）。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t99"])
+    w.screen("t99", SCREEN)
+    return w
+
+
+def _argv(td, rid, extra=()):
+    pf = Path(td) / "prompt.md"
+    pf.write_text(PROMPT, encoding="utf-8")
+    return ["--target", "t99", "--release-id", rid,
+            "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
+            "--space", "main", "--wall-clock", "5", "--check-in", "1",
+            "--settle-seconds", "0.01", "--settle-checks", "2", *extra]
+
+
+def _api_env(**kw):
+    # LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入
+    # 覆盖宿主可能导出的同名键，保住「默认 max_tokens」断言的隔离（退出恢复）。
+    d = {"LOOP_EXTRACT_BACKEND": "api", "LOOP_API_BASE": BASE + "/",
+         "LOOP_API_KEY": KEY, "LOOP_API_MODEL": MODEL, "LOOP_API_MAX_TOKENS": ""}
+    d.update(kw)
+    return d
+
+
+def _ok_payload():
     return {"choices": [{"message": {"content": json.dumps(EXT, ensure_ascii=False)}}]}
 
 
-def run_main(td, fake, rid, extra_argv=(), which_pi=True):
-    pf = Path(td) / "prompt.md"
-    pf.write_text(PROMPT, encoding="utf-8")
-    ld = Path(td) / ".loop"
-    argv = ["--target", "t99", "--release-id", rid,
-            "--prompt-file", str(pf), "--loop-dir", str(ld),
-            "--space", "main",
-            "--wall-clock", "5", "--check-in", "1",
-            "--settle-seconds", "0.01", "--settle-checks", "2", *extra_argv]
-    dispatch.hc_json = fake
-    dispatch.app_json = FakeApp()
-    dispatch.check_structure_and_tools = lambda: None
-    dispatch.shutil.which = lambda name: ("/fake/" + name) if (name != "pi" or which_pi) else None
-    dispatch.time.sleep = lambda s: None
-    dispatch.webhook_proxy_resolution = lambda url: ({}, "none")
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = dispatch.main(argv)
-    result = json.loads(out.getvalue().strip())
-    ledger_path = ld / "runs" / (rid + ".json")
-    return rc, result, ledger_path, out.getvalue(), err.getvalue()
-
-
 def main():
-    # 1 后端解析
-    with env():
-        assert dispatch.resolve_extract_backend() == "api"
-    with env(LOOP_EXTRACT_BACKEND="pi"):
-        assert dispatch.resolve_extract_backend() == "pi"
-    with env(LOOP_EXTRACT_BACKEND=" API "):
-        assert dispatch.resolve_extract_backend() == "api"
-    with env(LOOP_EXTRACT_BACKEND="foo"):
-        try:
-            dispatch.resolve_extract_backend()
-            raise AssertionError("should raise")
-        except dispatch.DispatchError as e:
-            assert e.kind == "bad_extract_backend" and e.returncode == 2
+    # 1 后端解析（纯函数直调，注入显式 env dict，零全局副作用）
+    assert dispatch.resolve_extract_backend({}) == "api"
+    assert dispatch.resolve_extract_backend({"LOOP_EXTRACT_BACKEND": "pi"}) == "pi"
+    assert dispatch.resolve_extract_backend({"LOOP_EXTRACT_BACKEND": " API "}) == "api"
+    try:
+        dispatch.resolve_extract_backend({"LOOP_EXTRACT_BACKEND": "foo"})
+        raise AssertionError("should raise")
+    except dispatch.DispatchError as e:
+        assert e.kind == "bad_extract_backend" and e.returncode == 2
     print("1 backend resolution ok")
 
-    # 2 启动预检：缺 env，零发送无台账
-    with env(LOOP_EXTRACT_BACKEND="api"):
-        with tempfile.TemporaryDirectory() as td:
-            fake = FakeHc()
-            rc, res, lp, out, err = run_main(td, fake, "api-pre-1")
-            assert rc == 2 and res["error"]["kind"] == "api_not_configured", res
-            for n in ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL"):
-                assert n in res["error"]["message"]
-            assert fake.sends == [] and not lp.exists()
-    with api_env(LOOP_API_MAX_TOKENS="abc"):
+    # 2 启动预检：缺 env，零发送无台账（经 harness env 注入）
+    w = _world()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "api-pre-1"), world=w,
+                        env={"LOOP_EXTRACT_BACKEND": "api"})
+        assert r.rc == 2 and r.result["error"]["kind"] == "api_not_configured", r.result
+        for n in ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL"):
+            assert n in r.result["error"]["message"]
+        assert w.sends == [] and r.ledger is None
+    for bad in ("abc", "0"):
         try:
-            dispatch.api_config()
+            dispatch.api_config(_api_env(LOOP_API_MAX_TOKENS=bad))
             raise AssertionError("should raise")
         except dispatch.DispatchError as e:
             assert e.kind == "bad_api_max_tokens" and e.returncode == 2
-    with api_env(LOOP_API_MAX_TOKENS="0"):
-        try:
-            dispatch.api_config()
-            raise AssertionError("should raise")
-        except dispatch.DispatchError as e:
-            assert e.kind == "bad_api_max_tokens"
     print("2 startup preflight ok")
 
-    # 3+4 请求形状与成功契约（api 路径不找 pi）
+    # 3+4 请求形状与成功契约（真实抽取链经 harness 残留洞吸收密闭跑；api 路径不找 pi）
     captured = {}
 
     def fake_open(req, timeout, proxies):
@@ -175,40 +180,42 @@ def main():
         captured["headers"] = dict(req.header_items())
         captured["body"] = json.loads(req.data.decode("utf-8"))
         captured["timeout"] = timeout
-        captured["proxies"] = proxies
-        return FakeResp(ok_payload())
+        # proxies 原样收下但不自证其值：代理决议读真实机器环境（机器相关），归 webhook 套件（T5）。
+        return FakeResp(_ok_payload())
 
-    dispatch.webhook_open = fake_open
-    with api_env():
-        with tempfile.TemporaryDirectory() as td:
-            fake = FakeHc()
-            rc, res, lp, out, err = run_main(td, fake, "api-ok-1", which_pi=False)
-            assert rc == 0 and res["ok"], res
-            assert res["extract_backend"] == "api"
-            led = json.loads(lp.read_text(encoding="utf-8"))
-            assert led["params"]["extract_backend"] == "api"
-            assert captured["url"] == BASE + "/chat/completions"
-            assert captured["headers"].get("Authorization") == "Bearer " + KEY
-            b = captured["body"]
-            assert b["model"] == MODEL and b["temperature"] == 0
-            assert b["max_tokens"] == 32768
-            assert "stream" not in b and "response_format" not in b
-            assert b["messages"][0]["role"] == "system"
-            assert b["messages"][0]["content"] == (
-                Path(dispatch.__file__).resolve().parent.parent / "prompts" / "extract.md"
-            ).read_text(encoding="utf-8")
-            assert b["messages"][1]["role"] == "user"
-            assert SCREEN in b["messages"][1]["content"]
-            assert captured["timeout"] == 1200.0
-            assert res["needs_user"] is False and res["questions"] == []
-            assert fake.sends == [(PROMPT, True)]
-    with api_env(LOOP_API_MAX_TOKENS="8192"):
-        with tempfile.TemporaryDirectory() as td:
-            rc, res, _, _, _ = run_main(td, FakeHc(), "api-ok-2")
-            assert rc == 0 and captured["body"]["max_tokens"] == 8192
+    w = _world()
+    with tempfile.TemporaryDirectory() as td:
+        # api 路径不找 pi 的缝上重述：本轮经网络出口（http_open）跑通、未注入 run_cmd，
+        # 若走 pi 子进程会撞真实 run_cmd 而失败——成功＋captured 请求即证 api 直连。
+        r = harness.run(_argv(td, "api-ok-1"), world=w, env=_api_env(),
+                        extract=dispatch.extract, http_open=fake_open)
+        assert r.rc == 0 and r.result["ok"], r.result
+        assert r.result["extract_backend"] == "api"
+        assert r.ledger["params"]["extract_backend"] == "api"
+        assert captured["url"] == BASE + "/chat/completions"
+        assert captured["headers"].get("Authorization") == "Bearer " + KEY
+        b = captured["body"]
+        assert b["model"] == MODEL and b["temperature"] == 0
+        assert b["max_tokens"] == 32768
+        assert "stream" not in b and "response_format" not in b
+        assert b["messages"][0]["role"] == "system"
+        assert b["messages"][0]["content"] == (
+            Path(dispatch.__file__).resolve().parent.parent / "prompts" / "extract.md"
+        ).read_text(encoding="utf-8")
+        assert b["messages"][1]["role"] == "user"
+        assert SCREEN in b["messages"][1]["content"]
+        assert captured["timeout"] == 1200.0
+        assert r.result["needs_user"] is False and r.result["questions"] == []
+        assert w.sends == [("t99", PROMPT, True)]
+    w = _world()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "api-ok-2"), world=w,
+                        env=_api_env(LOOP_API_MAX_TOKENS="8192"),
+                        extract=dispatch.extract, http_open=fake_open)
+        assert r.rc == 0 and captured["body"]["max_tokens"] == 8192
     print("3+4 request shape and success contract ok")
 
-    # 5 错误映射＋零回显
+    # 5 错误映射＋零回显（注入 http_open 抛错，真实抽取链映射）
     def raising_open(exc):
         def f(req, timeout, proxies):
             raise exc
@@ -222,45 +229,40 @@ def main():
         (urllib.error.URLError(ConnectionRefusedError()), 1, "extraction_failed", "API URLError"),
     ]
     for i, (exc, rc_want, kind, msg) in enumerate(cases):
-        dispatch.webhook_open = raising_open(exc)
-        with api_env():
-            with tempfile.TemporaryDirectory() as td:
-                rc, res, _, out, err = run_main(td, FakeHc(), f"api-err-{i}")
-                assert rc == rc_want and res["error"]["kind"] == kind, (kind, res)
-                if msg:
-                    assert msg in res["error"]["message"]
-                for s in (out, err, json.dumps(res, ensure_ascii=False)):
-                    assert KEY not in s and "gw.example" not in s, "密钥/URL 回显"
-    dispatch.webhook_open = lambda req, timeout, proxies: FakeResp({})
-    with api_env():
+        w = _world()
         with tempfile.TemporaryDirectory() as td:
-            rc, res, _, _, _ = run_main(td, FakeHc(), "api-bad-1")
-            assert rc == 1 and res["error"]["kind"] == "extraction_invalid", res
-    dispatch.webhook_open = lambda req, timeout, proxies: FakeResp(
-        {"choices": [{"message": {"content": "不是 JSON"}}]})
-    with api_env():
+            r = harness.run(_argv(td, f"api-err-{i}"), world=w, env=_api_env(),
+                            extract=dispatch.extract, http_open=raising_open(exc))
+            assert r.rc == rc_want and r.result["error"]["kind"] == kind, (kind, r.result)
+            if msg:
+                assert msg in r.result["error"]["message"]
+            for s in (r.stdout, r.stderr, json.dumps(r.result, ensure_ascii=False)):
+                assert KEY not in s and "gw.example" not in s, "密钥/URL 回显"
+    for payload in ({}, {"choices": [{"message": {"content": "不是 JSON"}}]}):
+        w = _world()
         with tempfile.TemporaryDirectory() as td:
-            rc, res, _, _, _ = run_main(td, FakeHc(), "api-bad-2")
-            assert rc == 1 and res["error"]["kind"] == "extraction_invalid", res
+            r = harness.run(_argv(td, "api-bad"), world=w, env=_api_env(),
+                            extract=dispatch.extract,
+                            http_open=lambda req, timeout, proxies: FakeResp(payload))
+            assert r.rc == 1 and r.result["error"]["kind"] == "extraction_invalid", r.result
     print("5 error mapping and zero-echo ok")
 
-    # 6 pi 备选回归
+    # 6 pi 备选回归（注入 run_cmd，真实 extract_via_pi 链）
     pi_argv = {}
 
     def fake_run_cmd(argv, timeout):
         pi_argv["argv"] = argv
         return subprocess.CompletedProcess(argv, 0, json.dumps(EXT, ensure_ascii=False), "")
 
-    dispatch.run_cmd = fake_run_cmd
-    with env(LOOP_EXTRACT_BACKEND="pi"):
-        with tempfile.TemporaryDirectory() as td:
-            rc, res, lp, _, _ = run_main(td, FakeHc(), "pi-reg-1",
-                                         extra_argv=("--pi-model", "m1"))
-            assert rc == 0 and res["ok"] and res["extract_backend"] == "pi", res
-            assert "--model" in pi_argv["argv"] and "m1" in pi_argv["argv"]
-            assert "--no-tools" in pi_argv["argv"]
-            led = json.loads(lp.read_text(encoding="utf-8"))
-            assert led["params"]["extract_backend"] == "pi"
+    w = _world()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "pi-reg-1", extra=("--pi-model", "m1")), world=w,
+                        env={"LOOP_EXTRACT_BACKEND": "pi"},
+                        extract=dispatch.extract, run_cmd=fake_run_cmd)
+        assert r.rc == 0 and r.result["ok"] and r.result["extract_backend"] == "pi", r.result
+        assert "--model" in pi_argv["argv"] and "m1" in pi_argv["argv"]
+        assert "--no-tools" in pi_argv["argv"]
+        assert r.ledger["params"]["extract_backend"] == "pi"
     print("6 pi fallback regression ok")
 
     print("ALL OK")

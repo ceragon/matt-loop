@@ -7,7 +7,12 @@
   2 reset=clear：先发 /clear、落定后再发主任务，共两条；台账/result 记 reset。
   3 前置拒发（非 done）：整轮停，主任务未发，reset_sent=False。
   4 前置已发、主任务拒发：部分状态，reset_sent=True。
-  5 reset_settle：屏幕仍在变→未落定；屏幕静置→落定。
+  5 前置落定复核（CLI 对照对，T4 缝上重述）：屏幕一直变＋--reset→前置墙钟 timeout、
+    主任务未发、台账 error phase；屏幕先变后静置→落定 done。
+
+T4（ADR-0021）：本文件业务用例已迁 FakeHerdr＋harness.run（唯一 CLI 缝）。下方 FakeHc、
+FakeApp、run_case 与 PROMPT/SCREEN/ANCHOR/EXT、import 期环境写入是**残留兼容面**，供未迁
+消费方跨文件 import 活着，原地保留、随 R（最后一个消费方迁完）删除；棘轮白名单在册。
 """
 import contextlib
 import io
@@ -19,6 +24,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
 import os  # noqa: E402
+import harness  # noqa: E402
+from fake_herdr import FakeHerdr  # noqa: E402
+# 残留兼容面（随 R 删）：import 期环境写入，供靠它隔离的未迁消费方（webhook、turn_cut 等）。
 # 本文件 mock extract，走 pi 后端保持旧行为（ADR-0005 起默认 api 直连）。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
 # 测试隔离：学习默认开启（ADR-0012），既有套件不测学习、也不碰真实学习目录，统一关闭。
@@ -33,6 +41,9 @@ EXT = {"needs_user": False, "questions": [],
        "conclusion": "", "blocked": "", "reply": SCREEN, "next_skill": ""}
 
 
+# ---- 残留兼容面（随 R 删）：旧桩与跑用例助手，供未迁消费方跨文件 import ----
+# 本文件 main() 已不再使用它们；保留仅为消费方（anchor_path/notify/learning/no_summary/
+# webhook_diag/turn_cut/webhook 等 import FakeHc/FakeApp/run_case）。棘轮白名单在册。
 class FakeHc:
     def __init__(self, state="idle", refuse_nth=None, refuse_kind="status_mismatch"):
         self.sends = []          # (text, if_idle)
@@ -281,76 +292,115 @@ def run_case(reset_arg, fake, rid):
         return rc, result, ledger
 
 
+def _world():
+    """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋稳定屏幕。"""
+    w = FakeHerdr()
+    w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t99"])
+    w.screen("t99", SCREEN)
+    return w
+
+
+def _argv(td, rid, reset=None, wall_clock="5", settle_seconds="0.01", settle_checks="2"):
+    pf = Path(td) / "prompt.md"
+    pf.write_text(PROMPT, encoding="utf-8")
+    a = ["--target", "t99", "--release-id", rid,
+         "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
+         "--space", "main", "--wall-clock", wall_clock, "--check-in", "1",
+         "--settle-seconds", settle_seconds, "--settle-checks", settle_checks]
+    if reset is not None:
+        a += ["--reset", reset]
+    return a
+
+
+def _ext(pi_bin, args, turn_path):
+    return dict(EXT)
+
+
 def main():
     # 1 向后兼容：不传 --reset
-    fake = FakeHc()
-    rc, res, led = run_case(None, fake, "reset-compat-1")
-    assert rc == 0 and res["ok"], res
-    assert fake.sends == [(PROMPT, True)], fake.sends
-    assert res["reset"] == "none" and led["reset"] == "none"
-    assert "reset_send" not in led
+    w = _world()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "reset-compat-1"), world=w, extract=_ext)
+    assert r.rc == 0 and r.result["ok"], r.result
+    assert w.sends == [("t99", PROMPT, True)], w.sends
+    assert r.result["reset"] == "none" and r.ledger["reset"] == "none"
+    assert "reset_send" not in r.ledger
     print("1 backward-compat (no --reset): single main send ok")
 
     # 1b --reset none 显式
-    fake = FakeHc()
-    rc, res, led = run_case("none", fake, "reset-compat-2")
-    assert rc == 0 and fake.sends == [(PROMPT, True)] and res["reset"] == "none"
+    w = _world()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "reset-compat-2", reset="none"), world=w, extract=_ext)
+    assert r.rc == 0 and w.sends == [("t99", PROMPT, True)] and r.result["reset"] == "none"
     print("1b --reset none: single main send ok")
 
     # 2 reset=clear：两条发送，前置在前
-    fake = FakeHc()
-    rc, res, led = run_case("clear", fake, "reset-clear-1")
-    assert rc == 0 and res["ok"], res
-    assert fake.sends == [("/clear", True), (PROMPT, True)], fake.sends
-    assert res["reset"] == "clear" and led["reset"] == "clear"
-    assert led.get("reset_send") and led.get("reset_done_at"), led
-    assert led["phase"] == "done"
+    w = _world()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "reset-clear-1", reset="clear"), world=w, extract=_ext)
+    assert r.rc == 0 and r.result["ok"], r.result
+    assert w.sends == [("t99", "/clear", True), ("t99", PROMPT, True)], w.sends
+    assert r.result["reset"] == "clear" and r.ledger["reset"] == "clear"
+    assert r.ledger.get("reset_send") and r.ledger.get("reset_done_at"), r.ledger
+    assert r.ledger["phase"] == "done"
     print("2 reset=clear: /clear then main, ledger/result record reset ok")
 
     # 2b reset=new / compact 也发对应字面命令
-    for r in ("new", "compact"):
-        fake = FakeHc()
-        rc, res, led = run_case(r, fake, "reset-lit-" + r)
-        assert rc == 0 and fake.sends[0] == ("/" + r, True), (r, fake.sends)
-        assert res["reset"] == r
+    for rst in ("new", "compact"):
+        w = _world()
+        with tempfile.TemporaryDirectory() as td:
+            r = harness.run(_argv(td, "reset-lit-" + rst, reset=rst), world=w, extract=_ext)
+        assert r.rc == 0 and w.sends[0] == ("t99", "/" + rst, True), (rst, w.sends)
+        assert r.result["reset"] == rst
     print("2b reset=new/compact: literal /new /compact ok")
 
     # 3 前置拒发（复核非 done）：整轮停，主任务未发
-    fake = FakeHc(state="idle", refuse_nth=1)
-    rc, res, led = run_case("clear", fake, "reset-refuse-pre")
-    assert rc == 1 and not res["ok"], res
-    assert res["error"]["kind"] == "send_refused", res
-    assert res["reset"] == "clear" and res["error"]["reset_sent"] is False
-    assert fake.sends == [], fake.sends
-    assert led["phase"].startswith("error:")
+    w = _world()
+    w.fail("send", "error", kind="status_mismatch", nth=1)
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "reset-refuse-pre", reset="clear"), world=w, extract=_ext)
+    assert r.rc == 1 and not r.result["ok"], r.result
+    assert r.result["error"]["kind"] == "send_refused", r.result
+    assert r.result["reset"] == "clear" and r.result["error"]["reset_sent"] is False
+    assert w.sends == [], w.sends
+    assert r.ledger["phase"].startswith("error:")
     print("3 pre-step refused: round aborts, main not sent, reset_sent=False ok")
 
     # 4 前置已发、主任务拒发：部分状态 reset_sent=True
-    fake = FakeHc(state="idle", refuse_nth=2)
-    rc, res, led = run_case("clear", fake, "reset-refuse-main")
-    assert rc == 1 and not res["ok"], res
-    assert res["error"]["kind"] == "send_refused", res
-    assert res["reset"] == "clear" and res["error"]["reset_sent"] is True
-    assert fake.sends == [("/clear", True)], fake.sends
-    assert led.get("reset_done_at"), led   # 前置确已落定
+    w = _world()
+    w.fail("send", "error", kind="status_mismatch", nth=2)
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "reset-refuse-main", reset="clear"), world=w, extract=_ext)
+    assert r.rc == 1 and not r.result["ok"], r.result
+    assert r.result["error"]["kind"] == "send_refused", r.result
+    assert r.result["reset"] == "clear" and r.result["error"]["reset_sent"] is True
+    assert w.sends == [("t99", "/clear", True)], w.sends
+    assert r.ledger.get("reset_done_at"), r.ledger   # 前置确已落定
     print("4 pre-step sent, main refused: partial state reset_sent=True ok")
 
-    # 5 reset_settle：屏幕变化→未落定；静置→落定
-    class Args:
-        settle_checks = 2
-        settle_seconds = 0
-        target = "t99"
-    screens = iter(["a", "b", "c"])     # 一直在变
-    dispatch.hc_json = lambda hc_bin, args, ts: (
-        {"state": "live", "status": {"state": "idle"}, "turn": 5}
-        if args[0] == "get" else {"text": next(screens)})
-    dispatch.time.sleep = lambda s: None
-    assert dispatch.reset_settle("/fake/hc", Args()) is False
-    dispatch.hc_json = lambda hc_bin, args, ts: (
-        {"state": "live", "status": {"state": "idle"}, "turn": 5}
-        if args[0] == "get" else {"text": "stable"})
-    assert dispatch.reset_settle("/fake/hc", Args()) is True
-    print("5 reset_settle: changing screen not settled, stable screen settled ok")
+    # 5 前置落定复核（CLI 对照对，缝上重述）：屏幕一直变→前置墙钟 timeout、主任务未发；
+    #   屏幕先变后静置→落定 done。reset_settle 函数本体不动（残留洞随 P2 收口）。
+    # 5a 屏幕一直变＋--reset：复核窗口内屏幕逐次不同，虚拟墙钟耗尽→timeout。
+    w = _world()
+    w.screen_sequence("t99", ["变一", "变二", "变三"])
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "reset-settle-change", reset="clear",
+                              wall_clock="0.05", settle_seconds="1", settle_checks="2"),
+                        world=w, extract=_ext)
+    assert r.rc == 1 and r.result["error"]["kind"] == "timeout", r.result
+    assert w.sends == [("t99", "/clear", True)], w.sends   # 主任务未发
+    assert r.ledger["phase"] == "error:timeout", r.ledger
+    # 5b 屏幕先变后静置：序列耗尽重复最后一条→静置落定→主任务发送→done。
+    w = _world()
+    w.screen_sequence("t99", ["变一", "变二", SCREEN])
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(_argv(td, "reset-settle-stable", reset="clear"), world=w, extract=_ext)
+    assert r.rc == 0 and r.result["ok"], r.result
+    assert w.sends == [("t99", "/clear", True), ("t99", PROMPT, True)], w.sends
+    assert r.ledger["phase"] == "done" and r.ledger.get("reset_done_at"), r.ledger
+    print("5 settle recheck (CLI pair): changing->timeout/main unsent, settling->done ok")
 
     print("all reset tests passed")
 

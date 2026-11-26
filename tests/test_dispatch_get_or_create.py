@@ -2,8 +2,11 @@
 """test_dispatch_get_or_create.py — 命名会话 get-or-create 分流测试（ADR-0009，mock hc/herdr-app）。
 
 跑法：python3 tests/test_dispatch_get_or_create.py
-缝：分发脚本 CLI 契约（进程内 import dispatch，hc_json→NamedFakeHc、app_json→FakeApp，
-tempdir 跑 main）；断言只认 stdout 一行 JSON、退出码、台账、桩调用日志。
+缝：唯一业务缝 harness.run（CLI 契约，T4/ADR-0021）；场景用 FakeHerdr 世界方法与三类旋钮
+构造，断言只认 stdout 一行 JSON、退出码、台账/result 文件、假世界 sends/hc_calls/app_calls 日志。
+下方 NamedFakeHc、run_case 与 PROMPT/SCREEN/EXT/LAUNCH/NAME/DISPLAY、import 期环境写入是
+**残留兼容面**，供未迁消费方（adopt/lifecycle/display_name/space）跨文件 import，原地保留、
+随 R（最后一个消费方迁完）删除；棘轮白名单在册。
 覆盖：
   1 CLI 静态契约：--launch/--cwd 成对（单传 bad_args rc2）；--switch-agent/--exit-command/
     --exit-keys 已移除（argparse 拒）。
@@ -30,12 +33,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "loop" / "scripts"))
 import dispatch  # noqa: E402
-from test_dispatch_reset import FakeApp  # noqa: E402  （第二桩全套件共用）
+from test_dispatch_reset import FakeApp  # noqa: E402  （第二桩全套件共用；残留兼容面转口，随 R 删）
 import os  # noqa: E402
+import harness  # noqa: E402
+from fake_herdr import FakeHerdr  # noqa: E402
+# 残留兼容面（随 R 删）：import 期环境写入，供未迁消费方隔离。
 os.environ["LOOP_EXTRACT_BACKEND"] = "pi"
 # 测试隔离：学习默认开启（ADR-0012），既有套件统一关闭，不碰真实学习目录。
 os.environ["LOOP_LEARNING"] = "off"
 
+# 残留兼容面常量（随 R 删）：供未迁消费方跨文件 import（adopt/lifecycle/display_name/space）。
 PROMPT = "请实现某个功能\n第二行说明"
 ANCHOR = PROMPT.splitlines()[0][:24]
 SCREEN = ANCHOR + "\n已完成该功能。"
@@ -46,6 +53,9 @@ NAME = "claude-matt-loop"
 DISPLAY = "LoopEng_测试任务"
 
 
+# ---- 残留兼容面（随 R 删）：旧桩与跑用例助手，供未迁消费方跨文件 import ----
+# 本文件 main() 已迁 FakeHerdr＋harness.run，不再使用它们；保留仅为消费方
+# （adopt/lifecycle/display_name/space import NamedFakeHc/FakeApp/run_case）。棘轮白名单在册。
 class NamedFakeHc:
     """herdr 桩：按名字/t 号解析 get；run/label/kill/rm/send 状态机。
     send 启动命令（文本==launch_text）按 launch_effect 转移前台；其余文本 turn+1。
@@ -258,6 +268,61 @@ def run_case(fake, app, rid, target=NAME, launch=None, cwd=None, rebuild=False,
     return rc, result, ledger, td
 
 
+def run_round(w, rid, *, target=NAME, launch=None, cwd=None, rebuild=False,
+              expect_proc=None, reset=None, model=None, prompt=PROMPT,
+              pre_ledger=False, wall_clock="5", td=None, display_name="auto", space="main"):
+    """装配 argv＋经唯一 harness.run 跑一轮（不替换任何全局）。返回 (rc, result, ledger, td)。
+    td 可传入复用（同 id 重试）。display_name="auto"：带 --launch 时自动补 DISPLAY。"""
+    if td is None:
+        td = tempfile.mkdtemp()
+    pf = Path(td) / "prompt.md"
+    pf.write_text(prompt, encoding="utf-8")
+    ld = Path(td) / ".loop"
+    if pre_ledger:
+        (ld / "runs").mkdir(parents=True, exist_ok=True)
+        (ld / "runs" / (rid + ".json")).write_text("{}", encoding="utf-8")
+    argv = ["--target", target, "--release-id", rid,
+            "--prompt-file", str(pf), "--loop-dir", str(ld),
+            "--wall-clock", wall_clock, "--check-in", "1",
+            "--settle-seconds", "0.01", "--settle-checks", "2",
+            "--adopt-timeout", "0.05", "--adopt-poll", "0.001"]
+    if launch is not None:
+        argv += ["--launch", launch]
+    if cwd is not None:
+        argv += ["--cwd", cwd]
+    if display_name == "auto":
+        display_name = DISPLAY if launch is not None else None
+    if display_name is not None:
+        argv += ["--display-name", display_name]
+    if rebuild:
+        argv += ["--rebuild"]
+    if expect_proc is not None:
+        argv += ["--expect-proc", expect_proc]
+    if reset is not None:
+        argv += ["--reset", reset]
+    if model is not None:
+        argv += ["--target-model", model]
+    if space is not None:
+        argv += ["--space", space]
+    r = harness.run(argv, world=w)
+    if r.ledger is not None:
+        assert r.result_path.read_text(encoding="utf-8").strip() == r.stdout.strip(), \
+            "result 文件与 stdout 不一致"
+    return r.rc, r.result, r.ledger, td
+
+
+def _runs(w):
+    return [c for c in w.hc_calls if c[0] == "run"]
+
+
+def _labels(w):
+    return [c for c in w.hc_calls if c[0] == "label"]
+
+
+def _kills(w):
+    return [c[1] for c in w.hc_calls if c[0] == "kill"]
+
+
 def main():
     # 1 CLI 静态契约
     base = ["--target", NAME, "--release-id", "r1", "--prompt-file", "p.txt", "--space", "main"]
@@ -272,55 +337,44 @@ def main():
         except SystemExit as e:
             assert e.code == 2, e.code
     # --launch/--cwd 单传：bad_args rc2、零发送、id 不消耗
-    for extra in (["--launch", LAUNCH], ["--cwd", "/proj"]):
-        fake = NamedFakeHc()
-        app = FakeApp(hc=fake)
-        with tempfile.TemporaryDirectory() as td:
-            pf = Path(td) / "p.md"
-            pf.write_text(PROMPT, encoding="utf-8")
-            argv = ["--target", NAME, "--release-id", "static-pair",
-                    "--prompt-file", str(pf), "--loop-dir", str(Path(td) / ".loop"),
-                    "--space", "main", *extra]
-            dispatch.hc_json = fake
-            dispatch.app_json = app
-            dispatch.check_structure_and_tools = lambda: None
-            dispatch.shutil.which = lambda name: "/fake/" + name
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = dispatch.main(argv)
-            res = json.loads(buf.getvalue().strip())
-            assert rc == 2 and res["error"]["kind"] == "bad_args", res
-            assert fake.sends == [] and fake.runs == []
-            assert not (Path(td) / ".loop" / "runs" / "static-pair.json").exists()
+    for kw in ({"launch": LAUNCH}, {"cwd": "/proj"}):
+        w = FakeHerdr()
+        w.add_space(name="main")
+        rc, res, led, td = run_round(w, "static-pair", **kw)
+        assert rc == 2 and res["error"]["kind"] == "bad_args", res
+        assert w.sends == [] and _runs(w) == []
+        assert led is None
     print("1 CLI statics: --launch/--cwd paired, switch flags removed, bad_args rc2 ok")
 
     # 2 创建快乐路径：not_found → run → label → 等 shell → send 启动 → 等 agent → 领养 → 主任务
-    fake = NamedFakeHc()
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "create-happy-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "agent")
+    rc, res, led, td = run_round(w, "create-happy-1",
+                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 0 and res["ok"], res
     # run 形状：--bg --keep --name --cwd -- zsh -l（单形态 shell 包装）
-    assert len(fake.runs) == 1, fake.runs
-    run_args = fake.runs[0]
+    runs = _runs(w)
+    assert len(runs) == 1, runs
+    run_args = runs[0]
     assert run_args[0] == "run" and "--bg" in run_args and "--keep" in run_args
     assert "--no-parent" in run_args, "命名会话独立于调用方终端（#46 Bug1）"
     assert run_args[run_args.index("--name") + 1] == NAME
     assert run_args[run_args.index("--cwd") + 1] == "/proj"
     assert run_args[-3:] == ["--", "zsh", "-l"], run_args
     # 标签：loop=1＋loop-agent=expect-proc
-    assert fake.label_calls and fake.label_calls[0][1] == [
-        "loop=1", "loop-agent=claude"], fake.label_calls
+    labels = _labels(w)
+    assert labels and labels[0][2:] == ["loop=1", "loop-agent=claude"], labels
     # 发送：启动命令裸 send（shell 不报 idle、不带 --if）＋主任务 --if idle，共两条
-    new_addr = [d["address"] for d in fake.terminals.values() if d["name"] == NAME][0]
-    assert fake.sends == [(new_addr, LAUNCH, False), (new_addr, PROMPT, True)], fake.sends
+    new_addr = res["target_address"]
+    assert w.sends == [(new_addr, LAUNCH, False), (new_addr, PROMPT, True)], w.sends
     # 领养：status 探测 → ls 核 pane → keep → ls 复核；绝不用裸 herdr-app
-    # 显示名落地（ADR-0010，harness 自动注入 DISPLAY）：ls 定位 tab → tab.rename → ls 复核名
-    assert [c[0] for c in app.calls] == ["status", "ls", "do", "ls", "ls", "do", "ls"], app.calls
-    assert app.calls[2][1] == "terminal.keep"
-    assert json.loads(app.calls[2][2]) == {"terminal": new_addr}
-    assert app.calls[5][1] == "tab.rename"
-    assert all(c for c in app.calls), "不许裸 herdr-app 探针"
+    # 显示名落地（ADR-0010，run_round 自动注入 DISPLAY）：ls 定位 tab → tab.rename → ls 复核名
+    assert [c[0] for c in w.app_calls] == ["status", "ls", "do", "ls", "ls", "do", "ls"], w.app_calls
+    assert w.app_calls[2][1] == "terminal.keep"
+    assert json.loads(w.app_calls[2][2]) == {"terminal": new_addr}
+    assert w.app_calls[5][1] == "tab.rename"
+    assert all(c for c in w.app_calls), "不许裸 herdr-app 探针"
     # result 契约：target 恒传入名字、target_address 解析 t 号、launched、workspace
     assert res["target"] == NAME and res["target_address"] == new_addr, res
     assert res["launched"] is True and res["workspace"] == "adopted", res
@@ -329,26 +383,30 @@ def main():
     assert led["phase"] == "done"
     print("2 create happy path: run->label->shell->launch->agent->adopt->main, result fields ok")
 
-    # 2c #40 领养复核轮询：keep 后 pane 延迟落地（pane_delay=3）→ 轮询等到→adopted。
+    # 2c #40 领养复核轮询：keep 后 pane 延迟落地（land_after=3）→ 轮询等到→adopted。
     #    单次 ls（旧行为）会跑在落地前误判 no_pane；轮询须反复 ls 直到 pane 出现。
-    fake = NamedFakeHc()
-    app = FakeApp(hc=fake, pane_delay=3)
-    rc, res, led, td = run_case(fake, app, "adopt-delay-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "agent")
+    w.delay("terminal.keep", "land_after", after=3)
+    rc, res, led, td = run_round(w, "adopt-delay-1",
+                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 0 and res["ok"], res
     assert res["workspace"] == "adopted" and led["phase"] == "done", res
-    keep_idx = next(i for i, c in enumerate(app.calls)
+    keep_idx = next(i for i, c in enumerate(w.app_calls)
                     if c[:2] == ["do", "terminal.keep"])
-    post_keep_ls = [c for c in app.calls[keep_idx + 1:] if c[0] == "ls"]
-    assert len(post_keep_ls) >= 3, app.calls
-    print("2c #40 adopt poll: delayed pane (pane_delay=3) -> adopted via polling ok")
+    post_keep_ls = [c for c in w.app_calls[keep_idx + 1:] if c[0] == "ls"]
+    assert len(post_keep_ls) >= 3, w.app_calls
+    print("2c #40 adopt poll: delayed pane (land_after=3) -> adopted via polling ok")
 
-    # 2d #40 窗口耗尽：keep 真失败（keep_no_pane，pane 永不落地）→ 轮询窗口耗尽→
+    # 2d #40 窗口耗尽：keep 真失败（noop，pane 永不落地）→ 轮询窗口耗尽→
     #    adopt_failed/no_pane，部分状态不变（终端已建 launched、workspace failed）。
-    fake = NamedFakeHc()
-    app = FakeApp(hc=fake, keep_no_pane=True)
-    rc, res, led, td = run_case(fake, app, "adopt-no-pane-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "agent")
+    w.fail("terminal.keep", "noop")
+    rc, res, led, td = run_round(w, "adopt-no-pane-1",
+                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 1 and res["error"]["kind"] == "adopt_failed", res
     assert res["adopt_reason"] == "no_pane", res
     assert res["workspace"] == "failed" and res["launched"] is True, res
@@ -356,163 +414,172 @@ def main():
     print("2d #40 adopt poll: keep no_pane -> window exhausted -> adopt_failed/no_pane ok")
 
     # 2b 创建＋新鲜豁免：--reset clear 被跳过（reset_skipped）、切模型照跑、起始 skill 豁免
-    fake = NamedFakeHc()
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "create-fresh-1", launch=LAUNCH, cwd="/proj",
-                                expect_proc="claude", reset="clear", model="opus",
-                                prompt="/wayfinder #7")
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "agent")
+    rc, res, led, td = run_round(w, "create-fresh-1", launch=LAUNCH, cwd="/proj",
+                                 expect_proc="claude", reset="clear", model="opus",
+                                 prompt="/wayfinder #7")
     assert rc == 0 and res["ok"], res
-    new_addr = [d["address"] for d in fake.terminals.values() if d["name"] == NAME][0]
-    assert fake.sends == [(new_addr, LAUNCH, False), (new_addr, "/model opus", True),
-                          (new_addr, "/wayfinder #7", True)], fake.sends
+    new_addr = res["target_address"]
+    assert w.sends == [(new_addr, LAUNCH, False), (new_addr, "/model opus", True),
+                       (new_addr, "/wayfinder #7", True)], w.sends
     assert res["reset_skipped"] == "fresh_launch" and res["reset"] == "clear", res
     assert led["reset_skipped"] == "fresh_launch" and "reset_send" not in led
-    assert len(fake.sends) == 3, "一轮至多发送成功三次（启动＋切模型＋主任务）"
+    assert len(w.sends) == 3, "一轮至多发送成功三次（启动＋切模型＋主任务）"
     print("2b create fresh exemption: reset skipped, model runs, start-skill exempt, 3-send cap ok")
 
     # 3 复活快乐路径：live＋空闲 shell＋loop 标签符 → 原地重发启动命令；不 run、不重写标签、
     #   名字/cwd/终端级历史不动（turn 保留）；result 无 launched（终端不是本轮建的）
-    fake = NamedFakeHc()
-    old = fake.add(name=NAME, fg="shell", turn=7,
-                   labels={"loop": "1", "loop-agent": "claude"}, address="t50")
-    app = FakeApp(hc=fake, panes=("t50",))
-    rc, res, led, td = run_case(fake, app, "revive-happy-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_terminal(address="t50", name=NAME, fg="shell", turn=7,
+                   labels={"loop": "1", "loop-agent": "claude"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t50"])
+    w.will_launch(LAUNCH, "agent")
+    rc, res, led, td = run_round(w, "revive-happy-1",
+                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 0 and res["ok"], res
-    assert fake.runs == [] and fake.label_calls == [] and fake.kills == [], "复活不 run/不重写标签/不 kill"
-    assert fake.sends == [("t50", LAUNCH, False), ("t50", PROMPT, True)], fake.sends
+    assert _runs(w) == [] and _labels(w) == [] and _kills(w) == [], "复活不 run/不重写标签/不 kill"
+    assert w.sends == [("t50", LAUNCH, False), ("t50", PROMPT, True)], w.sends
     assert res["target"] == NAME and res["target_address"] == "t50", res
     assert "launched" not in res and res["turn"] == 8, res
-    assert old["cwd"] == "/proj" and old["turn"] == 8
+    g = w.hc_json(None, ["get", "t50"], 30)   # 跑后核终端级历史保留（cwd/turn）
+    assert g["cwd"] == "/proj" and g["turn"] == 8
     assert led["phase"] == "done"
     print("3 revive happy path: in-place launch send, no run/label/kill, terminal turn kept ok")
 
     # 3b 复活＋新鲜豁免：turn=7（终端级累计）但会话空 → 起始 skill 视同 turn 0 豁免、
     #    --reset clear 跳过、切模型照跑
-    fake = NamedFakeHc()
-    fake.add(name=NAME, fg="shell", turn=7,
-             labels={"loop": "1", "loop-agent": "claude"}, address="t50")
-    app = FakeApp(hc=fake, panes=("t50",))
-    rc, res, led, td = run_case(fake, app, "revive-fresh-1", launch=LAUNCH, cwd="/proj",
-                                expect_proc="claude", reset="clear", model="opus",
-                                prompt="/implement #38")
+    w = FakeHerdr()
+    w.add_terminal(address="t50", name=NAME, fg="shell", turn=7,
+                   labels={"loop": "1", "loop-agent": "claude"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t50"])
+    w.will_launch(LAUNCH, "agent")
+    rc, res, led, td = run_round(w, "revive-fresh-1", launch=LAUNCH, cwd="/proj",
+                                 expect_proc="claude", reset="clear", model="opus",
+                                 prompt="/implement #38")
     assert rc == 0 and res["ok"], res
-    assert fake.sends == [("t50", LAUNCH, False), ("t50", "/model opus", True),
-                          ("t50", "/implement #38", True)], fake.sends
+    assert w.sends == [("t50", LAUNCH, False), ("t50", "/model opus", True),
+                       ("t50", "/implement #38", True)], w.sends
     assert res["reset_skipped"] == "fresh_launch", res
     print("3b revive fresh exemption: turn>0 ignored, reset skipped, model runs ok")
 
     # 3c 复活缺 --launch：launch_required rc2、零发送、id 不消耗；补参同 id 重试成功
-    fake = NamedFakeHc()
-    fake.add(name=NAME, fg="shell", turn=7,
-             labels={"loop": "1", "loop-agent": "claude"}, address="t50")
-    app = FakeApp(hc=fake, panes=("t50",))
+    w = FakeHerdr()
+    w.add_terminal(address="t50", name=NAME, fg="shell", turn=7,
+                   labels={"loop": "1", "loop-agent": "claude"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t50"])
+    w.will_launch(LAUNCH, "agent")
     td = tempfile.mkdtemp()
-    rc, res, led, _ = run_case(fake, app, "revive-req-1", expect_proc="claude", td=td)
+    rc, res, led, _ = run_round(w, "revive-req-1", expect_proc="claude", td=td)
     assert rc == 2 and res["error"]["kind"] == "launch_required", res
-    assert fake.sends == [] and led is None, "零发送、id 不消耗"
-    rc, res, led, _ = run_case(fake, app, "revive-req-1", launch=LAUNCH, cwd="/proj",
-                               expect_proc="claude", td=td)
+    assert w.sends == [] and led is None, "零发送、id 不消耗"
+    rc, res, led, _ = run_round(w, "revive-req-1", launch=LAUNCH, cwd="/proj",
+                                expect_proc="claude", td=td)
     assert rc == 0 and res["ok"], res
-    assert fake.sends == [("t50", LAUNCH, False), ("t50", PROMPT, True)], fake.sends
+    assert w.sends == [("t50", LAUNCH, False), ("t50", PROMPT, True)], w.sends
     print("3c revive launch_required: rc2 id unconsumed, same-id retry with params ok")
 
     # 4 占位：live＋无 loop 标签 → session_occupied 停轮呈报（地址/前台/turn/状态），不建不 kill
-    fake = NamedFakeHc()
-    fake.add(name=NAME, fg="agent", app="grok", st="idle", turn=3,
-             labels={}, address="t60")
-    fake.terminals["t60"]["foreground"] = {"name": "grok", "argv": ["grok"]}
-    app = FakeApp(hc=fake, panes=("t60",))
-    rc, res, led, td = run_case(fake, app, "occ-nolabel-1", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_terminal(address="t60", name=NAME, fg="wrong", status="idle", turn=3, labels={})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t60"])
+    rc, res, led, td = run_round(w, "occ-nolabel-1", expect_proc="claude")
     assert rc == 1 and res["error"]["kind"] == "session_occupied", res
     msg = res["error"]["message"]
     assert "t60" in msg and "grok" in msg and "turn=3" in msg and "idle" in msg, msg
-    assert fake.sends == [] and fake.runs == [] and fake.kills == [] and led is None
+    assert w.sends == [] and _runs(w) == [] and _kills(w) == [] and led is None
     print("4 occupied (no loop label): session_occupied reports address/fg/turn/state, no side effects ok")
 
     # 4b 占位：loop 标签符不符（loop-agent=grok ≠ expect-proc claude）→ session_occupied
-    fake = NamedFakeHc()
-    fake.add(name=NAME, fg="agent", turn=3,
-             labels={"loop": "1", "loop-agent": "grok"}, address="t60")
-    app = FakeApp(hc=fake, panes=("t60",))
-    rc, res, led, td = run_case(fake, app, "occ-label-1", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_terminal(address="t60", name=NAME, fg="agent", turn=3,
+                   labels={"loop": "1", "loop-agent": "grok"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t60"])
+    rc, res, led, td = run_round(w, "occ-label-1", expect_proc="claude")
     assert rc == 1 and res["error"]["kind"] == "session_occupied", res
-    assert fake.sends == [] and fake.runs == [] and fake.kills == []
+    assert w.sends == [] and _runs(w) == [] and _kills(w) == []
     print("4b occupied (label mismatch): session_occupied ok")
 
     # 4c 强制重建 idle 占位者：kill 旧→同名创建→打标签→启动→领养→主任务；
     #    result rebuilt:true＋旧 t 号；台账 rebuild phase
-    fake = NamedFakeHc()
-    fake.add(name=NAME, fg="agent", app="grok", st="idle", turn=3,
-             labels={}, address="t60")
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "rebuild-ok-1", launch=LAUNCH, cwd="/proj",
-                                expect_proc="claude", rebuild=True)
+    w = FakeHerdr()
+    w.add_terminal(address="t60", name=NAME, fg="wrong", status="idle", turn=3, labels={})
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "agent")
+    rc, res, led, td = run_round(w, "rebuild-ok-1", launch=LAUNCH, cwd="/proj",
+                                 expect_proc="claude", rebuild=True)
     assert rc == 0 and res["ok"], res
-    assert fake.kills == [NAME], fake.kills
-    assert len(fake.runs) == 1 and fake.runs[0][fake.runs[0].index("--name") + 1] == NAME
-    new_addr = [d["address"] for d in fake.terminals.values()
-                if d["name"] == NAME and d["state"] == "live"][0]
+    assert _kills(w) == [NAME], _kills(w)
+    runs = _runs(w)
+    assert len(runs) == 1 and runs[0][runs[0].index("--name") + 1] == NAME
+    new_addr = res["target_address"]
     assert res["rebuilt"] is True and res["rebuilt_old_target"] == "t60", res
     assert res["target_address"] == new_addr and res["launched"] is True, res
     assert res["target"] == NAME and res["workspace"] == "adopted"
     assert led["rebuilt"] is True and led["rebuilt_old_target"] == "t60"
-    assert fake.sends[-1] == (new_addr, PROMPT, True), fake.sends
+    assert w.sends[-1] == (new_addr, PROMPT, True), w.sends
     print("4c rebuild idle occupant: kill->create->launch->adopt->main, rebuilt+old t reported ok")
 
     # 4d rebuild 拒杀 working/blocked/未自报：rebuild_busy，零 kill、id 不消耗
     for st in ("working", "blocked", None):
-        fake = NamedFakeHc()
-        d = fake.add(name=NAME, fg="agent", app="grok", st=st or "idle", turn=3,
-                     labels={}, address="t60")
+        w = FakeHerdr()
         if st is None:
-            d["status"] = None
-            d["foreground"] = {"name": "zsh", "argv": ["/bin/zsh", "-l"]}
-        app = FakeApp(hc=fake, panes=("t60",))
-        rc, res, led, td = run_case(fake, app, "rebuild-busy-%s" % st,
-                                    launch=LAUNCH, cwd="/proj", rebuild=True)
+            w.add_terminal(address="t60", name=NAME, fg="shell", turn=3, labels={})
+        else:
+            w.add_terminal(address="t60", name=NAME, fg="wrong", status=st, turn=3, labels={})
+        sp = w.add_space(name="main")
+        w.add_tab(sp, terminals=["t60"])
+        rc, res, led, td = run_round(w, "rebuild-busy-%s" % st,
+                                     launch=LAUNCH, cwd="/proj", rebuild=True)
         assert rc == 1 and res["error"]["kind"] == "rebuild_busy", (st, res)
-        assert fake.kills == [] and fake.sends == [] and led is None, st
+        assert _kills(w) == [] and w.sends == [] and led is None, st
     print("4d rebuild working/blocked/unreported: rebuild_busy, never kill, id unconsumed ok")
 
     # 4e --rebuild 误传（非占位分流）：bad_args rc2、零发送、id 不消耗
     for scenario in ("existing", "create", "revive"):
-        fake = NamedFakeHc()
+        w = FakeHerdr()
+        sp = w.add_space(name="main")
         if scenario == "existing":
-            fake.add(name=NAME, fg="agent", turn=5,
-                     labels={"loop": "1", "loop-agent": "claude"}, address="t50")
+            w.add_terminal(address="t50", name=NAME, fg="agent", turn=5,
+                           labels={"loop": "1", "loop-agent": "claude"})
+            w.add_tab(sp, terminals=["t50"])
         elif scenario == "revive":
-            fake.add(name=NAME, fg="shell", turn=7,
-                     labels={"loop": "1", "loop-agent": "claude"}, address="t50")
-        app = FakeApp(hc=fake, panes=("t50",))
-        rc, res, led, td = run_case(fake, app, "rebuild-misuse-%s" % scenario,
-                                    launch=LAUNCH, cwd="/proj", expect_proc="claude",
-                                    rebuild=True)
+            w.add_terminal(address="t50", name=NAME, fg="shell", turn=7,
+                           labels={"loop": "1", "loop-agent": "claude"})
+            w.add_tab(sp, terminals=["t50"])
+        rc, res, led, td = run_round(w, "rebuild-misuse-%s" % scenario,
+                                     launch=LAUNCH, cwd="/proj", expect_proc="claude",
+                                     rebuild=True)
         assert rc == 2 and res["error"]["kind"] == "bad_args", (scenario, res)
-        assert fake.sends == [] and fake.kills == [] and fake.runs == [] and led is None
+        assert w.sends == [] and _kills(w) == [] and _runs(w) == [] and led is None
     print("4e --rebuild misuse on existing/create/revive: bad_args rc2, id unconsumed ok")
 
     # 4f rebuild 缺 --launch：launch_required 先于 rebuild_busy（预检顺序）
-    fake = NamedFakeHc()
-    fake.add(name=NAME, fg="agent", app="grok", st="working", turn=3,
-             labels={}, address="t60")
-    app = FakeApp(hc=fake, panes=("t60",))
-    rc, res, led, td = run_case(fake, app, "rebuild-nolaunch-1", rebuild=True)
+    w = FakeHerdr()
+    w.add_terminal(address="t60", name=NAME, fg="wrong", status="working", turn=3, labels={})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t60"])
+    rc, res, led, td = run_round(w, "rebuild-nolaunch-1", rebuild=True)
     assert rc == 2 and res["error"]["kind"] == "launch_required", res
-    assert fake.kills == [] and led is None
+    assert _kills(w) == [] and led is None
     print("4f rebuild without --launch: launch_required before rebuild_busy ok")
 
     # 4g kill 后创建失败（name_taken 竞态）：launch_failed 带部分状态（旧会话已死、新会话未成）
-    fake = NamedFakeHc()
-    fake.add(name=NAME, fg="agent", app="grok", st="idle", turn=3,
-             labels={}, address="t60")
-    fake.run_error = "name_taken"
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "rebuild-race-1", launch=LAUNCH, cwd="/proj",
-                                rebuild=True)
+    w = FakeHerdr()
+    w.add_terminal(address="t60", name=NAME, fg="wrong", status="idle", turn=3, labels={})
+    w.add_space(name="main")
+    w.fail("run", "error", kind="name_taken")
+    rc, res, led, td = run_round(w, "rebuild-race-1", launch=LAUNCH, cwd="/proj",
+                                 rebuild=True)
     assert rc == 1 and res["error"]["kind"] == "launch_failed", res
     assert "name_taken" in res["error"]["message"], res
-    assert fake.kills == [NAME] and len(fake.runs) == 1
+    assert _kills(w) == [NAME] and len(_runs(w)) == 1
     assert res["rebuilt"] is True and res["rebuilt_old_target"] == "t60", res
     assert "launched" not in res, "新会话未成"
     assert led["phase"] == "error:launch_failed" and led["rebuilt"] is True
@@ -520,134 +587,138 @@ def main():
 
     # 4h 占位：loop 标签符但前台是别的 agent（身份不符）→ session_occupied 呈报；
     #    --rebuild 可重建（kill idle 占位者→同名创建），不被误拒 bad_args
-    fake = NamedFakeHc()
-    d = fake.add(name=NAME, fg="agent", turn=3,
-                 labels={"loop": "1", "loop-agent": "claude"}, address="t60")
-    d["foreground"] = {"name": "grok", "argv": ["grok"]}
-    d["status"] = {"app": "grok", "state": "idle"}
-    app = FakeApp(hc=fake, panes=("t60",))
-    rc, res, led, td = run_case(fake, app, "occ-fg-1", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_terminal(address="t60", name=NAME, fg="wrong", status="idle", turn=3,
+                   labels={"loop": "1", "loop-agent": "claude"})
+    sp = w.add_space(name="main")
+    w.add_tab(sp, terminals=["t60"])
+    rc, res, led, td = run_round(w, "occ-fg-1", expect_proc="claude")
     assert rc == 1 and res["error"]["kind"] == "session_occupied", res
     assert "t60" in res["error"]["message"] and "grok" in res["error"]["message"]
-    assert fake.kills == [] and fake.sends == [] and led is None
-    rc, res, led, td = run_case(fake, app, "occ-fg-rebuild", expect_proc="claude",
-                                launch=LAUNCH, cwd="/proj", rebuild=True)
+    assert _kills(w) == [] and w.sends == [] and led is None
+    w.will_launch(LAUNCH, "agent")
+    rc, res, led, td = run_round(w, "occ-fg-rebuild", expect_proc="claude",
+                                 launch=LAUNCH, cwd="/proj", rebuild=True)
     assert rc == 0 and res["ok"], res
-    assert fake.kills == [NAME] and res["rebuilt"] is True and res["launched"] is True
+    assert _kills(w) == [NAME] and res["rebuilt"] is True and res["launched"] is True
     print("4h occupied (labeled, foreign foreground): reported; --rebuild works ok")
 
     # 5 finished→同名创建：旧条目按 t 号留审计，名字解析到新 live
-    fake = NamedFakeHc()
-    fake.add(name=NAME, state="finished", fg="shell", turn=18, address="t40")
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "finished-create-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_terminal(address="t40", name=NAME, state="finished", fg="shell", turn=18)
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "agent")
+    rc, res, led, td = run_round(w, "finished-create-1",
+                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 0 and res["ok"], res
-    assert fake.terminals["t40"]["state"] == "finished", "旧条目留审计"
     new_addr = res["target_address"]
     assert new_addr != "t40" and res["launched"] is True
-    assert fake.sends == [(new_addr, LAUNCH, False), (new_addr, PROMPT, True)]
+    assert w.sends == [(new_addr, LAUNCH, False), (new_addr, PROMPT, True)]
+    assert w.hc_json(None, ["get", "t40"], 30)["state"] == "finished", "旧条目留审计"
     print("5 finished -> same-name create: old entry kept for audit, name resolves to new ok")
 
     # 5b 创建缺 --launch：launch_required rc2、id 不消耗；补参同 id 重试
-    fake = NamedFakeHc()
-    app = FakeApp(hc=fake)
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "agent")
     td = tempfile.mkdtemp()
-    rc, res, led, _ = run_case(fake, app, "create-req-1", td=td)
+    rc, res, led, _ = run_round(w, "create-req-1", td=td)
     assert rc == 2 and res["error"]["kind"] == "launch_required", res
-    assert fake.runs == [] and led is None
-    rc, res, led, _ = run_case(fake, app, "create-req-1", launch=LAUNCH, cwd="/proj", td=td)
+    assert _runs(w) == [] and led is None
+    rc, res, led, _ = run_round(w, "create-req-1", launch=LAUNCH, cwd="/proj", td=td)
     assert rc == 0 and res["ok"] and res["launched"] is True, res
     print("5b create launch_required: rc2 id unconsumed, same-id retry ok")
 
     # 5c 非法会话名创建：bad_args rc2（t 号保留、大写非法），id 不消耗
     for bad in ("t99", "Bad_Name"):
-        fake = NamedFakeHc()
-        app = FakeApp(hc=fake)
-        rc, res, led, td = run_case(fake, app, "badname-%s" % bad, target=bad,
-                                    launch=LAUNCH, cwd="/proj")
+        w = FakeHerdr()
+        w.add_space(name="main")
+        rc, res, led, td = run_round(w, "badname-%s" % bad, target=bad,
+                                     launch=LAUNCH, cwd="/proj")
         assert rc == 2 and res["error"]["kind"] == "bad_args", (bad, res)
-        assert fake.runs == [] and led is None
+        assert _runs(w) == [] and led is None
     print("5c invalid session name for create: bad_args rc2, id unconsumed ok")
 
     # 5d 启动命令发送失败：launch_failed，终端已建（launched:true）、启动未发
-    fake = NamedFakeHc()
-    fake.launch_send_error = True
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "launch-senderr-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.fail("send", "error", nth=1)
+    rc, res, led, td = run_round(w, "launch-senderr-1",
+                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 1 and res["error"]["kind"] == "launch_failed", res
     assert res["launched"] is True and "launch_sent" not in res, res
     assert led["phase"] == "error:launch_failed"
     print("5d launch send failure: launch_failed with launched partial state ok")
 
     # 5e 等 agent 就绪超时（前台 stuck shell）：launch_failed，启动已发
-    fake = NamedFakeHc()
-    fake.launch_effect = "stuck_shell"
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "launch-stuck-1", launch=LAUNCH, cwd="/proj",
-                                expect_proc="claude", wall_clock="0.3")
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "stuck_shell")
+    rc, res, led, td = run_round(w, "launch-stuck-1", launch=LAUNCH, cwd="/proj",
+                                 expect_proc="claude", wall_clock="0.3")
     assert rc == 1 and res["error"]["kind"] == "launch_failed", res
     assert res["launched"] is True and res["launch_sent"] is True, res
     print("5e agent-ready timeout: launch_failed, launch_sent partial state ok")
 
     # 5f agent 启动期间终端死亡：launch_failed
-    fake = NamedFakeHc()
-    fake.launch_effect = "die"
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "launch-die-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.will_launch(LAUNCH, "die")
+    rc, res, led, td = run_round(w, "launch-die-1",
+                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 1 and res["error"]["kind"] == "launch_failed", res
     assert res["launch_sent"] is True
     print("5f terminal dies during agent start: launch_failed ok")
 
     # 5g 新 agent 身份不符：identity_mismatch（创建与复活同）
     for scenario in ("create", "revive"):
-        fake = NamedFakeHc()
-        fake.launch_effect = "wrong_agent"
+        w = FakeHerdr()
+        sp = w.add_space(name="main")
+        w.will_launch(LAUNCH, "wrong_agent")
         if scenario == "revive":
-            fake.add(name=NAME, fg="shell", turn=7,
-                     labels={"loop": "1", "loop-agent": "claude"}, address="t50")
-        app = FakeApp(hc=fake, panes=("t50",))
-        rc, res, led, td = run_case(fake, app, "launch-wrong-%s" % scenario,
-                                    launch=LAUNCH, cwd="/proj", expect_proc="claude")
+            w.add_terminal(address="t50", name=NAME, fg="shell", turn=7,
+                           labels={"loop": "1", "loop-agent": "claude"})
+            w.add_tab(sp, terminals=["t50"])
+        rc, res, led, td = run_round(w, "launch-wrong-%s" % scenario,
+                                     launch=LAUNCH, cwd="/proj", expect_proc="claude")
         assert rc == 1 and res["error"]["kind"] == "identity_mismatch", (scenario, res)
         assert res["launch_sent"] is True
     print("5g new agent identity mismatch (create/revive): identity_mismatch ok")
 
     # 5h 打标签失败：launch_failed，终端已建
-    fake = NamedFakeHc()
-    fake.label_error = True
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "launch-labelerr-1",
-                                launch=LAUNCH, cwd="/proj", expect_proc="claude")
+    w = FakeHerdr()
+    w.add_space(name="main")
+    w.fail("label", "error")
+    rc, res, led, td = run_round(w, "launch-labelerr-1",
+                                 launch=LAUNCH, cwd="/proj", expect_proc="claude")
     assert rc == 1 and res["error"]["kind"] == "launch_failed", res
     assert res["launched"] is True and "launch_sent" not in res
     print("5h label failure: launch_failed with launched partial state ok")
 
     # 5i duplicate_release 优先于一切新 kind（含 launch_required）
-    fake = NamedFakeHc()
-    app = FakeApp(hc=fake)
-    rc, res, led, td = run_case(fake, app, "dup-priority-1", pre_ledger=True)
+    w = FakeHerdr()
+    w.add_space(name="main")
+    rc, res, led, td = run_round(w, "dup-priority-1", pre_ledger=True)
     assert rc == 1 and res["error"]["kind"] == "duplicate_release", res
-    assert fake.runs == [] and fake.sends == []
+    assert _runs(w) == [] and w.sends == []
     print("5i duplicate_release takes precedence over launch_required ok")
 
     # 5j 复活失败变体：launch_failed 部分状态（发送失败/等就绪超时/终端死亡）；
     #    复活不建终端，无 launched 字段
     for effect in ("send_error", "stuck_shell", "die"):
-        fake = NamedFakeHc()
-        fake.add(name=NAME, fg="shell", turn=7,
-                 labels={"loop": "1", "loop-agent": "claude"}, address="t50")
+        w = FakeHerdr()
+        w.add_terminal(address="t50", name=NAME, fg="shell", turn=7,
+                       labels={"loop": "1", "loop-agent": "claude"})
+        sp = w.add_space(name="main")
+        w.add_tab(sp, terminals=["t50"])
         if effect == "send_error":
-            fake.launch_send_error = True
+            w.fail("send", "error", nth=1)
         else:
-            fake.launch_effect = effect
-        app = FakeApp(hc=fake, panes=("t50",))
+            w.will_launch(LAUNCH, effect)
         wc = "0.3" if effect == "stuck_shell" else "5"
-        rc, res, led, td = run_case(fake, app, "revive-fail-%s" % effect,
-                                    launch=LAUNCH, cwd="/proj", expect_proc="claude",
-                                    wall_clock=wc)
+        rc, res, led, td = run_round(w, "revive-fail-%s" % effect,
+                                     launch=LAUNCH, cwd="/proj", expect_proc="claude",
+                                     wall_clock=wc)
         assert rc == 1 and res["error"]["kind"] == "launch_failed", (effect, res)
         assert "launched" not in res, "复活不建终端"
         if effect != "send_error":

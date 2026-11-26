@@ -351,6 +351,17 @@ def main():
     raises("not_found", lambda: w.hc_json(None, ["get", "claude-test"], 30))
     print("23 event: session killed externally")
 
+    # 24 屏幕序列：read 逐次消费一条屏幕文本，耗尽后重复最后一条（先变后静置可构造）
+    w = FakeHerdr()
+    w.add_terminal(address="t99")
+    w.screen_sequence("t99", ["第一屏", "第二屏", "静置屏"])
+    texts = [w.hc_json(None, ["read", "t99", "--lines", "1000"], 30)["text"]
+             for _ in range(5)]
+    assert texts == ["第一屏", "第二屏", "静置屏", "静置屏", "静置屏"], texts
+    rd = w.hc_json(None, ["read", "t99", "--lines", "1000"], 30)
+    contract.check("hc.read", rd)   # 返回形状不变、契约自检照过
+    print("24 screen sequence: consumed per read, repeats last after exhaustion")
+
     print("all fake-herdr tests passed")
 
 
