@@ -123,7 +123,7 @@ webhook 出网默认跟随本机系统代理（见 ADR-0003）：标准 `http_pr
 
 下一次 `failed` 时按证据读，不预设根因：`http_status` 非空＝已连上端点、按状态码（401 多为密钥；5xx 为服务端）；`is_timeout=true`＝超时；`errno_name` 为 `ECONNREFUSED`/`ECONNRESET`＝连接层被拒/被断；为 `EAI_*`＝DNS 解析失败；`ssl_verify_code` 非空＝证书校验失败；`proxy.source=system` 说明这次走的是本机系统代理，`bypass` 是例外表放行、`none` 是没配代理，`matches=yes` 时代理只是有嫌疑、仍须其它证据。诊断只记录事实，不关证书校验、不改系统代理设置；修法等下一次真实运行的证据再定。
 
-工具定位：`hc`/`uv`（及 `backend=pi` 时的 `pi`）先 `shutil.which`（尊重显式 PATH），找不到再探 `~/.local/bin`、`/opt/homebrew/bin`、`/usr/local/bin`、nvm node bin（`~/.nvm/versions/node/*/bin`）；后台 job 缺 PATH 也能起，探不到才报 `missing_tool`。调用方 `python3` 直跑即可：版本门 `>=3.10` 直跑，`<3.10` 由 `handle_old_python` 探 uv 并 `os.execv` 经 `uv run --no-python-downloads` 自举重跑（env `LOOP_UV_REEXEC` 防循环），uv 退居内部兜底，调用方不用管 PATH。
+工具定位：`hc`（任何后端都必需；`backend=pi` 时还有 `pi`）先 `shutil.which`（尊重显式 PATH），找不到再探 `~/.local/bin`、`/opt/homebrew/bin`、`/usr/local/bin`、nvm node bin（`~/.nvm/versions/node/*/bin`）；后台 job 缺 PATH 也能起，探不到才报 `missing_tool`。`uv` 不每轮要求，只在解释器 `<3.10` 的自举路径里探（探不到报 `python_too_old`，ADR-0005 决定 7）。调用方 `python3` 直跑即可：版本门 `>=3.10` 直跑，`<3.10` 由 `handle_old_python` 探 uv 并 `os.execv` 经 `uv run --no-python-downloads` 自举重跑（env `LOOP_UV_REEXEC` 防循环），uv 退居内部兜底，调用方不用管 PATH。
 
 本地记录归置：`--loop-dir` 默认 `$TMPDIR/loop`（`tempfile.gettempdir()/loop`），`runs/` 放记录（台账/raw/record/result/notify）、`releases/` 放放行提示词；CWD 无关、结果绝对路径回报，在哪跑都落同一处。全部随 OS 临时清理、不留持久审计，台账拒重发保护止于重启（放行 id 每次唯一，跨重启复用风险低）；脚本不加清理垫片。PATH 由 `find_tool` 兜底，调用方不需手写 export PATH 包装脚本。
 

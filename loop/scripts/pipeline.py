@@ -361,10 +361,12 @@ def check_structure_and_tools(deps):
     extract_md = script_dir.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_structure", f"找不到 {extract_md}", [])
-    for tool in ("hc", "pi", "uv"):
-        if not deps.locate(tool):
-            raise DispatchError("missing_tool", f"找不到 {tool}",
-                                ["确认 PATH；脚本也会探 ~/.local/bin、homebrew、nvm node bin"])
+    # 静态闸只查任何后端都必需的 hc（ADR-0020 决定 3/5 的文案与次序不变）。
+    # pi 由 locate 阶段按 backend=pi 时才定位（ADR-0005 决定 7）；uv 只在解释器
+    # <3.10 的自举路径里用，那里探不到自带 python_too_old——都不再每轮要求（#130）。
+    if not deps.locate("hc"):
+        raise DispatchError("missing_tool", "找不到 hc",
+                            ["确认 PATH；脚本也会探 ~/.local/bin、homebrew、nvm node bin"])
 
 
 class Route(enum.Enum):
