@@ -55,7 +55,19 @@ class Arr:
         self.items = items
 
 
+class AnyOf:
+    """任一规格满足即过（T5a）：防御场景表达用，如 turn 非整数（实测恒整数）。"""
+
+    def __init__(self, *specs):
+        self.specs = specs
+
+    def __repr__(self):
+        return "any%r" % (self.specs,)
+
+
 def _type_ok(spec, v):
+    if isinstance(spec, AnyOf):
+        return any(_type_ok(s, v) for s in spec.specs)
     if isinstance(spec, Enum):
         return spec.ok(v)
     if isinstance(spec, Nullable):
@@ -116,7 +128,9 @@ _TERMINAL = Obj(
     required={"address": str, "labels": dict, "argv": list, "cwd": str,
               "state": Enum("live", "finished"), "created_ms": int,
               "screen": Enum("exact", "inexact"), "cols": int, "rows": int},
-    optional={"name": Nullable(str), "title": str, "turn": int,
+    # turn 容 bool 是假世界的「turn 非整数」防御场景表达（实测 turn 恒整数，
+    # 与 ls 的 id 可空同一先例）；turn 缺失场景由假世界直接不返回该键表达。
+    optional={"name": Nullable(str), "title": str, "turn": AnyOf(int, bool),
               "status": Nullable(_STATUS), "foreground": Nullable(_FOREGROUND),
               "exit_code": Nullable(int),
               "reason": Nullable(Enum("exited", "killed", "server_stop",

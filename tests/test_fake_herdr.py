@@ -362,6 +362,21 @@ def main():
     contract.check("hc.read", rd)   # 返回形状不变、契约自检照过
     print("24 screen sequence: consumed per read, repeats last after exhaustion")
 
+    # 25 turn 缺失/非整数场景（T5a，reset 纪律防御用例需要）：turn=None → get 无 turn 键；
+    #    turn=False → 原样返回（契约 optional turn 容 bool，与「id 可空＝缺 id 场景表达」
+    #    同一先例：实测 turn 恒整数，bool 是故意摆出的防御场景）。
+    w = FakeHerdr()
+    w.add_terminal(address="t99", turn=None)
+    g = w.hc_json(None, ["get", "t99"], 30)
+    contract.check("hc.get", g)
+    assert "turn" not in g
+    w = FakeHerdr()
+    w.add_terminal(address="t99", turn=False)
+    g = w.hc_json(None, ["get", "t99"], 30)
+    contract.check("hc.get", g)
+    assert g["turn"] is False
+    print("25 turn absent (None) / non-integer (False) scenarios expressible")
+
     print("all fake-herdr tests passed")
 
 

@@ -154,6 +154,36 @@ def main():
     assert seen3["open"] is saved_open and seen3["cmd"] is saved_cmd
     print("7 injected http_open/run_cmd replace module globals in scope, restored")
 
+    # 8 scoped_env（T5a 抽出，run() 内部复用）：作用域内应用、退出恢复原值、
+    #   原本不存在的键退出删除。嵌套作用域验证「恢复原值」不靠裸 os.environ 写入。
+    before_env = dict(os.environ)
+    with harness.scoped_env({"LOOP_PROBE_SE": "outer"}):
+        assert os.environ["LOOP_PROBE_SE"] == "outer"
+        with harness.scoped_env({"LOOP_PROBE_SE": "inner", "LOOP_PROBE_SE2": "x"}):
+            assert os.environ["LOOP_PROBE_SE"] == "inner"
+            assert os.environ["LOOP_PROBE_SE2"] == "x"
+        assert os.environ["LOOP_PROBE_SE"] == "outer"     # 退出恢复原值
+        assert "LOOP_PROBE_SE2" not in os.environ         # 原本不存在→退出删除
+    assert dict(os.environ) == before_env
+    print("8 scoped_env applies in scope, restores originals, deletes new keys")
+
+    # 8b None 值＝作用域内确保键不存在（单元探针的「无 guard」场景），退出恢复。
+    with harness.scoped_env({"LOOP_PROBE_SE": "present"}):
+        with harness.scoped_env({"LOOP_PROBE_SE": None}):
+            assert "LOOP_PROBE_SE" not in os.environ
+        assert os.environ["LOOP_PROBE_SE"] == "present"
+    assert dict(os.environ) == before_env
+    print("8b scoped_env None value ensures key absent in scope, restored on exit")
+
+    # 8c 异常退出也无条件恢复。
+    try:
+        with harness.scoped_env({"LOOP_PROBE_SE": "boom"}):
+            raise RuntimeError("probe")
+    except RuntimeError:
+        pass
+    assert dict(os.environ) == before_env
+    print("8c scoped_env restores on exception exit")
+
     print("all harness tests passed")
 
 

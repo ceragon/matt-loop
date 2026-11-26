@@ -58,7 +58,10 @@ class FakeHerdr:
                      app="claude-code", status="idle", turn=5, labels=None,
                      cwd="/proj", title="test"):
         """造一个终端：既有（live agent）/已死（finished）/空闲 shell（fg=shell）。
-        fg=wrong 造身份不符的前台。返回地址。"""
+        fg=wrong 造身份不符的前台。turn=None 造 turn 缺失（get 无 turn 键）；
+        turn=False 造 turn 非整数的防御场景（契约 optional turn 容 bool）。
+        这两个旋钮只供 get 观察的场景（reset 纪律在发送前拒发）：send/wait 直取
+        turn，不支持缺失/非整数终端。返回地址。"""
         addr = address or ("t%d" % self._next_addr)
         self._next_addr += 1
         d = {"address": addr, "argv": ["/bin/zsh", "-l"], "cols": 80,
@@ -69,7 +72,9 @@ class FakeHerdr:
              "reported": state == "live" and fg != "shell", "rm": False,
              "rows": 24, "screen": "exact", "signal": None, "state": state,
              "status": None, "status_ms": _CREATED_MS, "template": None,
-             "title": title, "turn": turn}
+             "title": title}
+        if turn is not None:
+            d["turn"] = turn
         if state == "finished":
             d["exit_code"] = 0
             d["reason"] = "exited"

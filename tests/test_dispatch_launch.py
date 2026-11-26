@@ -1,35 +1,33 @@
 #!/usr/bin/env python3
-"""启动自举＋身份预检收敛测试（临时桩，验完可删）。
+"""启动自举＋身份预检收敛测试（单元探针，不打真实 agent）。
 
 A: 解释器 <3.10 时 handle_old_python 经 uv 重 exec（不下载、防循环、探不到报错）。
 B: --expect-title 已移除，parse_args 不再接受；身份预检只剩 --expect-proc。
+
+T5a（ADR-0021，#99）：handle_old_python 在 main 之前、会 execv，上不了 CLI 缝，
+保留直调；替换手法改对宿主模块（shutil / os / sys）的作用域 mock.patch.object，
+退出无条件恢复（ADR-0016 决定 7 残留洞纪律）。find_tool 不再被 patch——patch
+shutil.which 让真实 find_tool 跑起来；os.access 钉 False 使探测目录里即使有真实
+同名可执行文件也不认（宿主密闭）。env 走 harness.scoped_env。parse_args 纯函数
+直调保留原位。dispatch 经 harness 取得，不自行 sys.path.insert。
 """
 import contextlib
-import importlib.util
 import io
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 from unittest import mock
 
-HERE = Path(__file__).resolve().parent.parent / "loop" / "scripts"
-spec = importlib.util.spec_from_file_location("dispatch", HERE / "dispatch.py")
-dispatch = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(dispatch)
+import harness
+from harness import dispatch
 
 SCRIPT = str(Path(dispatch.__file__).resolve())
 
 
 def call_old(uv_ret, guard, argv):
     """调 handle_old_python，mock execv 捕获命令；返回 (execv调用, stdout, exit码)。"""
-    saved_guard = os.environ.get("LOOP_UV_REEXEC")
-    saved_argv = sys.argv
-    if guard is None:
-        os.environ.pop("LOOP_UV_REEXEC", None)
-    else:
-        os.environ["LOOP_UV_REEXEC"] = guard
-    sys.argv = argv
     calls = []
     out = io.StringIO()
     code = None
@@ -39,18 +37,15 @@ def call_old(uv_ret, guard, argv):
         # 不真重 exec；返回让流程落到报错出口（真实 execv 成功则不返回）
 
     try:
-        with mock.patch.object(dispatch, "find_tool", return_value=uv_ret), \
-             mock.patch.object(dispatch.os, "execv", side_effect=fake_execv), \
+        with harness.scoped_env({"LOOP_UV_REEXEC": guard}), \
+             mock.patch.object(sys, "argv", argv), \
+             mock.patch.object(shutil, "which", return_value=uv_ret), \
+             mock.patch.object(os, "access", return_value=False), \
+             mock.patch.object(os, "execv", side_effect=fake_execv), \
              contextlib.redirect_stdout(out):
             dispatch.handle_old_python()
     except SystemExit as e:
         code = e.code
-    finally:
-        sys.argv = saved_argv
-        if saved_guard is None:
-            os.environ.pop("LOOP_UV_REEXEC", None)
-        else:
-            os.environ["LOOP_UV_REEXEC"] = saved_guard
     return calls, out.getvalue(), code
 
 
