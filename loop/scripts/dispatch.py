@@ -117,6 +117,9 @@ error 通知保留发送前完整对象。调用方
 run_record 指抽取器裁剪后的干净全文 .md（回看对象），raw_record 指回读全文 .raw.md
 （审计，含旧轮），turn_record 指本轮原料 .turn.md（抽取器输入＋逐字校验语料，ADR-0013）。
 台账记过程，结果文件记最终交付，重发拒绝仍以台账为准。
+中途本地 IO 失败（OSError）由顶层兜底映射 io_failed（退出码恒 1），走同一 error 出口；
+hints 按台账已开与否分两态（未开→同 id 重试；已开→新放行 id），有现成语义的读取点
+逐点包既有 kind（sha 复核→prompt_unreadable、抽取提示词→missing_prompt，ADR-0024）。
 可选 webhook 完成通知：env LOOP_WEBHOOK_URL＋LOOP_WEBHOOK_SECRET 都配了才发，
 成功/报错都 POST 通知投影字节（与 notify.json 完全相同，只序列化一次、重试复用；
 鉴权走 Authorization: Bearer），发失败不连累整轮。顺序：构造投影→序列化→写通知记录→
@@ -1579,7 +1582,14 @@ def extract_via_api(args, turn_path):
     extract_md = Path(__file__).resolve().parent.parent / "prompts" / "extract.md"
     if not extract_md.is_file():
         raise DispatchError("missing_prompt", f"找不到抽取提示词：{extract_md}", [])
+    # 本轮原料读失败不包：归 io_failed 顶层兜底（ADR-0024，#111）。
     turn_text = Path(turn_path).read_text(encoding="utf-8")
+    # 抽取提示词读失败映射既有 missing_prompt（ADR-0024，#111）：is_file 检查后
+    # 中途读失败（权限/磁盘故障）保持既有语义，不新增同义 kind。
+    try:
+        system_prompt = extract_md.read_text(encoding="utf-8")
+    except OSError as e:
+        raise DispatchError("missing_prompt", f"读不到抽取提示词：{extract_md}：{e}", [])
     instruction = (
         "本轮原料已内联在本消息末尾。按系统提示词裁剪并抽取，"
         "只输出一个 JSON 对象，含 needs_user、reply、questions、conclusion、blocked、next_skill 六个字段。"
@@ -1591,7 +1601,7 @@ def extract_via_api(args, turn_path):
     body = json.dumps({
         "model": model,
         "messages": [
-            {"role": "system", "content": extract_md.read_text(encoding="utf-8")},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
         "temperature": 0,
@@ -1765,10 +1775,33 @@ class Deps:
         return (self._extract or extract)(self.pi_bin, args, turn_path)
 
 
+def io_failed_error(e, ledger_opened):
+    """中途本地 IO OSError → DispatchError("io_failed")（ADR-0024，#111）。
+    顶层兜底只此一处：原子写函数与台账写入原样抛 OSError，冒至 run 顶层由这里
+    映射，走与 DispatchError 完全相同的 error 出口。退出码恒 1（环境故障不是
+    静态旗标错，不进退出码 2 家族）。message 带操作（异常类名）＋路径＋OSError
+    原文；hints 按「台账是否已开」机械分两态：未开→放行 id 未消耗、环境修复后
+    同 id 重试；已开→id 已消耗、部分状态如实带出、修复后新放行 id。"""
+    if ledger_opened:
+        hints = [
+            "放行 id 已消耗（台账已开）；修复本机环境（磁盘空间/权限/目录）后用新放行 id 重新放行，"
+            "同 id 重试会撞 duplicate_release",
+            "部分状态随 error 如实带出；目标会话不杀、不重发",
+        ]
+    else:
+        hints = [
+            "放行 id 未消耗（台账未开）；修复本机环境（磁盘空间/权限/目录）后用同一放行 id 重试",
+        ]
+    return DispatchError("io_failed", f"本地 IO 失败（{type(e).__name__}）：{e}", hints)
+
+
 def main(argv=None, *, deps=None):
     args = parse_args(argv)
     deps = deps if deps is not None else Deps()
     ledger = None
+    # 台账已开＝首版台账成功落盘（ADR-0024）：io_failed 两态 hints 的机械判据。
+    # 首写失败时 ledger dict 虽在内存，文件未落盘、duplicate 闸不拦，id 未消耗。
+    ledger_opened = False
     ledger_path = None
     result_path = None
     notify_path = None
@@ -1782,6 +1815,54 @@ def main(argv=None, *, deps=None):
     # adopt_reason/space_created/pane_adopted/reset_skipped），成功与 error 都带适用字段。
     ctx = {}
     fresh = False
+
+    def error_exit(e):
+        """统一 error 出口（DispatchError 与顶层 io_failed 兜底共用，ADR-0024）：
+        尽力写终态台账（失败吞）、部分状态机械带出、emit_result 既有降级交付。"""
+        if ledger is not None and ledger_path is not None:
+            ledger.update(phase=f"error:{e.kind}", error={"kind": e.kind, "message": e.message},
+                          failed_at=now_iso())
+            try:
+                write_json_atomic(ledger_path, ledger)
+            except OSError:
+                pass
+        out = {
+            "ok": False,
+            "release_id": args.release_id,
+            "target": original_target,
+            "error": {"kind": e.kind, "message": e.message, "hints": e.hints},
+        }
+        if task_name is not None:
+            out["task_name"] = task_name
+        if backend is not None:
+            out["extract_backend"] = backend
+        if args.reset != "none":
+            out["reset"] = args.reset
+            out["error"]["reset_sent"] = reset_sent
+        if args.target_model:
+            out["target_model"] = args.target_model
+            out["error"]["model_sent"] = model_sent
+        # 命名会话部分状态（ADR-0009）：终端已建/启动已发/旧会话已死/领养失败原因等如实报。
+        for k in ("target_address", "launched", "launch_sent", "rebuilt",
+                  "rebuilt_old_target", "workspace", "adopt_reason",
+                  "space_created", "pane_adopted", "gift_cleanup_warning",
+                  "reset_skipped", "display_name", "display_name_warning",
+                  "space", "space_selected", "space_landed", "space_target_warning",
+                  "space_restore", "space_restore_warning",
+                  "next_skill_feedback", "learning_warning"):
+            if k in ctx:
+                out[k] = ctx[k]
+        if started is not None:
+            out["error"]["elapsed_s"] = round(deps.monotonic() - started, 1)
+        if ledger is not None and ledger.get("run_record"):
+            out["error"]["run_record"] = ledger["run_record"]
+        # 完整性标记（ADR-0019）：回读后发生的错误（如抽取失败）不丢折叠标记。
+        if ledger is not None and "complete" in ledger:
+            out["complete"] = ledger["complete"]
+            out["complete_reason"] = ledger["complete_reason"]
+        emit_result(deps, out, result_path, notify_path)
+        return e.returncode
+
     try:
         # 创建参数成对校验（ADR-0009）：--launch 与 --cwd 同时必填、无默认。
         # 静态旗标错误，放行 id 不消耗（退出码 2）。
@@ -2035,7 +2116,13 @@ def main(argv=None, *, deps=None):
                         returncode=2)
 
         # 2) 发送前再核一次文件未变，先记账后发送。
-        if hashlib.sha256(prompt_path.read_bytes()).hexdigest() != sha:
+        # 复核读失败映射既有 prompt_unreadable（ADR-0024，#111）：提示词中途消失
+        # 保持既有语义，不新增同义 kind、不落 io_failed 兜底。
+        try:
+            recheck = prompt_path.read_bytes()
+        except OSError as e:
+            raise DispatchError("prompt_unreadable", f"读不到提示词文件：{e}", [])
+        if hashlib.sha256(recheck).hexdigest() != sha:
             raise DispatchError("prompt_changed", "提示词文件在预检期间被改动，不发送", [])
         runs.mkdir(parents=True, exist_ok=True)
         ledger = {
@@ -2065,6 +2152,7 @@ def main(argv=None, *, deps=None):
             "created_at": now_iso(),
         }
         write_json_atomic(ledger_path, ledger)
+        ledger_opened = True   # 首版台账成功落盘＝放行 id 消耗（ADR-0024 两态 hints 判据）
 
         # 2.4) 创建前置（ADR-0009）：not_found/finished 分流且带 --launch 时，同一放行内
         #      建命名会话（单形态 shell 包装）→打标签→等 shell→send 启动命令→领养（恒可见）
@@ -2293,49 +2381,14 @@ def main(argv=None, *, deps=None):
         emit_result(deps, result, result_path, notify_path)
         return 0
     except DispatchError as e:
-        if ledger is not None and ledger_path is not None:
-            ledger.update(phase=f"error:{e.kind}", error={"kind": e.kind, "message": e.message},
-                          failed_at=now_iso())
-            try:
-                write_json_atomic(ledger_path, ledger)
-            except OSError:
-                pass
-        out = {
-            "ok": False,
-            "release_id": args.release_id,
-            "target": original_target,
-            "error": {"kind": e.kind, "message": e.message, "hints": e.hints},
-        }
-        if task_name is not None:
-            out["task_name"] = task_name
-        if backend is not None:
-            out["extract_backend"] = backend
-        if args.reset != "none":
-            out["reset"] = args.reset
-            out["error"]["reset_sent"] = reset_sent
-        if args.target_model:
-            out["target_model"] = args.target_model
-            out["error"]["model_sent"] = model_sent
-        # 命名会话部分状态（ADR-0009）：终端已建/启动已发/旧会话已死/领养失败原因等如实报。
-        for k in ("target_address", "launched", "launch_sent", "rebuilt",
-                  "rebuilt_old_target", "workspace", "adopt_reason",
-                  "space_created", "pane_adopted", "gift_cleanup_warning",
-                  "reset_skipped", "display_name", "display_name_warning",
-                  "space", "space_selected", "space_landed", "space_target_warning",
-                  "space_restore", "space_restore_warning",
-                  "next_skill_feedback", "learning_warning"):
-            if k in ctx:
-                out[k] = ctx[k]
-        if started is not None:
-            out["error"]["elapsed_s"] = round(deps.monotonic() - started, 1)
-        if ledger is not None and ledger.get("run_record"):
-            out["error"]["run_record"] = ledger["run_record"]
-        # 完整性标记（ADR-0019）：回读后发生的错误（如抽取失败）不丢折叠标记。
-        if ledger is not None and "complete" in ledger:
-            out["complete"] = ledger["complete"]
-            out["complete_reason"] = ledger["complete_reason"]
-        emit_result(deps, out, result_path, notify_path)
-        return e.returncode
+        return error_exit(e)
+    except OSError as e:
+        # 中途本地 IO 失败顶层兜底（ADR-0024，#111）：整类 OSError（runs 创建、
+        # 台账 open＋中途写、回读原料/本轮原料/干净回复落盘、api 读本轮原料等）
+        # 映射 io_failed，走同一 error 出口；不重试、不缓冲、不造第二套交付通道。
+        # 有现成语义的读取点在各自位置包既有 kind（prompt_unreadable/missing_prompt），
+        # 不到这里。duplicate_release 仍是第一闸，本兜底绝不抢占。
+        return error_exit(io_failed_error(e, ledger_opened))
 
 
 if __name__ == "__main__":
