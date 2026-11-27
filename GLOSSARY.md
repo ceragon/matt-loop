@@ -123,8 +123,8 @@ _Avoid_: 训练集、模型复判
 ### 会话生命周期
 
 **会话名**（Session Name）:
-调用方给执行者的身份字符串，约定形态 `<bot>-<machine>`（bot＝派发实例 slug，machine 本机恒 local、远端本地取值），一 bot 一机器恒一条、跨仓库跨 kind；一名一 live 会话；脚本只认名字、不解其义、不校验式样（ADR-0015）。
-_Avoid_: agent 名、kind、终端号、`<kind>-<repo>`
+调用方给执行者的身份字符串，约定＝人工指派的成品字面量：可读、全局唯一、一经写死永不改，写进该派发实例的恒加载配置、每轮照抄、禁现场拼装；一派发实例恒一条、跨仓库跨 kind；一名一 live 会话；脚本只认名字、不解其义、不校验式样（ADR-0025 supersede ADR-0015 形态段）。
+_Avoid_: agent 名、kind、终端号、`<kind>-<repo>`、`<bot>-<machine>` 拼装公式
 
 **命名会话**（Named Session）:
 以会话名标识的 herdr 终端；死后同名重建，名字恒解析到最新的 live 终端。
