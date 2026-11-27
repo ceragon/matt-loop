@@ -1,6 +1,6 @@
 ---
 name: loop
-description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（裁剪＋抽取成 JSON，默认直连 API、pi 备选）；监听只读随时可，仅报错时可直推（仍须放行）。命名会话 get-or-create（ADR-0009）：--target 推荐传会话名（约定 <bot>-<machine>，一 bot 一机器恒一条、任务区分靠显示名，ADR-0015），目标缺失/已死/空闲 shell 时同一放行内创建或复活（--launch shell 启动命令＋--cwd 成对必填，--display-name 新鲜路径必传，缺参 launch_required/display_name_required 补参同 id 重试）；名字被占呈报 session_occupied，--rebuild 经用户显式授权只杀 idle/done 占位者；命名会话恒可见于 herdr-app 工作区（领养失败 adopt_failed 停轮，herdr-app 必须常开），--space 必传指定领养落点空间（名/id/路径三态解析，ADR-0011）；换 kind 同名 --rebuild（显式授权、只杀 idle/done），换 --target 降为约定外逃生门（ADR-0015）。可选 --reset 先发 /new /clear /compact；可选 --target-model 先发 /model <名字> 切目标模型（独立于 --reset，顺序 重置→切模型→主任务）；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）时，全新空会话（turn == 0）或刚创建/复活的新鲜会话自动豁免，复用旧会话（turn > 0）必须带 --reset；命令行必须单独单行一轮（超体积或多行 → split_required 静态拒发，ADR-0017）。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
+description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（裁剪＋抽取成 JSON，默认直连 API、pi 备选）；监听只读随时可，仅报错时可直推（仍须放行）。命名会话 get-or-create（ADR-0009）：--target 推荐传会话名（约定＝人工指派的成品字面量，写死调用方恒加载配置、每轮照抄、禁现场拼装，一派发实例恒一条、任务区分靠显示名，ADR-0025 supersede ADR-0015 形态段；约定内禁裸 t 号，仅逃生门/人工调试），目标缺失/已死/空闲 shell 时同一放行内创建或复活（--launch shell 启动命令＋--cwd 成对必填，--display-name 新鲜路径必传，缺参 launch_required/display_name_required 补参同 id 重试）；名字被占呈报 session_occupied，--rebuild 经用户显式授权只杀 idle/done 占位者；命名会话恒可见于 herdr-app 工作区（领养失败 adopt_failed 停轮，herdr-app 必须常开），--space 必传指定领养落点空间（名/id/路径三态解析，ADR-0011）；换 kind 同名 --rebuild（显式授权、只杀 idle/done），换 --target 降为约定外逃生门（ADR-0015）。可选 --reset 先发 /new /clear /compact；可选 --target-model 先发 /model <名字> 切目标模型（独立于 --reset，顺序 重置→切模型→主任务）；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）时，全新空会话（turn == 0）或刚创建/复活的新鲜会话自动豁免，复用旧会话（turn > 0）必须带 --reset；命令行必须单独单行一轮（超体积或多行 → split_required 静态拒发，ADR-0017）。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
 ---
 
 # loop：走管道
@@ -11,7 +11,7 @@ dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取�
 
 ## 每轮循环（走管道）
 
-1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_skill` 非空时，本轮主任务**应照用该 skill 作开场**，由调用方拼成 `/<next_skill> <自填参数>`；换 skill 须在放行卡明示理由（ADR-0008），卡片四状态见「预测可见性」。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd）、显示名（每轮贴出：同任务各轮同名、新任务换名）与目标空间（`--space`，每轮必传）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；新任务首轮三件套（ADR-0015）：换显示名＋推荐 `--reset`（不限会话起始 skill，建议不是闸）＋放行卡预测标「已编辑：新任务，上轮预测不适用」；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，**命令行必须单独单行一轮**（只带短参数，长正文下一轮，ADR-0017；超体积或多行会被 `split_required` 静态拒发，别先撞了再回来二轮请示），先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
+1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_skill` 非空时，本轮主任务**应照用该 skill 作开场**，由调用方拼成 `/<next_skill> <自填参数>`；换 skill 须在放行卡明示理由（ADR-0008），卡片四状态见「预测可见性」。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移；**照抄自己恒加载配置里的成品字面量，禁现场拼装**，ADR-0025）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd）、显示名（每轮贴出：同任务各轮同名、新任务换名）与目标空间（`--space`，每轮必传）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；新任务首轮三件套（ADR-0015）：换显示名＋推荐 `--reset`（不限会话起始 skill，建议不是闸）＋放行卡预测标「已编辑：新任务，上轮预测不适用」；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，**命令行必须单独单行一轮**（只带短参数，长正文下一轮，ADR-0017；超体积或多行会被 `split_required` 静态拒发，别先撞了再回来二轮请示），先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
 2. **写放行文件**：全文写成 UTF-8 文件，放 `$TMPDIR/loop/releases/<放行id>.txt`（目录不存在就建），放行后一字未改。完成判据：文件就绪（dispatch 核对 sha256，改动即拒发）。
 3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset`/`--target-model` 时该放行一并授权全部前置＋主任务（重置是枚举里可预知的固定命令，切模型是字面 `/model <名字>`）。
 4. **判读结果**：先读 `.notify.json`（通知投影，成功 13 字段／error 全量），需要完整诊断、审计或回看再读 `.result.json`＋`run_record`（统一读取契约，ADR-0014），整理成选项卡给用户；`next_skill` 非空时以「本轮新预测 skill」一并呈出（它是预测不是事实，参数由下一轮调用方自填）。若带 `next_skill_feedback`，把本轮刚结算的照用／偏离与关键计数变化一并呈出。完成判据：用户看到结果、给出下一轮方向。
@@ -29,7 +29,7 @@ dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取�
 
 ```bash
 python3 scripts/dispatch.py \
-  --target <会话名（推荐）或t号> --release-id <放行id> --prompt-file <提示词文件> \
+  --target <会话名（推荐，成品字面量）或t号（仅逃生门/人工调试）> --release-id <放行id> --prompt-file <提示词文件> \
   --space <目标空间：名/id/路径> \
   --expect-proc <前台进程子串> \
   --launch "<shell 启动命令>" --cwd <工作目录>   # 首轮/目标可能缺失时带，get-or-create 兜底
@@ -50,15 +50,16 @@ python3 scripts/dispatch.py \
 - `--display-name <显示名>`（ADR-0010）：命名会话标签页上给人看的名字。**创建/复活/重建三条新鲜路径必传**（缺则 `display_name_required`，退出码 2、零发送、id 不消耗、补参同 id 重试，与 `launch_required` 同构）；复用轮可选——传了就更新 tab 名、不传保持旧值。机械校验：非空、1–64 字符、禁换行与控制字符（非法 `bad_args`）；**不校验式样**。落地：领养复核 pane 落地后、主任务发送前 `tab.rename`＋`ls` 复核名；**失败不丢放行**，result 记 `display_name_warning`，选项卡如实呈报。**传了就覆盖**（放行已授权名字本身）；复用轮传显示名前，调用方若知用户手工改过名，先向用户确认。每轮传纪律（ADR-0015）：同任务各轮传同一显示名（幂等覆盖）、新任务才换名；脚本「新鲜路径必传、复用轮可选」机制不变。
 - `--rebuild`（默认不传，ADR-0009）：**强制重建**，仅用户明示授权 kill 重建后传，只在 `session_occupied` 占位分支生效（其余分流误传 `bad_args`）。只杀 idle/done 占位者，working/blocked/未自报 → `rebuild_busy` 拒杀；kill 后同名新建，result `rebuilt:true`＋旧 t 号，kill 后创建失败也带部分状态可审计。放行必贴「将 kill <名字>（占位者摘要）并重建」。
 - **换 kind＝同名 `--rebuild`**（ADR-0015）：经用户显式授权 kill idle/done 占位者后同名重建，`--expect-proc` 同步改新 kind；换 `--target` 到另一命名会话降为约定外逃生门（get-or-create 机制仍在，旧会话保留可切回）。`--switch-agent`/`--exit-command`/`--exit-keys` 已整条移除（ADR-0007 superseded by ADR-0009）。
-- **命名与任务边界（ADR-0015）**：会话名 `<bot>-<machine>`、显示名每轮覆盖、新任务三件套、cwd/常驻空间/换 kind/存量纪律见下「命名与任务边界」小节。
+- **命名与任务边界（ADR-0015/0025）**：会话名＝成品字面量（照抄不拼装）、显示名每轮覆盖、新任务三件套、cwd/常驻空间/换 kind/存量纪律见下「命名与任务边界」小节。
 - 等待与抽取默认值一般不用动：墙钟 3600 秒（主任务发送成功起计）、check-in 180 秒、落定静置 10 秒 × 2 次、抽取护栏 1200 秒（`--wall-clock` / `--check-in` / `--settle-seconds` / `--settle-checks` / `--extract-timeout` 可覆盖）。读取固定 `hc read --lines 1000`（ADR-0013）：回读最近 1000 行拼接历史＋当前屏，再按提示词回声断轮切出本轮段。**超过 1000 行历史的回复开头仍不可得**——回读全文不等于无限完整历史，本轮原料与干净回复全文也不提供超出该范围的保证；hc 自报 `complete` 只记台账、不作完成判据。
 - `--loop-dir` 默认 `$TMPDIR/loop`（随 OS 临时清理，记录不持久）；`--prompt-file` 传 `$TMPDIR/loop/releases/<放行id>.txt`；`--pi-model` 透传 `pi --model`（仅 pi 备选后端生效）。
 
-## 命名与任务边界（ADR-0015）
+## 命名与任务边界（ADR-0015/0025）
 
 约定靠调用方读本节生效，无机械强制；脚本只校验会话名 1–32 位 a-z0-9-_、不校验式样。违约的机械兜底（`not_idle`、`session_occupied`、`reset_required`）全部沿用既有。
 
-- **会话名形态 `<bot>-<machine>`**：一 bot 一机器恒一条，跨仓库、跨 kind。bot＝派发实例 slug（同族副本实例 slug 不同，如 LoopEng 与 LoopEng2 各一条）；族名只留显示名前缀。machine＝本机恒 `local`；远端＝该机器上的调用方本地取值（该机 herdr 机器名或该机配置），文档只写规则、不写死任何远端名。来源写死调用方配置（DS Bot 用 bot 名；Grok Bot 用账号/配置名＋角色）。超长调用方自截、保证同机唯一。示例：`loopeng-local`；远端 `<bot>-<该机 slug>`（占位式）。
+- **会话名＝人工指派的成品字面量**（ADR-0025 supersede ADR-0015 形态段＋来源句）：不再规定 `<bot>-<machine>` 或任何结构。字面量可读、**全局唯一**、一经写死永不改、指派时即满足 1–32 位 a-z0-9-_；只能人工指派，不从 bot 名（可改可重名）或平台 id（超长）派生。写进该派发实例的**恒加载配置**（DS Bot 的 instructions／Grok Bot 的唤醒 routine 固定文本），**每轮照抄、禁止现场拼装**——禁借任务名、t 号、hostname 等任何运行时值拼名。一派发实例恒一条，跨仓库、跨 kind（同族副本实例字面量不同，如 LoopEng 与 LoopEng2 各一条）；族名只留显示名前缀。改名＝换实例：新字面量＋旧会话按存量纪律自然结束。已稳定的既有字面量直接追认（如 `loopeng-local`，结构不再被规定、只是历史成品）。指派表由用户私有维护，不进公开仓库。
+- **约定内禁裸 t 号**（ADR-0025）：常规派发必须传会话名（照抄成品字面量）；裸 t 号仅限约定外逃生门／人工调试。不删能力、不加机械闸。回传腿照抄通知投影 `target` 的纪律不变。
 - **任务区分＝显示名每轮覆盖**：`<bot 族>_<任务描述>`（如 `LoopEng_命名层设计`）、可中文，任务描述用短语（GUI 约 170px 截断、十几个汉字）。同任务各轮同名（幂等），新任务才换名。bot 族前缀表示「谁派的活」，kind 前缀冗余。**撞名警示**：显示名恰等于程序名（如 `claude`）会被 tabs mod 当自动名、继续跟随 live title；`<bot 族>_` 前缀天然避开。显示名不是会话名：寻址/复用仍用会话名。
 - **新任务**（见 GLOSSARY）：调用方判定任务意图切换后的首轮；同任务多轮不算。新任务首轮三件套：换显示名＋推荐 `--reset`（不限会话起始 skill，建议不是闸）＋放行卡预测标「已编辑：新任务，上轮预测不适用」。
 - **cwd 与绝对路径纪律**：`--cwd` 仅创建生效、复用轮传了不改工作目录、复活沿用终端原 cwd；跨仓库任务提示词恒带目标仓库绝对路径，执行者跨目录干活。常驻仓库真的变更时：用户显式关 tab（或授权 kill）→ finished → 下轮 get-or-create 带新 `--cwd` 重建；同 kind idle 时没有 `--rebuild` 可用（它只在 `session_occupied` 占位分支生效）。
