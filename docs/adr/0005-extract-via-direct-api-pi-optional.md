@@ -4,6 +4,14 @@ status: accepted
 
 # 抽取直连 API，pi 降为显式备选
 
+> 补记（ADR-0026，#139）：决定 1 值域扩为 `api|pi|caller`，「默认 api」改为
+> 三档规则链（显式 env 恒赢；未设但 `LOOP_API_BASE/KEY/MODEL` 任一已设＝api 意图；三个全未设
+> 探 pi、探不到落 caller），受理时判一次、轮中不级联。决定 3 的
+> `api_not_configured` 收窄为「api 意图明确但配置不齐」，纯未配置不再报错。
+> Considered Options 里「自动探测……被否」一条被 supersede——`extract_backend`
+> 逐轮记录使「猜谜」否决理由失效。api/pi 的运输层与错误映射契约全部不变。
+> 详见 ADR-0026。
+
 > 补记（ADR-0013，#50）：决定 2/7 的抽取输入语料由「整屏原文」改为「本轮原料」
 > （回读 1000 行历史＋断轮切出的本轮段，`.turn.md`）；运输层（OpenAI 兼容
 > chat completions、@文件 附件、env、错误映射、零回显）全部不变。详见 ADR-0013。

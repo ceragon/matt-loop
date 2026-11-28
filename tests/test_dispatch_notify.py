@@ -4,10 +4,11 @@
 跑法：python3 tests/test_dispatch_notify.py
 主测试缝＝唯一 harness.run（CLI 契约，T5c/ADR-0021）：FakeHerdr 假世界摆场景，
 env / extract / http_open / proxy_resolution / clock 注入，断言只认 rc、stdout JSON、
-result.json / notify.json 落盘产物与 POST 请求体字节。覆盖规格阶段一测试矩阵 1–11：
-  1 webhook 关闭仍生成正确通知投影（13 字段），不 POST。
-  2 纯成功与 needs_user=true 的成功通知都严格只有 13 字段。
-  3 questions/blocked/conclusion/rewritten/run_record/elapsed_s/next_skill 逐字来自本轮结果。
+result.json / notify.json 落盘产物与 POST 请求体字节。覆盖规格阶段一测试矩阵 1–11
+（白名单形状按 ADR-0026 修订：恒带 7＋有内容才带 6，缺席即空，run_record 移出）：
+  1 webhook 关闭仍生成正确通知投影（恒带 7 字段），不 POST。
+  2 纯成功与 needs_user=true 的成功通知字段集＝恒带 7＋有内容的条件字段（字面钉死）。
+  3 questions/blocked/conclusion/rewritten/elapsed_s/next_skill/extract_backend 逐字来自本轮结果。
   4 error 通知保留完整 kind/message/hints 与部分状态，不套成功白名单。
   5 全量结果保留既有字段；webhook/webhook_error/webhook_error_detail 只在全量结果。
   6 首次 POST 前通知记录已存在。
@@ -17,6 +18,9 @@ result.json / notify.json 落盘产物与 POST 请求体字节。覆盖规格阶
     全量结果也不可写时 stderr/stdout 不声称记录完整。
   10 非法放行 id 等早期 error 不生成不安全通知路径，既有发送与 stdout 行为不回归。
   11 URL/密钥/Authorization/代理地址/敏感异常消息不进通知/结果/stderr。
+  12 空值缺席（ADR-0026）：全空选段的成功通知只剩恒带 7 字段；run_record 恒不在通知。
+  13 caller 档投影（ADR-0026）：turn_text 内联（干净剥离无 warning）；whole_segment/
+    echo_degraded 条件携带；选段空值缺席；result 恒全量（turn_text 先是 result 字段）。
 
 T5c（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run。写失败探针（9/9b）保留
 对宿主模块 pathlib.Path 的作用域 mock.patch.object，退出无条件恢复（ADR-0016 决定 7
@@ -34,14 +38,18 @@ from unittest import mock
 import harness
 from harness import dispatch
 from fake_herdr import FakeHerdr
-from helpers import PROMPT, SCREEN, extraction
+from helpers import PROMPT, SCREEN, extraction, notify_fields
+
+# 恒带 7 字段的字面契约（ADR-0026 决定 4；不 import dispatch 常量，漂移即红）。
+ALWAYS = {"ok", "release_id", "target", "needs_user", "elapsed_s",
+          "complete", "extract_backend"}
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
 SENTINELS = (URL, "example.invalid", SECRET, "Bearer", "Authorization",
              "reason-with-host-detail", "envproxy.corp", "hunter2", "3128")
 
-# 固定抽取结果：六字段齐全（含 next_skill），成功通知投影据此凑足 13 字段。
+# 固定抽取结果：六字段齐全（含 next_skill），成功通知投影据此凑恒带 7＋非空条件字段。
 # 选段字段须逐字来自屏幕（verify_extraction），故 conclusion 取 SCREEN 内原句。
 CONCLUSION = "已完成该功能。"
 QUESTION = "要不要批准接口改动？"
@@ -77,13 +85,13 @@ class RecordingClock(harness.VirtualClock):
         super().sleep(s)
 
 
-def _world(question=False):
+def _world(question=False, screen=None):
     """既有 idle agent t99＋main 空间 pane 已在（领养提前返回）＋稳定屏幕。"""
     w = FakeHerdr()
     w.add_terminal(address="t99", name="claude-test", labels={"loop": "1"})
     sp = w.add_space(name="main")
     w.add_tab(sp, terminals=["t99"])
-    w.screen("t99", SCREEN_Q if question else SCREEN)
+    w.screen("t99", screen if screen is not None else (SCREEN_Q if question else SCREEN))
     return w
 
 
@@ -94,7 +102,7 @@ def assert_clean(*texts):
 
 
 def run_round(rid, ext=None, opener=None, env_on=True, extra_argv=(), w=None, holder=None,
-              proxy_res=None, clock=None):
+              proxy_res=None, clock=None, backend=None):
     """经唯一 harness.run 跑一轮完整 dispatch，读双产物；返回观察项 dict。
     posted 收集每次 POST 的 (请求体字节, proxies)。notify_bytes 为 None 表示文件不存在。
     holder 给定时填入 ld（loop 目录），供 opener 在 POST 时刻定位通知文件断言落盘顺序。"""
@@ -115,10 +123,13 @@ def run_round(rid, ext=None, opener=None, env_on=True, extra_argv=(), w=None, ho
             def opener(req, timeout, proxies):
                 posted.append((req.data, proxies))
                 return FakeResp()
+        env = {"LOOP_WEBHOOK_URL": URL if env_on else None,
+               "LOOP_WEBHOOK_SECRET": SECRET if env_on else None}
+        if backend is not None:
+            env["LOOP_EXTRACT_BACKEND"] = backend
         r = harness.run(
             argv, world=w if w is not None else _world(),
-            env={"LOOP_WEBHOOK_URL": URL if env_on else None,
-                 "LOOP_WEBHOOK_SECRET": SECRET if env_on else None},
+            env=env,
             extract=lambda deps, request, turn_path, injection: extraction(ext if ext is not None else EXT),
             http_open=opener,
             proxy_resolution=proxy_res if proxy_res is not None else (lambda url: ({}, "none")),
@@ -142,19 +153,26 @@ def main():
     assert o["posted"] == [], o["posted"]
     assert o["notify_bytes"] is not None, "webhook 关闭也须生成通知记录"
     notify = json.loads(o["notify_bytes"].decode("utf-8"))
-    assert set(notify) == set(dispatch.NOTIFY_SUCCESS_FIELDS), notify
+    assert set(notify) == notify_fields(o["res"]), notify
+    assert ALWAYS <= set(notify), notify
+    assert "run_record" not in notify, notify
     assert o["notify_files"] == ["nf-off-1.notify.json"], o["notify_files"]
     print("1 webhook off: notify projection still written, no POST ok")
 
-    # 2 纯成功与 needs_user=true 都严格 13 字段
-    for tag, ext, w in (("pure", EXT, None), ("needs", EXT_NEEDS_USER, _world(question=True))):
+    # 2 纯成功与 needs_user=true：恒带 7＋有内容的条件字段（字面钉死，ADR-0026）
+    for tag, ext, w, want in (
+            ("pure", EXT, None, ALWAYS | {"conclusion", "next_skill"}),
+            ("needs", EXT_NEEDS_USER, _world(question=True),
+             ALWAYS | {"questions", "conclusion", "next_skill"})):
         o = run_round("nf-11-" + tag, ext=ext, w=w)
         assert o["rc"] == 0 and o["res"]["ok"], o["res"]
         notify = json.loads(o["notify_bytes"].decode("utf-8"))
-        assert set(notify) == set(dispatch.NOTIFY_SUCCESS_FIELDS), (tag, notify)
-        assert len(notify) == 13, (tag, notify)
+        assert set(notify) == want, (tag, notify)
         assert notify["needs_user"] is ext["needs_user"], (tag, notify)
-    print("2 pure success and needs_user=true: exactly 13 fields ok")
+        # 空值缺席（want 集已钉）：rewritten {}、complete_reason [] 恒不带；run_record 移出
+        assert "rewritten" not in notify and "complete_reason" not in notify, (tag, notify)
+        assert "run_record" not in notify, (tag, notify)
+    print("2 pure success and needs_user=true: always-7 + non-empty content fields ok")
 
     # 3 判读字段逐字来自本轮结果
     o = run_round("nf-verbatim-1", ext=EXT_NEEDS_USER, w=_world(question=True))
@@ -162,14 +180,15 @@ def main():
     notify = json.loads(o["notify_bytes"].decode("utf-8"))
     res = o["res"]
     for k in ("ok", "release_id", "target", "needs_user", "questions", "conclusion",
-              "blocked", "rewritten", "run_record", "elapsed_s", "next_skill",
-              "complete", "complete_reason"):
+              "elapsed_s", "next_skill", "complete", "extract_backend"):
         assert notify[k] == res[k], (k, notify[k], res[k])
     assert notify["questions"] == [QUESTION], notify
     assert notify["conclusion"] == CONCLUSION, notify
     assert notify["next_skill"] == "implement", notify
-    assert notify["rewritten"] == {}, notify
-    assert notify["run_record"] == res["run_record"], notify
+    # 空值缺席（rewritten {}、blocked ""、complete_reason []）；run_record 移出通知
+    for k in ("rewritten", "blocked", "complete_reason", "run_record"):
+        assert k not in notify, (k, notify)
+    assert res["run_record"].endswith(".md"), "result 恒全量，run_record 仍在 result"
     print("3 decision fields verbatim from this round's result ok")
 
     # 4 error 通知保留完整对象与部分状态，不套白名单
@@ -182,7 +201,7 @@ def main():
     assert isinstance(notify["error"]["hints"], list), notify
     assert notify["error"]["reset_sent"] is False, notify   # 前置已发？refuse 第 1 次＝重置前置
     assert "task_name" in notify and "reset" in notify, notify  # 非白名单字段仍在
-    assert set(notify) != set(dispatch.NOTIFY_SUCCESS_FIELDS), notify
+    assert set(notify) != set(dispatch.NOTIFY_CANDIDATE_FIELDS), notify
     # error 通知＝发送前完整对象（去掉 POST 后才加的 webhook 诊断）
     expect = {k: v for k, v in o["res"].items()
               if k not in ("webhook", "webhook_error", "webhook_error_detail")}
@@ -202,7 +221,7 @@ def main():
     for k in ("webhook", "webhook_error", "webhook_error_detail"):
         assert k not in notify, notify
         assert k in o["res"], o["res"]
-    assert set(notify) == set(dispatch.NOTIFY_SUCCESS_FIELDS), notify
+    assert set(notify) == notify_fields(o["res"]), notify
     print("5 send diagnostics only in full result, not in notify projection ok")
 
     # 6 首次 POST 前通知记录已存在（在 opener 内于 POST 时刻断言落盘先于发送）
@@ -321,10 +340,52 @@ def main():
     on = run_round("nf-parity-on", env_on=True)
     noff = json.loads(off["notify_bytes"].decode("utf-8"))
     non = json.loads(on["notify_bytes"].decode("utf-8"))
-    for k in ("elapsed_s", "release_id", "run_record"):  # 计时/放行 id/临时目录路径逐轮不同
+    for k in ("elapsed_s", "release_id"):  # 计时/放行 id 逐轮不同
         noff.pop(k); non.pop(k)
     assert noff == non, (noff, non)
-    print("extra: webhook on/off produce identical projection (modulo timing/id/path) ok")
+    print("extra: webhook on/off produce identical projection (modulo timing/id) ok")
+
+    # 12 空值缺席（ADR-0026）：全空选段的成功通知只剩恒带 7 字段
+    ext_empty = {"needs_user": False, "questions": [], "conclusion": "",
+                 "blocked": "", "reply": SCREEN, "next_skill": ""}
+    o = run_round("nf-empty-1", ext=ext_empty)
+    assert o["rc"] == 0 and o["res"]["ok"], o["res"]
+    notify = json.loads(o["notify_bytes"].decode("utf-8"))
+    assert set(notify) == ALWAYS, notify
+    assert "run_record" not in notify and o["res"]["run_record"].endswith(".md")
+    print("12 empty content fields absent: only always-7 remain ok")
+
+    # 13 caller 档投影（ADR-0026）：turn_text 内联＋warning 条件携带＋选段缺席
+    clean_screen = "❯ " + PROMPT + "\n" + CONCLUSION   # 完整回声（含第二行）＋回复
+    o = run_round("nf-caller-clean", backend="caller", w=_world(screen=clean_screen))
+    assert o["rc"] == 0 and o["res"]["ok"], o["res"]
+    res = o["res"]
+    assert res["extract_backend"] == "caller", res
+    notify = json.loads(o["notify_bytes"].decode("utf-8"))
+    assert set(notify) == ALWAYS | {"turn_text"}, notify
+    assert notify["turn_text"] == CONCLUSION, notify
+    assert notify["turn_text"] == res["turn_text"], "投影不变量：通知字段先是 result 字段"
+    assert "turn_text_warning" not in notify and "turn_text_warning" not in res
+    assert res["run_record"].endswith(".turn.md"), "caller 档 run_record 指本轮原料"
+    assert not (o["ld"] / "runs" / "nf-caller-clean.md").exists(), "caller 不写干净全文"
+    # whole_segment：锚点完全未命中→内联整段＋标记（绝不交白卷）
+    no_echo = "旧轮回复\n" + CONCLUSION
+    o = run_round("nf-caller-whole", backend="caller", w=_world(screen=no_echo))
+    res = o["res"]
+    assert o["rc"] == 0 and res["ok"], res
+    notify = json.loads(o["notify_bytes"].decode("utf-8"))
+    assert set(notify) == ALWAYS | {"turn_text", "turn_text_warning"}, notify
+    assert notify["turn_text_warning"] == res["turn_text_warning"] == "whole_segment"
+    assert notify["turn_text"] == no_echo, "整段内联（回读全文）"
+    # echo_degraded：TUI 折叠回声（首行＋…）→不猜，退回首行起整段＋标记
+    folded = "❯ " + PROMPT.splitlines()[0] + " … +1 line\n" + CONCLUSION
+    o = run_round("nf-caller-degraded", backend="caller", w=_world(screen=folded))
+    res = o["res"]
+    assert o["rc"] == 0 and res["ok"], res
+    notify = json.loads(o["notify_bytes"].decode("utf-8"))
+    assert notify["turn_text_warning"] == res["turn_text_warning"] == "echo_degraded"
+    assert notify["turn_text"] == folded, "降级退回含回声行的段全文"
+    print("13 caller projection: turn_text inline, conditional warning, empty fields absent ok")
 
     print("all notify dual-artifact tests passed")
 

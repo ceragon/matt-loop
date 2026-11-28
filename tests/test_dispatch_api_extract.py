@@ -3,9 +3,16 @@
 
 跑法：python3 tests/test_dispatch_api_extract.py
 覆盖：
-  1 后端解析：默认 api；pi；大小写/空白容忍；非法值 bad_extract_backend（rc=2）。
-  2 启动预检：api 缺 env → api_not_configured（rc=2，只列变量名），零发送、无台账；
+  1 三档规则链（ADR-0026）：显式 env 恒赢（api|pi|caller，大小写/空白容忍，非法值
+    bad_extract_backend rc=2，空/纯空白视同未设）；未设但 LOOP_API_BASE/KEY/MODEL
+    任一已设＝api 意图（只设 LOOP_API_MAX_TOKENS 不算）；三个全未设探 pi、探不到落 caller。
+  2 启动预检：api 意图（显式或三个必填键任一已设）配置不齐 → api_not_configured（rc=2，
+    只列变量名），零发送、无台账、同 id 可重试；纯未配置不报错（落链下探）；
     max_tokens 非法 → bad_api_max_tokens（rc=2）。
+  2b 定档矩阵（main 级）：显式 backend × env 齐/半配/全未设 × pi 可探/不可探，
+    逐格钉 result/台账 extract_backend 与 api_not_configured 触发。
+  2c caller 路径（ADR-0026）：ok:true、选段空值＝尚未识别、rewritten:{}、干净全文
+    不写、run_record 指本轮原料、抽取入口不被调用、台账 params 带 caller。
   3 请求形状：URL=base+/chat/completions（尾斜杠容忍）、Bearer 头、system=extract.md、
     user=指令→few-shot（如有）→回声参照→内联本轮原料居末尾、temp 0、max_tokens 默认
     32768/env 覆盖、无 stream/response_format、超时=--extract-timeout；api 路径不找 pi。
@@ -50,19 +57,43 @@ def _ok_payload():
     return {"choices": [{"message": {"content": json.dumps(EXT, ensure_ascii=False)}}]}
 
 
+def _no_pi(name, probe_dirs=None):
+    return None
+
+
+def _has_pi(name, probe_dirs=None):
+    return "/fake/" + name
+
+
+def _no_tool_pi(name, probe_dirs=None):
+    """main 级 locate 桩：只 pi 不可探，其余工具照常假路径。"""
+    return None if name == "pi" else "/fake/" + name
+
+
 def main():
-    # 1 后端解析（纯函数直调，注入显式 env dict，零全局副作用）
-    assert dispatch.resolve_extract_backend({}) == "api"
-    assert dispatch.resolve_extract_backend({"LOOP_EXTRACT_BACKEND": "pi"}) == "pi"
-    assert dispatch.resolve_extract_backend({"LOOP_EXTRACT_BACKEND": " API "}) == "api"
+    # 1 三档规则链（纯函数直调，注入显式 env dict＋locate，零全局副作用）
+    r = dispatch.resolve_extract_backend
+    assert r({}, locate=_no_pi) == "caller"          # 纯未配置＋无 pi＝零配置地板
+    assert r({}, locate=_has_pi) == "pi"             # 纯未配置＋有 pi
+    assert r({"LOOP_EXTRACT_BACKEND": "pi"}, locate=_no_pi) == "pi"
+    assert r({"LOOP_EXTRACT_BACKEND": "caller"}, locate=_has_pi) == "caller"
+    assert r({"LOOP_EXTRACT_BACKEND": " API "}, locate=_no_pi) == "api"
+    assert r({"LOOP_EXTRACT_BACKEND": " Caller "}, locate=_has_pi) == "caller"
+    for n in ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL"):
+        assert r({n: "x"}, locate=_no_pi) == "api", n   # 三键任一已设＝api 意图
+        assert r({n: "  "}, locate=_no_pi) == "caller", n  # 空白不算已设
+    # 评审裁定钉：只设 MAX_TOKENS 不算 api 意图；空/纯空白 backend 视同未设走自动链
+    assert r({"LOOP_API_MAX_TOKENS": "8192"}, locate=_no_pi) == "caller"
+    assert r({"LOOP_EXTRACT_BACKEND": "   "}, locate=_no_pi) == "caller"
+    assert r({"LOOP_EXTRACT_BACKEND": ""}, locate=_has_pi) == "pi"
     try:
-        dispatch.resolve_extract_backend({"LOOP_EXTRACT_BACKEND": "foo"})
+        r({"LOOP_EXTRACT_BACKEND": "foo"}, locate=_no_pi)
         raise AssertionError("should raise")
     except dispatch.DispatchError as e:
         assert e.kind == "bad_extract_backend" and e.returncode == 2
-    print("1 backend resolution ok")
+    print("1 three-tier rule chain ok")
 
-    # 2 启动预检：缺 env，零发送无台账（经 harness env 注入）
+    # 2 启动预检：api 意图配置不齐，零发送无台账（经 harness env 注入）
     w = world()
     with tempfile.TemporaryDirectory() as td:
         r = harness.run(argv(td, "api-pre-1"), world=w,
@@ -78,6 +109,75 @@ def main():
         except dispatch.DispatchError as e:
             assert e.kind == "bad_api_max_tokens" and e.returncode == 2
     print("2 startup preflight ok")
+
+    # 2b 定档矩阵（main 级）：显式 × env 状态 × pi 可探性，逐格钉 extract_backend。
+    # env=None 值＝该键不存在（harness DEFAULT_ENV 的 pi 显式值被覆盖掉）。
+    unset = {"LOOP_EXTRACT_BACKEND": None}
+    half = {"LOOP_EXTRACT_BACKEND": None, "LOOP_API_BASE": BASE}
+    matrix = [
+        # (rid, env, locate, 期望 backend, 期望 rc)
+        ("mx-api-full", api_env(), None, "api", 0),
+        ("mx-api-half", api_env(LOOP_API_KEY=None), None, None, 2),
+        ("mx-pi", {"LOOP_EXTRACT_BACKEND": "pi"}, None, "pi", 0),
+        ("mx-caller", {"LOOP_EXTRACT_BACKEND": "caller"}, None, "caller", 0),
+        ("mx-auto-api", api_env(LOOP_EXTRACT_BACKEND=None), None, "api", 0),
+        ("mx-auto-half", half, None, None, 2),
+        ("mx-auto-pi", unset, None, "pi", 0),
+        ("mx-auto-caller", unset, _no_tool_pi, "caller", 0),
+        ("mx-maxonly", {"LOOP_EXTRACT_BACKEND": None, "LOOP_API_MAX_TOKENS": "8192"},
+         None, "pi", 0),   # 只设 MAX_TOKENS 不算 api 意图，落自动链
+    ]
+    for rid, env, locate, want_backend, want_rc in matrix:
+        w = world()
+        with tempfile.TemporaryDirectory() as td:
+            kw = {"env": env}
+            if locate is not None:
+                kw["locate"] = locate
+            if want_backend == "api" and want_rc == 0:
+                kw["extract"] = dispatch.extract
+                kw["http_open"] = lambda req, timeout, proxies: FakeResp(_ok_payload())
+            r = harness.run(argv(td, rid), world=w, **kw)
+            assert r.rc == want_rc, (rid, r.result)
+            if want_rc == 2:
+                assert r.result["error"]["kind"] == "api_not_configured", (rid, r.result)
+                assert w.sends == [] and r.ledger is None, (rid, "半配须零发送无台账")
+            else:
+                assert r.result["extract_backend"] == want_backend, (rid, r.result)
+                assert r.ledger["params"]["extract_backend"] == want_backend, (rid, r.ledger)
+    # 半配笔误大声失败后同 id 可重试：配齐 env 用同一 rid 再跑即成功
+    w = world()
+    with tempfile.TemporaryDirectory() as td:
+        a = argv(td, "mx-retry")
+        r1 = harness.run(a, world=w, env=half)
+        assert r1.rc == 2 and r1.result["error"]["kind"] == "api_not_configured"
+        w2 = world()
+        r2 = harness.run(a, world=w2, env=api_env(LOOP_EXTRACT_BACKEND=None),
+                         extract=dispatch.extract,
+                         http_open=lambda req, timeout, proxies: FakeResp(_ok_payload()))
+        assert r2.rc == 0 and r2.result["extract_backend"] == "api", r2.result
+    print("2b admission backend matrix + same-id retry ok")
+
+    # 2c caller 路径（ADR-0026）：跳过抽取与逐字校验，机械步照旧，选段空值＝尚未识别
+    def boom_extract(deps, request, turn_path, injection):
+        raise AssertionError("caller 档不得调用抽取入口")
+
+    w = world()
+    with tempfile.TemporaryDirectory() as td:
+        r = harness.run(argv(td, "caller-path-1"), world=w,
+                        env={"LOOP_EXTRACT_BACKEND": "caller"}, extract=boom_extract)
+        assert r.rc == 0 and r.result["ok"], r.result
+        res = r.result
+        assert res["extract_backend"] == "caller"
+        assert res["needs_user"] is False and res["questions"] == []
+        assert res["conclusion"] == "" and res["blocked"] == "" and res["next_skill"] == ""
+        assert res["rewritten"] == {}, res
+        assert res["run_record"].endswith("caller-path-1.turn.md"), "run_record 指本轮原料"
+        assert res["raw_record"].endswith(".raw.md") and res["turn_record"].endswith(".turn.md")
+        assert res["turn_text"], "caller 档 result 带内联正文"
+        assert not (Path(td) / ".loop" / "runs" / "caller-path-1.md").exists(), "干净全文不写"
+        assert r.ledger["params"]["extract_backend"] == "caller"
+        assert w.sends == [("t99", PROMPT, True)], "机械步照旧发送"
+    print("2c caller path: skip extraction, empty selections, run_record->turn ok")
 
     # 3+4 请求形状与成功契约（真实抽取链经 harness 残留洞吸收密闭跑；api 路径不找 pi）
     captured = {}

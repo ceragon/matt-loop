@@ -6,8 +6,9 @@
   0 抽取指令 `_EXTRACT_INSTRUCTION` 里点名的字段集 == dispatch.EXTRACT_FIELDS
     （指令已由该常量派生，本断言防止将来改回手抄字面后漂移）；
   1 prompts/extract.md「输出」节声明的六字段 == dispatch.EXTRACT_FIELDS；
-  2 通知白名单里由抽取派生的字段 == EXTRACT_FIELDS 去掉 reply（reply 在通知里
-    由 run_record 取代，run_record 必须在场）；
+  2 通知白名单里由抽取派生的字段 == EXTRACT_FIELDS 去掉 reply（reply 不进通知：
+    api/pi 档要回看读 result.json 的 run_record，caller 档内联 turn_text）；
+    run_record 不在白名单（ADR-0026 移出通知），extract_backend 恒带候选在场；
   3 逐字校验面：verify_extraction 只校验选段字段（conclusion/blocked/questions），
     reply 走 verify_reply，needs_user / next_skill 两个非逐字字段豁免。
 pipeline.py / turn.py 没有独立的字段清单声明：前者只在 docstring 说明既有结果载荷，
@@ -61,12 +62,13 @@ def main():
         declared, dispatch.EXTRACT_FIELDS)
     print("1 extract.md declared fields == EXTRACT_FIELDS ok")
 
-    # 2 通知白名单派生自抽取字段：除 reply（以 run_record 提供回看）外全部在场
-    notify = set(dispatch.NOTIFY_SUCCESS_FIELDS)
+    # 2 通知白名单派生自抽取字段：除 reply 外全部在场；run_record 已移出（ADR-0026）
+    notify = set(dispatch.NOTIFY_CANDIDATE_FIELDS)
     derived = notify & set(dispatch.EXTRACT_FIELDS)
     assert derived == set(dispatch.EXTRACT_FIELDS) - {"reply"}, derived
-    assert "run_record" in notify, notify
-    print("2 notify whitelist covers every extract field except reply ok")
+    assert "run_record" not in notify, notify
+    assert "extract_backend" in notify, notify
+    print("2 notify whitelist covers every extract field except reply, no run_record ok")
 
     # 3 逐字校验字段集：选段字段可探针命中，非逐字字段豁免；reply 走 verify_reply
     assert "conclusion" in rewritten(conclusion="瞎编结论", blocked=TURN)

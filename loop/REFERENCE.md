@@ -33,7 +33,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 | `rebuild_busy` | `--rebuild` 但占位者状态是 working/blocked/未自报，不是 idle/done，拒杀（ADR-0009）；零 kill、id 不消耗 | 等占位者落定或请用户到屏幕前处理；在跑的工作与等人决定的弹框绝不被杀 |
 | `adopt_failed` | 领养失败，恒可见不变量破缺（ADR-0009）：`adopt_reason` 为 `app_closed`（herdr-app 没开/不可达）/`keep_error`（space.new/keep 写步失败；#46 起赠送清理失败不再 `adopt_failed`，降级 `gift_cleanup_warning`）/`no_pane`（keep 后轮询窗口耗尽仍无 pane，#40）/`space_not_found`（`--space` 名/id 在 ls 里找不到，或命中空间缺 id；名/id 不自动建空间）/`space_ambiguous`（`--space` 路径按 folder 命中多个空间）/`select_error`（space.select 失败或复核选中不符，keep 未发；复核不符时先走还原护栏，select 已生效也不把焦点留在目标空间；ADR-0011）。**创建路径**：保留已建终端、`launched:true`/`target_address`/`workspace:"failed"`、放行 id 消耗；**既有路径预检**：零发送、id 不消耗 | 创建路径：开 app 后**新放行 id** 重试走既有路径补领养修复；预检路径：开 app 后**同 id** 重试。`space_not_found`/`space_ambiguous`：核对目标空间名/id/路径（路径多匹配改传 id 或唯一名）。部分状态（空间已建/pane 已落地/选中已还原）如实报 |
 | `launch_failed` | 创建/复活失败（ADR-0009）：hc run 失败（含 `name_taken` 并发竞态映射）、打标签失败、启动命令发送失败、等 shell/等 agent 超时或终端死亡；带部分状态（`launched`/`launch_sent`/`rebuilt`＋旧 t 号）。创建路径等就绪在领养之后（#46），超时/死亡同样带 `workspace:"adopted"`/`pane_adopted:true`（会话已可见） | 告知用户；经放行后另起一轮。`name_taken`＝同名 live 终端存在，不建不 kill |
-| `api_not_configured` / `bad_extract_backend` / `bad_api_max_tokens` | 抽取后端启动预检不过（ADR-0005）：backend=api 缺 `LOOP_API_BASE/KEY/MODEL`；`LOOP_EXTRACT_BACKEND` 值非法；`LOOP_API_MAX_TOKENS` 非正整数。未发送 | 配齐/改正 env 用同一放行 id 重试，或设 `LOOP_EXTRACT_BACKEND=pi`；见 SKILL.md「抽取后端」 |
+| `api_not_configured` / `bad_extract_backend` / `bad_api_max_tokens` | 抽取后端启动预检不过（ADR-0005，ADR-0026 收窄）：**api 意图明确**（显式选 api 或 `LOOP_API_BASE/KEY/MODEL` 任一已设；只设 `LOOP_API_MAX_TOKENS` 不算）但三个不齐；`LOOP_EXTRACT_BACKEND` 值非法（只认 api\|pi\|caller）；`LOOP_API_MAX_TOKENS` 非正整数。纯未配置不报此错（规则链下探 pi/caller）。未发送 | 配齐/改正 env 用同一放行 id 重试，或设 `LOOP_EXTRACT_BACKEND=pi/caller` 显式换档、清空 `LOOP_API_*` 让规则链下探；见 SKILL.md「抽取后端」 |
 | `not_idle` / `identity_mismatch` | 预检不过，未发送 | 整理成选项卡告知用户 |
 | `send_refused` | 前置或主任务 hc 拒发且 done 补发不适用或仍失败；看 `reset_sent`/`model_sent` 判断哪些前置已发 | 同上 |
 | `dialog_blocked` | 目标停在弹框（审批/提问/认证）。创建路径等 agent 就绪时卡弹框（#46）：领养先于等就绪，会话已可见（`workspace:"adopted"`＋`pane_adopted:true`），主任务未发、放行 id 消耗 | 告知用户去目标屏幕前处理（会话已可见于 herdr-app 目标空间）；不按键、不代答；处理后用**新放行 id** 重新发起（走既有路径） |
@@ -67,7 +67,9 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 会话起始 skill 纪律（ADR-0004）：提示词**行首**出现 `/wayfinder`、`/grill-with-docs`、`/implement`、`/implement-spec`、`/prototype` 之一（允许行前空白；命令后须非词字符且非连字符，`/implementing`、`/implement-foo` 不误中，`/wayfinder#7` 算调用；`implement-spec` 优先报长名）且 `--reset=none` 时，在 `hc get`＋身份预检之后、写台账与任何发送之前校验目标 `turn`：`turn == 0`（精确整数 `0`，尚未跑过任何轮次的全新空会话）直接豁免放行；`turn > 0` 或缺失时拒发（`reset_required`，退出码 2，message 带 skill 名、行号与当前 `turn` 值）。分流判定创建/复活/重建的新鲜会话视同 turn 0 豁免、不看终端 turn（turn 是终端级累计，复活会话 turn>0 但会话空，ADR-0009）。行文中提及不触发；放行 id 不消耗，补 `--reset` 同 id 可重试。`new`/`clear`/`compact` 都算重置。「调用独占一行」是 SKILL.md 的文字纪律，机械检查只兜行首这一层；`not_idle`/`identity_mismatch` 先于 `reset_required`。命令行单行轮纪律（ADR-0017，#61）：命中触发器且归一化（CRLF/CR→`\n`、tab→4 空格，复刻 Claude Code 2.1.331 实证 800 留余量）后 UTF-16 码元 >700 或含内部换行（尾部换行不算）时，在 `hc get` 之前静态拒发 `split_required`，先于 `reset_required`，不分 agent、与 `--reset` 独立；闸值硬编码零旋钮。
 
-抽取后端（ADR-0005）：`LOOP_EXTRACT_BACKEND=api|pi`，默认 `api`。`api` 走 OpenAI 兼容 chat completions：`LOOP_API_BASE`（到 `/v1`，容忍尾斜杠，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer）、`LOOP_API_MODEL` 全必填无默认，启动预检缺失即 `api_not_configured`（只列变量名）；`LOOP_API_MAX_TOKENS` 可选、默认 32768、非正整数启动即 `bad_api_max_tokens`。请求 system=extract.md、user=指令→few-shot 注入（如有）→回声参照→内联本轮原料居末尾（ADR-0013/#127）；回声参照是本轮发送的提示词原文（粘贴归一后），只供认出回声及其软换行续行、不是校验语料。temp 0、不流式、不重试、不发 response_format，超时复用 `--extract-timeout`；代理决议与出口和 webhook 同源（ADR-0003）。失败只记状态码/类名（HTTP → `extraction_failed` 带 `HTTP <码>`、不读响应体；超时 → `tool_timeout`；其它网络异常 → `extraction_failed` 带类名），密钥/URL 零回显。`pi` 备选路径照旧（@本轮原料文件、`--pi-model`；回声参照进 instruction 文本，@文件附件不变），`api` 路径不找 pi、不依赖 node。两后端都读本轮原料、不再读含旧轮的回读全文。result 与台账 params 带 `extract_backend`（error 也带）。
+抽取后端（ADR-0005，ADR-0026 扩三档）：`LOOP_EXTRACT_BACKEND=api|pi|caller`，**受理时按规则链判一次**并写进 result/台账 params 的 `extract_backend`（error 也带）：① 显式 env 恒赢（空/纯空白视同未设）；② 未设但 `LOOP_API_BASE/KEY/MODEL` 任一已设＝api 意图（只设 `LOOP_API_MAX_TOKENS` 不算），三个不齐即 `api_not_configured`（零发送、同 id 可重试）；③ 三个全未设探 pi、探到走 pi；④ 探不到落 caller。**轮中不级联**：api/pi 失败照旧 `extraction_failed`/`tool_timeout`，不静默换道。`api` 走 OpenAI 兼容 chat completions：`LOOP_API_BASE`（到 `/v1`，容忍尾斜杠，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer）、`LOOP_API_MODEL` 全必填无默认，api 意图明确但配置不齐启动预检即 `api_not_configured`（只列变量名）；`LOOP_API_MAX_TOKENS` 可选、默认 32768、非正整数启动即 `bad_api_max_tokens`。请求 system=extract.md、user=指令→few-shot 注入（如有）→回声参照→内联本轮原料居末尾（ADR-0013/#127）；回声参照是本轮发送的提示词原文（粘贴归一后），只供认出回声及其软换行续行、不是校验语料。temp 0、不流式、不重试、不发 response_format，超时复用 `--extract-timeout`；代理决议与出口和 webhook 同源（ADR-0003）。失败只记状态码/类名（HTTP → `extraction_failed` 带 `HTTP <码>`、不读响应体；超时 → `tool_timeout`；其它网络异常 → `extraction_failed` 带类名），密钥/URL 零回显。`pi` 备选路径照旧（@本轮原料文件、`--pi-model`；回声参照进 instruction 文本，@文件附件不变），`api`/`caller` 路径不找 pi、不依赖 node。api/pi 都读本轮原料、不再读含旧轮的回读全文。
+
+caller 档（调用方自抽兜底，ADR-0026）：发送/等待/回读/断轮/落盘/webhook 照旧，**跳过抽取与逐字校验**，干净全文 `.md` 不写。result `ok:true`、选段空值（`questions:[]`、`conclusion:""`、`blocked:""`、`next_skill:""`、`needs_user:false`、`rewritten:{}`）语义＝**尚未识别**，判别器只有 `extract_backend`；`rewritten:{}` 同值异义靠档位消歧（api/pi＝全部逐字命中，caller＝未校验）。`run_record` 指本轮原料 `.turn.md`，`raw_record`/`turn_record` 照旧。学习不产案例、不注入 few-shot，机械反馈结算照常（上一轮是 caller 时按「无预测」结算）。**turn_text**（result 与通知同一份）＝执行者回复首行起的正文、不含回声行，与 `.turn.md`（仍含回声的落盘原件与校验语料）**不再逐字相同**。断轮复用既有三级回退链（不为 caller 另写切分）；回声剥离是确定性机械步：从断轮切点起把段首逐行去空白归一后与提示词归一文本做前缀匹配（首行先剥 `❯` 前缀），消耗回声及其软换行续行，提示词被完整消耗后首个不匹配行即回复首行。**绝不交白卷**：回声未命中→内联整段＋`turn_text_warning:"whole_segment"`（可能含旧轮）；TUI 折叠回声或匹配发散→不猜，退回含回声行的段全文＋`turn_text_warning:"echo_degraded"`；warning 仅 caller 档、仅异常时携带，缺席＝干净剥离；`anchor_found` 维持只在 result。内联不设上限不截断（逐字哲学），超大正文 POST 失败走既有 `webhook:failed` 诊断、整轮不连累。兜底档代价：云端可能取不到超大正文（到发送端看）、单次唤醒成本高于 api/pi（成本验收口径不适用）、选项卡不再附记录位置、`whole_segment` 正文可能混旧轮（识别责任在调用方）。caller 自抽产物不在脚本逐字校验防线内。
 
 发送门：首发只 `--if idle`；被拒（`status_mismatch`，零字节进入，不算重发）后 `hc get` 复核确认 `done`，补发前再核一次非 working/blocked，才不带 `--if` 补发一次；仍失败即 error。
 
@@ -75,7 +77,7 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 下一步预测（ADR-0008，#48 阶段一）：抽取输出第六字段 `next_skill`（字符串）＝调用方下一轮应使用的 **skill 名**，不带斜杠、不含参数；`""`＝无预测。候选固定七项：wayfinder/grill-with-docs/to-spec/to-tickets/implement/implement-spec/prototype。唯一推测字段：extract.md「只依据原文」规则为它开显式例外，豁免逐字校验、不进 `rewritten`；缺失、非字符串、带斜杠、带参数或集外值均按 `""` 投影，不整轮报错，形状门不检查它，学习元数据另记 `invalid_prediction`。仅成功结果带（error 路径不进抽取）；随同一份 JSON 进 result/webhook，不写台账。调用方拼成 `/<next_skill> <自填参数>`，旧 `next_command` 直接替换、不留兼容别名。**建议不是闸**：发送路径零改动、无新 error kind；放行卡固定呈上轮预测与四状态（照用预测／已编辑＋理由／上轮无预测／预测不可得），状态不写进主任务文件，预测是起始 skill 且 turn>0 时同次放行一并推荐 `--reset`。
 
-预测反馈（ADR-0012，#48 阶段二）：按调用方传入的 `target` 字面值分组，同 target 下一次实际完成发送的主任务首个非空行是上一轮预测的唯一 ground truth；`target_address` 不作长期键。发送前失败不消耗待观察；发送成功后立即机械结算，后续抽取失败也把 `next_skill_feedback` 附在 error JSON 增量字段并更新本地统计。每轮成功抽取都创建待观察（含空预测）；异常多条只对齐最近一条，旧记录标 `orphaned`。实际首行只解析成候选 skill／集外斜杠命令／普通文本类型，不把参数或首行全文持久化进反馈或学习案例。
+预测反馈（ADR-0012，#48 阶段二）：按调用方传入的 `target` 字面值分组，同 target 下一次实际完成发送的主任务首个非空行是上一轮预测的唯一 ground truth；`target_address` 不作长期键。发送前失败不消耗待观察；发送成功后立即机械结算，后续抽取失败也把 `next_skill_feedback` 附在 error JSON 增量字段并更新本地统计。每轮成功抽取都创建待观察（含空预测；**caller 档不创建**——不产案例、不注入 few-shot，下一轮按「无预测」结算，ADR-0026）；异常多条只对齐最近一条，旧记录标 `orphaned`。实际首行只解析成候选 skill／集外斜杠命令／普通文本类型，不把参数或首行全文持久化进反馈或学习案例。
 
 机械指标只有三项：**skill 命中率**（实际属于七项时同 skill 才算命中，空与无效预测均算未命中）、**预测覆盖率**（实际属于七项时合法非空预测所占比例）、**空预测正确率**（实际为普通文本/集外 skill/无斜杠时合法空预测所占比例，无效预测不算正确弃答）；另报 `invalid_prediction` 与样本数。统计含全量、最近 20 条滚动窗口（带样本数）、`examples_used=0/>0` 两队列（专指 few-shot 条数；近期序列使用情况另记），只看趋势、不宣称因果提升、不设硬提升门槛。
 
@@ -83,23 +85,32 @@ SKILL.md 的披露参考：只在对应分支才读。error kind 表在拿到 er
 
 学习存储（ADR-0012）：默认 `${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/`，`LOOP_LEARNING_DIR` 可覆盖；目录 `0700`、文件 `0600`，本地 JSONL/JSON，90 天且每 space 最近 100 条，到期/超额先删最旧，只含计数的全局汇总可长期保留。清理由正常读写触发，无后台任务。本地读改写用短临界区锁（不跨 API/pi）、两轮放行 id 去重、统计原子写；锁/I/O/权限/损坏一律降级 `learning_warning`，不新增 error kind、不改退出码、不阻断主轮。api 后端允许同 space 历史干净回复随既有抽取请求发往 `LOOP_API_BASE`（pi 按 pi 配置），案例正文绝不进 result/webhook。`LOOP_LEARNING=off` 关闭学习读写、近期序列与 few-shot，原有 next_skill 预测照旧；其他值默认开启。space id 缺失禁用该轮学习并告警；space 重建得到新 id 即新池，不按 name/folder 继承。不自动回填 `$TMPDIR` 旧数据。
 
-通知投影与通知记录（双产物，ADR-0014，#52 阶段一）：dispatch 交付时同时写全量结果 `.result.json`（审计/回看，字段语义不变）与 `.notify.json`（通知投影＋通知记录）。**统一读取契约**：DS Bot 与 Grok Bot 都先读 `notify.json`，只有需要完整诊断、审计或回看时才读 `result.json`；云端传话助手实际只取得 webhook 正文，`notify.json` 是发送端通知记录、不是云端可读本机文件，`run_record` 只给位置、传话助手不读取。成功通知（`ok=true`）严格只含下列 13 字段（ADR-0019 增补完整性标记）（顺序固定，逐字来自本轮结果，不补造）；error 通知不套白名单、保留发送前完整对象（`error.kind/message/hints` 与全部部分状态）：
+通知投影与通知记录（双产物，ADR-0014，#52 阶段一）：dispatch 交付时同时写全量结果 `.result.json`（审计/回看，字段语义不变）与 `.notify.json`（通知投影＋通知记录）。**统一读取契约**：DS Bot 与 Grok Bot 都先读 `notify.json`，只有需要完整诊断、审计或回看时才读 `result.json`；云端传话助手实际只取得 webhook 正文，`notify.json` 是发送端通知记录、不是云端可读本机文件。成功通知（`ok=true`）＝**恒带 7 字段＋有内容才带 6 字段**（ADR-0026 瘦身，顺序固定，逐字来自本轮结果，不补造）；**缺席即空**——条件字段缺键按空值判读。`run_record` 整个移出通知，要路径的消费方读 result.json。error 通知不套白名单、保留发送前完整对象（`error.kind/message/hints` 与全部部分状态）：
+
+恒带 7 字段：
 
 | 字段 | 含义 |
 | --- | --- |
 | `ok` | 本轮是否成功（成功通知恒 `true`） |
 | `release_id` | 放行 id |
 | `target` | 传入地址（会话名或 t 号，寻址稳定） |
-| `needs_user` | 回复里是否有需用户决定的事（布尔） |
-| `questions` | 逐字摘出的问题/审批句列表 |
-| `conclusion` | 逐字摘出的结论段（无则 `""`） |
-| `blocked` | 逐字摘出的弹框原句（无则 `""`） |
-| `rewritten` | 未过逐字校验的选段字段标记（`{}`＝全部命中） |
-| `run_record` | 干净回复全文位置（仅给位置，传话助手不读） |
+| `needs_user` | 回复里是否有需用户决定的事（布尔；caller 档恒 `false`＝尚未识别） |
 | `elapsed_s` | 主任务发送成功到取回落定的秒数 |
-| `next_skill` | 抽取器推测的下一轮 skill 名（`""`＝无预测） |
 | `complete` | 完整性标记（折叠命中 `false`，抽取照常、需人复核，ADR-0019） |
-| `complete_reason` | 命中原因列表（`["fold_markers"]` 或 `[]`） |
+| `extract_backend` | 本轮抽取后端（api/pi/caller）；传话助手第一步先看它判要不要走 caller 自识别分支 |
+
+有内容才带 6 字段（空值缺席）：
+
+| 字段 | 含义 | 缺席条件 |
+| --- | --- | --- |
+| `questions` | 逐字摘出的问题/审批句列表 | 空 `[]` |
+| `blocked` | 逐字摘出的弹框原句 | `""` |
+| `conclusion` | 逐字摘出的结论段 | `""` |
+| `next_skill` | 抽取器推测的下一轮 skill 名 | `""`（无预测） |
+| `rewritten` | 未过逐字校验的选段字段标记（api/pi 档 `{}`＝全部命中；caller 档＝未校验，靠档位消歧） | `{}` |
+| `complete_reason` | 命中原因列表（`["fold_markers"]`） | 空 `[]` |
+
+caller 档另带：`turn_text`（恒有内容，执行者回复首行起的正文，见上「抽取后端」caller 段）＋条件 `turn_text_warning`（仅异常时：`whole_segment`/`echo_degraded`，缺席＝干净剥离）。
 
 `webhook`/`webhook_error`/`webhook_error_detail` 是 POST 后才产生的发送诊断，**只归全量结果**，绝不进通知投影/通知记录。投影只序列化一次；通知记录在首次 POST 前落盘，文件字节与实际请求体完全相同（不追加换行），主出口/代理重试/直连兜底复用同一组字节。无论 webhook 是否启用，只要已建立安全运行路径就生成通知投影与通知记录。**唤醒优先**：通知记录写失败仍尝试 POST，全量结果记 `notify_record_error`（异常类名）＋stderr 诊断；全量结果也不可写时 stderr/stdout 不声称记录完整；写失败不改退出码/`ok`、不递归生成第二条 error 通知。早期 error（非法放行 id 等）不构造通知记录。不新增 webhook 环境开关。
 

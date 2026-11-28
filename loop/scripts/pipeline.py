@@ -14,7 +14,8 @@
     台账未开（预检期）时不写——预检期领养沿用基线 `ledger=None` 语义。
   - fact(key, value, *, ledger=True)：写 facts（即 ctx）；ledger=True 时立即镜像进
     台账并原子落盘（ADR-0022 决定 5：基线约 5 处延后落盘改为立即落盘，只改中间态）。
-  - project(ok)：把 facts 与轮次标量投影成交付载荷（成功 19 键 / error 21 键）；
+  - project(ok)：把 facts 与轮次标量投影成交付载荷（成功 19 键 / error 21 键；
+    caller 档成功另带 turn_text＋条件 turn_text_warning，ADR-0026）；
     纯函数式投影，留在 RunState（不进 Journal）。
 
 台账未开时不做通用缓冲（ADR-0022 决定 2 订正）：facts 本身就是预检期缓冲；
@@ -39,8 +40,8 @@ from herdr import Herdr, HerdrFailure, NotFound  # noqa: E402
 from journal import Journal  # noqa: E402
 from turn import (  # noqa: E402
     closest_fragment, cut_turn, find_session_start_trigger, fold_hits,
-    generate_short_task_name, normalize_paste, utf16_units, verbatim_present,
-    verify_extraction, verify_reply,
+    generate_short_task_name, normalize_paste, strip_echo, utf16_units,
+    verbatim_present, verify_extraction, verify_reply,
 )
 
 # 保留地址规则：t 号是保留地址、不能作会话名。
@@ -234,6 +235,11 @@ class RunState:
         self.final = None
         self.baseline = None
         self.turn_text = None
+        self.echo_found = None
+        # caller 档内联正文（ADR-0026 决定 3）：turn_text 是断轮段（含回声），
+        # inline_text 是剥离回声后的回复正文（或降级整段），两者不再逐字相同。
+        self.inline_text = None
+        self.inline_warning = None
         # 成功载荷里的轮次标量（run 在 finish 前填）
         self.final_turn = None
         self.final_status = None
@@ -307,6 +313,12 @@ class RunState:
             "extract_backend": self.backend,
             **self.ext_fields,
         }
+        # caller 档（ADR-0026 决定 2/3）：选段空值＝尚未识别；turn_text 内联正文
+        # 先是 result 字段才进通知（投影不变量）；warning 仅异常时携带。
+        if self.backend == "caller":
+            payload["turn_text"] = self.inline_text
+            if self.inline_warning:
+                payload["turn_text_warning"] = self.inline_warning
         # target_model 仅传了才出现：语义是「本轮请求切换到的名字」，非「已验证生效」。
         if request.target_model:
             payload["target_model"] = request.target_model
@@ -1291,9 +1303,11 @@ def admit(state):
                                 f"--space 路径不是已存在目录：{request.space}",
                                 ["传已存在的目录路径，或改传空间名/id"], returncode=2)
     check_structure_and_tools(deps)
-    # 抽取后端启动预检（ADR-0005）：api 缺配置立刻报错，不跑完一轮才发现；
-    # pi 备选才需要 find_tool(pi)，api 路径不依赖 node/pi。后端实现留在 dispatch
-    # （CLI adapter），这里经 Deps 鸭子类型读环境。
+    # 抽取后端定档（ADR-0005，ADR-0026 三档规则链）：受理时判一次并写进 result/
+    # 台账。显式 env 恒赢（空/纯空白视同未设）；未设但 BASE/KEY/MODEL 任一已设＝api 意图，配置不齐立刻报
+    # api_not_configured（不跑完一轮才发现）；三个全未设探 pi、探不到落 caller。
+    # pi 备选才需要 find_tool(pi)，api/caller 路径不依赖 node/pi。后端实现留在
+    # dispatch（CLI adapter），这里经 Deps 鸭子类型读环境与定位。
     state.backend = deps.resolve_extract_backend()
     if state.backend == "api":
         deps.api_config()
@@ -1617,6 +1631,7 @@ def readback(state, herdr, admitted):
     admitted.raw_path.write_text(screen, encoding="utf-8", newline="")
     admitted.turn_path.write_text(turn_text, encoding="utf-8", newline="")
     state.turn_text = turn_text
+    state.echo_found = echo_found
     state.complete = complete
     state.complete_reason = reasons
     state.anchor_found = anchor_found
@@ -1635,8 +1650,40 @@ def readback(state, herdr, admitted):
     )
 
 
+def caller_inline(state, admitted):
+    """阶段 14 caller 档（ADR-0026 决定 2/3）：跳过抽取与逐字校验，内联本轮正文。
+
+    机械步（发送/等待/回读/断轮/落盘）已照旧跑完；这里不写干净全文 .md，
+    run_record 指本轮原料 .turn.md（尚无干净全文，不假装有）。选段空值＝尚未
+    识别，rewritten:{}＝未校验（靠档位消歧）。学习不产案例、不注入 few-shot
+    （inject/record 都不调）；机械反馈结算已在 learning_settle 照常完成。
+    turn_text＝执行者回复首行起的正文：回声未命中→整段内联＋whole_segment
+    （绝不交白卷）；命中→strip_echo 机械剥离，剥离不精确→整段＋echo_degraded。
+    """
+    if not state.echo_found:
+        body, warning = state.turn_text, "whole_segment"
+    else:
+        body, warning = strip_echo(state.turn_text, admitted.text)
+    state.inline_text = body
+    state.inline_warning = warning
+    state.ext_fields = {"needs_user": False, "questions": [], "conclusion": "",
+                        "blocked": "", "next_skill": ""}
+    state.rewritten = {}
+    state.record_path = admitted.turn_path
+    state.fact("rewritten", {})
+    state.fact("run_record", str(admitted.turn_path))
+    fields = {"turn_text_chars": len(body)}
+    if warning:
+        fields["turn_text_warning"] = warning
+    state.phase("caller_inlined", **fields)
+
+
 def extract_verify(state, admitted):
-    """阶段 14 extract_verify：裁剪＋抽取＋逐字校验；⑤ 在此注入并记录预测。"""
+    """阶段 14 extract_verify：裁剪＋抽取＋逐字校验；⑤ 在此注入并记录预测。
+    caller 档（ADR-0026）走 caller_inline：跳过抽取与逐字校验。"""
+    if state.backend == "caller":
+        caller_inline(state, admitted)
+        return
     request = state.request
     deps = state.deps
     state.phase("extracting")

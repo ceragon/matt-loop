@@ -2,7 +2,8 @@
 """turn.py — 回读与校验的纯文本函数（ADR-0020 决定 10）。
 
 自 `dispatch.py` 迁入，函数体不变：断轮、逐字校验、折叠判据、会话起始触发、
-粘贴归一与计量、任务短名生成。纯函数、无 I/O、无子进程；失败用 `DispatchError`
+粘贴归一与计量、任务短名生成；后增回声剥离 strip_echo（ADR-0026，caller 档
+turn_text 用）。纯函数、无 I/O、无子进程；失败用 `DispatchError`
 （errors.py）。`dispatch.py` 重导出本模块全部旧名，既有调用点与测试零改动。
 """
 
@@ -11,6 +12,12 @@ import hashlib
 import re
 
 from errors import DispatchError
+
+
+def _strip_ws(s):
+    """去空白归一（逐字搜索、最接近片段、回声剥离共用的单一实现）。"""
+    return re.sub(r"\s+", "", s)
+
 
 # 会话起始 skill（ADR-0004）：新会话必须以其中之一开场，调用时目标会话必须先重置。
 # 清单出自 /ask-matt 工作流（默认调用方已装 Matt 全套 skill）；中途 skill
@@ -52,8 +59,7 @@ def verbatim_present(value, text):
     展开成空格，字面搜不到时再做一次去空白折叠搜索（仍是确定性检查）。"""
     if value in text:
         return True
-    strip_ws = lambda s: re.sub(r"\s+", "", s)
-    return strip_ws(value) in strip_ws(text)
+    return _strip_ws(value) in _strip_ws(text)
 
 
 def closest_fragment(value, text):
@@ -61,11 +67,10 @@ def closest_fragment(value, text):
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return ""
-    strip_ws = lambda s: re.sub(r"\s+", "", s)
-    v = strip_ws(value)
+    v = _strip_ws(value)
     best, best_ratio = "", -1.0
     for ln in lines:
-        r = difflib.SequenceMatcher(None, v, strip_ws(ln)).ratio()
+        r = difflib.SequenceMatcher(None, v, _strip_ws(ln)).ratio()
         if r > best_ratio:
             best, best_ratio = ln, r
     return best
@@ -95,6 +100,38 @@ def cut_turn(text, anchor):
     if cut is None:
         return text, False, 1
     return "".join(lines[cut:]), True, cut + 1
+
+
+def strip_echo(turn_text, prompt_text):
+    """回声剥离（ADR-0026 决定 3，caller 档 turn_text 用）：确定性机械步，不用模型。
+
+    脚本手里有发送提示词原文：从断轮切点（回声行）起，把段首逐行去空白归一后与
+    提示词归一文本做前缀匹配，消耗掉回声及其软换行续行（首行先剥 ❯ 前缀与前导
+    空白）；提示词归一文本被**完整消耗**且仍有剩余行时，首个不匹配行即回复首行。
+    返回 (body, warning)：干净剥离 warning=None。
+    不猜（echo_degraded）：首行即不匹配、提示词未消耗完（TUI 折叠回声「首行＋…」
+    等匹配发散）、或消耗完无剩余行（空回复）——退回含回声行的段全文，交调用方
+    自识别。锚点完全未命中（whole_segment）由调用方判 echo_found，不进本函数。
+    """
+    prompt_norm = _strip_ws(prompt_text)
+    lines = turn_text.splitlines(keepends=True)
+    consumed = ""
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if i == 0:
+            ln = ln.lstrip()
+            if ln.startswith("❯"):
+                ln = ln[1:]
+        cand = consumed + _strip_ws(ln)
+        if cand and prompt_norm.startswith(cand):
+            consumed = cand
+            i += 1
+        else:
+            break
+    if i == 0 or consumed != prompt_norm or i >= len(lines):
+        return turn_text, "echo_degraded"
+    return "".join(lines[i:]), None
 
 
 # 折叠判据（ADR-0019，#79）：只认 claude 实证形态，两独立分支。

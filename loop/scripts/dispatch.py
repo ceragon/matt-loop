@@ -11,7 +11,8 @@
 机械活：读放行提示词 → 核对目标 → hc send --if idle → hc wait 循环 →
 hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出本轮段 → 完整性检查
 （只对本轮段）→ 回读全文落盘 .raw.md＋本轮原料落盘 .turn.md → 抽取器裁剪出干净
-全文 reply 落盘 .md＋抽取选段字段（默认直连 API，pi 显式备选，ADR-0005）→ 合并成
+全文 reply 落盘 .md＋抽取选段字段（三档规则链 api→pi→caller，ADR-0005/0026；
+caller 档跳过抽取、通知内联 turn_text）→ 合并成
 一行 JSON。异常直接返回 error（退出码非零），不进抽取。只用 Python 标准库。
 
 机械保证（不靠提示词）：
@@ -103,20 +104,28 @@ hc read（回读最近 1000 行历史＋当前屏，ADR-0013）→ 断轮切出�
     调用（不新增模型请求）。存储默认 ${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/
     （LOOP_LEARNING_DIR 可覆盖），90 天＋每 space 100 条，短临界区锁不跨抽取调用；任何
     锁/I/O/权限/损坏降级 learning_warning，不新增 error kind、不改退出码、不阻断主轮。
-  - 抽取后端（ADR-0005）：LOOP_EXTRACT_BACKEND=api|pi，默认 api。api 走 OpenAI 兼容
-    chat completions（LOOP_API_BASE/KEY/MODEL 全必填无默认，启动预检缺失即
-    api_not_configured）；temp 0、max_tokens 默认 32768（LOOP_API_MAX_TOKENS 可覆盖）、
-    超时复用 --extract-timeout、不重试不流式；代理与 webhook 同源（ADR-0003）；
-    失败只记状态码/类名，不读响应体，密钥/URL 零回显。pi 备选路径照旧。
+  - 抽取后端（ADR-0005，ADR-0026 扩三档）：LOOP_EXTRACT_BACKEND=api|pi|caller，
+    受理时按规则链判一次：显式 env 恒赢（空/纯空白视同未设）；未设但
+    LOOP_API_BASE/KEY/MODEL 任一已设＝api 意图（只设 LOOP_API_MAX_TOKENS 不算，
+    三个不齐报 api_not_configured）；三个全未设探 pi、探不到落 caller。
+    api 走 OpenAI 兼容 chat completions（LOOP_API_BASE/KEY/MODEL 全必填无默认）；
+    temp 0、max_tokens 默认 32768（LOOP_API_MAX_TOKENS 可覆盖）、超时复用
+    --extract-timeout、不重试不流式；代理与 webhook 同源（ADR-0003）；失败只记
+    状态码/类名，不读响应体，密钥/URL 零回显。pi 备选路径照旧。轮中不级联降档。
+    caller 档跳过抽取与逐字校验：机械步照旧，选段空值＝尚未识别，run_record 指
+    本轮原料，通知内联 turn_text（执行者回复首行起的正文，回声剥离是确定性机械步；
+    异常带 turn_text_warning：whole_segment/echo_degraded），不产学习案例。
 
 交付（双产物，ADR-0014，#52 阶段一）：stdout 一行 JSON，同一字符串同时写
 $TMPDIR/loop/runs/<放行id>.result.json（全量结果，成功与 error 都写，审计与回看对象）；
-另写 <放行id>.notify.json（通知投影＋通知记录，逐字记录实际 POST 正文）。成功通知严格
-只含 13 个判读字段（ok/release_id/target/needs_user/questions/conclusion/blocked/
-rewritten/run_record/elapsed_s/next_skill/complete/complete_reason，ADR-0019 增补），
-error 通知保留发送前完整对象。调用方
+另写 <放行id>.notify.json（通知投影＋通知记录，逐字记录实际 POST 正文）。成功通知
+恒带 7 字段（ok/release_id/target/needs_user/elapsed_s/complete/extract_backend）＋
+有内容才带 6 字段（questions/blocked/conclusion/next_skill/rewritten/complete_reason，
+缺席即空）；caller 档另带 turn_text＋条件 turn_text_warning；run_record 不进通知
+（ADR-0026 瘦身）。error 通知保留发送前完整对象。调用方
 （DS Bot/Grok Bot）统一先读 notify.json、需要完整诊断/审计/回看再读 result.json。
-run_record 指抽取器裁剪后的干净全文 .md（回看对象），raw_record 指回读全文 .raw.md
+run_record 指抽取器裁剪后的干净全文 .md（回看对象；caller 档尚无干净全文，指本轮
+原料 .turn.md），raw_record 指回读全文 .raw.md
 （审计，含旧轮），turn_record 指本轮原料 .turn.md（抽取器输入＋逐字校验语料，ADR-0013）。
 台账记过程，结果文件记最终交付，重发拒绝仍以台账为准。
 中途本地 IO 失败（OSError）由顶层兜底映射 io_failed（退出码恒 1），走同一 error 出口；
@@ -234,18 +243,25 @@ from pipeline import (  # noqa: E402,F401  （兼容重导出：既有测试零�
 from turn import (  # noqa: E402,F401
     FOLD_COUNT_RE, FOLD_HINT, SESSION_START_RE,
     closest_fragment, cut_turn, find_session_start_trigger, fold_hits,
-    generate_short_task_name, normalize_paste, utf16_units, verbatim_present,
-    verify_extraction, verify_reply,
+    generate_short_task_name, normalize_paste, strip_echo, utf16_units,
+    verbatim_present, verify_extraction, verify_reply,
 )
 
-# 成功通知投影白名单（ADR-0014，#52 阶段一；ADR-0019 增补完整性标记）：成功通知严格只含这 13 个判读/交回字段，
-# 顺序即下列顺序。error 通知不套白名单、保留发送前完整对象。webhook/webhook_error/
+# 成功通知投影白名单（ADR-0014，ADR-0026 决定 4 瘦身）：恒带 7 字段＋有内容才带
+# 6 字段（缺席即空），顺序即下列顺序；caller 档另带 turn_text（恒有内容）＋条件
+# turn_text_warning（仅异常时）。run_record 整个移出通知，要路径读 result.json。
+# error 通知不套白名单、保留发送前完整对象。webhook/webhook_error/
 # webhook_error_detail 是 POST 后才产生的发送诊断，只归全量结果，绝不进投影。
-NOTIFY_SUCCESS_FIELDS = (
-    "ok", "release_id", "target", "needs_user", "questions", "conclusion",
-    "blocked", "rewritten", "run_record", "elapsed_s", "next_skill",
-    "complete", "complete_reason",
+NOTIFY_ALWAYS_FIELDS = (
+    "ok", "release_id", "target", "needs_user", "elapsed_s", "complete",
+    "extract_backend",
 )
+NOTIFY_CONTENT_FIELDS = (
+    "questions", "blocked", "conclusion", "next_skill", "rewritten",
+    "complete_reason",
+)
+# 全部候选字段（恒带＋条件）；投影时条件字段空值缺席，见 notify_projection。
+NOTIFY_CANDIDATE_FIELDS = NOTIFY_ALWAYS_FIELDS + NOTIFY_CONTENT_FIELDS
 
 # 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
 WEBHOOK_TIMEOUT_S = 10.0
@@ -260,34 +276,54 @@ WEBHOOK_RETRY_DELAYS = (0.5, 1.0)
 # 顺序即抽取指令里的字段列举顺序（#133 R6：指令由本常量派生，见 _EXTRACT_INSTRUCTION）；
 # 结果载荷的字段序不受影响——reply 被单独取出后，其余五字段的相对顺序不变。
 EXTRACT_FIELDS = ("needs_user", "reply", "questions", "conclusion", "blocked", "next_skill")
-# 抽取后端（ADR-0005）：默认直连 API（OpenAI 兼容 chat completions），pi 为显式备选。
-# API 参数全走 env、全必填、无内置默认；密钥与 URL 零回显。
-EXTRACT_BACKENDS = ("api", "pi")
+# 抽取后端（ADR-0005，ADR-0026 扩三档）：api 直连（OpenAI 兼容 chat completions）、
+# pi 显式备选、caller 调用方自抽兜底。API 参数全走 env、全必填、无内置默认；
+# 密钥与 URL 零回显。
+EXTRACT_BACKENDS = ("api", "pi", "caller")
 API_MAX_TOKENS_DEFAULT = 32768
+# api 意图判据（ADR-0026 决定 1②）：任一已设即视为想走 api，配置不齐大声失败。
+API_ENV_NAMES = ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL")
 
 
-def resolve_extract_backend(env=None):
-    """LOOP_EXTRACT_BACKEND=api|pi，默认 api；非法值是参数类错误（退出码 2）。"""
-    v = (env if env is not None else os.environ).get("LOOP_EXTRACT_BACKEND", "api").strip().lower()
-    if v not in EXTRACT_BACKENDS:
-        raise DispatchError("bad_extract_backend",
-                            "LOOP_EXTRACT_BACKEND 值非法（只认 api|pi）", [], returncode=2)
-    return v
+def resolve_extract_backend(env=None, locate=None):
+    """三档规则链（ADR-0026 决定 1），受理时判一次：
+
+    ① LOOP_EXTRACT_BACKEND 显式设了 → 照办（api|pi|caller，非空非法值退出码 2；
+      空/纯空白视同未设，走自动链）；
+    ② 未设但 LOOP_API_BASE/KEY/MODEL 任一已设＝api 意图 → api（只设
+      LOOP_API_MAX_TOKENS 不算；配置齐不齐由 api_config 预检）；
+    ③ 三个全未设 → locate("pi") 探到 → pi；④ 探不到 → caller（零配置地板）。
+    轮中不级联：api/pi 失败照旧 extraction_failed/tool_timeout，不静默换道。
+    locate 是工具定位函数（Deps.locate 注入）；不传走模块级 find_tool。
+    """
+    _env = env if env is not None else os.environ
+    v = (_env.get("LOOP_EXTRACT_BACKEND") or "").strip().lower()
+    if v:
+        if v not in EXTRACT_BACKENDS:
+            raise DispatchError("bad_extract_backend",
+                                "LOOP_EXTRACT_BACKEND 值非法（只认 api|pi|caller）", [], returncode=2)
+        return v
+    if any((_env.get(n) or "").strip() for n in API_ENV_NAMES):
+        return "api"
+    if (locate or find_tool)("pi"):
+        return "pi"
+    return "caller"
 
 
 def api_config(env=None):
     """读 API 三个 env＋可选 max_tokens；缺必填项报 api_not_configured
-    （只列变量名，不带值），max_tokens 非法报 bad_api_max_tokens。启动预检用。"""
-    names = ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL")
+    （只列变量名，不带值），max_tokens 非法报 bad_api_max_tokens。启动预检用。
+    ADR-0026 收窄：只在 api 意图明确（显式选 api 或三个必填键任一已设）时调用；
+    纯未配置由规则链下探 pi/caller，不到这里。"""
     _env = env if env is not None else os.environ
-    vals = {n: _env.get(n, "").strip() for n in names}
-    missing = [n for n in names if not vals[n]]
+    vals = {n: (_env.get(n) or "").strip() for n in API_ENV_NAMES}
+    missing = [n for n in API_ENV_NAMES if not vals[n]]
     if missing:
         raise DispatchError(
             "api_not_configured",
             "抽取后端=api 但 env 缺失：" + ", ".join(missing),
             ["配齐三个变量（见 webhook.env.example 抽取配置节）后重试",
-             "或设 LOOP_EXTRACT_BACKEND=pi 走 pi 备选"],
+             "或设 LOOP_EXTRACT_BACKEND=pi/caller 显式换档；清空 LOOP_API_* 则规则链自动下探"],
             returncode=2)
     try:
         max_tokens = int(_env.get("LOOP_API_MAX_TOKENS", "").strip()
@@ -550,14 +586,25 @@ def _webhook_error_label(exc):
 
 
 def notify_projection(result):
-    """通知投影（ADR-0014，#52 阶段一）：从完整结果选出唤醒载荷。
-    成功（ok=True）严格只取 NOTIFY_SUCCESS_FIELDS 白名单字段（结果缺某字段则不带，
-    不补造）；error 不套白名单，原样返回发送前完整对象（含 kind/message/hints 与
-    全部部分状态）。投影在 POST 前构造，故不含 webhook/webhook_error/
-    webhook_error_detail 等发送后才产生的诊断——那些只归全量结果。"""
-    if result.get("ok"):
-        return {k: result[k] for k in NOTIFY_SUCCESS_FIELDS if k in result}
-    return result
+    """通知投影（ADR-0014，ADR-0026 决定 4）：从完整结果选出唤醒载荷。
+    成功（ok=True）恒带 NOTIFY_ALWAYS_FIELDS 7 字段（结果缺某字段则不带，不补造）；
+    NOTIFY_CONTENT_FIELDS 6 字段有内容才带（空 []/""/{} 缺席，缺席即空）；
+    caller 档另带 turn_text（恒有内容）＋条件 turn_text_warning（仅异常时携带）。
+    run_record 不进通知。error 不套白名单，原样返回发送前完整对象（含
+    kind/message/hints 与全部部分状态）。投影在 POST 前构造，故不含 webhook/
+    webhook_error/webhook_error_detail 等发送后才产生的诊断——那些只归全量结果。"""
+    if not result.get("ok"):
+        return result
+    out = {k: result[k] for k in NOTIFY_ALWAYS_FIELDS if k in result}
+    for k in NOTIFY_CONTENT_FIELDS:
+        if k in result and result[k]:
+            out[k] = result[k]
+    if result.get("extract_backend") == "caller":
+        if "turn_text" in result:
+            out["turn_text"] = result["turn_text"]
+        if result.get("turn_text_warning"):
+            out["turn_text_warning"] = result["turn_text_warning"]
+    return out
 
 
 def send_webhook(body, deps=None):
@@ -852,10 +899,12 @@ def extract_via_api(deps, request, turn_path, injection):
 
 
 def extract(deps, request, turn_path, injection):
-    """抽取入口：按 LOOP_EXTRACT_BACKEND 分叉（默认 api 直连，pi 显式备选）。
+    """抽取入口：按三档规则链分叉（ADR-0026；api 直连，pi 备选）。
     两种后端都读本轮原料（ADR-0013），不再读含旧轮的回读全文。
+    caller 档在管线里跳过抽取（caller_inline），不会到这里；规则链是 env＋locate
+    的确定性函数，此处分叉与受理定档同值，轮中不级联。
     签名 `(deps, request, turn_path, injection)`：与 Deps.extract 的可注入面同形。"""
-    if resolve_extract_backend(deps.env) == "api":
+    if resolve_extract_backend(deps.env, deps.locate) == "api":
         return extract_via_api(deps, request, turn_path, injection)
     return extract_via_pi(deps, request, turn_path, injection)
 
@@ -999,7 +1048,7 @@ class Deps:
         return (self._proxy_resolution or webhook_proxy_resolution)(url)
 
     def resolve_extract_backend(self):
-        return resolve_extract_backend(self.env)
+        return resolve_extract_backend(self.env, self.locate)
 
     def api_config(self):
         return api_config(self.env)

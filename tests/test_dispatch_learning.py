@@ -15,7 +15,7 @@ dispatch.extract 经 harness 残留洞吸收密闭跑）。断言只认 rc、std
   Store：待观察创建（含空）/结算判分/统计/孤儿/跨 space 排除/折叠标记排除（ADR-0019）/id 缺失/保留期/去重/
         few-shot 选取（纠错优先、同 target 优先、限量、预算少选不截断）/损坏降级/锁超时/权限。
   e2e：两轮结算反馈、抽取失败仍带反馈、发送前失败不消耗、few-shot 注入、off 关闭、
-        存储故障降级不阻断、重置前置不进序列。
+        存储故障降级不阻断、重置前置不进序列、caller 档不产案例＋结算照常（ADR-0026）。
 
 T5d（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run；env 走 Deps.env（⑤ 收口后
 learning.enabled/learning_dir 均吃注入 env，不再作用域改写 os.environ）；
@@ -527,6 +527,50 @@ def main():
         assert r.rc == 0 and r.result["ok"], r.result
         assert probed == ["acquired"], probed
     print("17 lock not held across extract: non-blocking flock acquired in extract ok")
+
+    # ---- 18 caller 档学习（ADR-0026 决定 2）：不产案例、不注入 few-shot，
+    #      机械反馈结算照常；caller 轮不留待观察，下一轮按「无预测」结算。
+    with tempfile.TemporaryDirectory() as td:
+        ldir = Path(td) / "learn"
+        pf = Path(td) / "c.txt"
+        pf.write_text("请实现功能", encoding="utf-8")
+
+        def cargv(rid):
+            return ["--target", "t99", "--release-id", rid, "--prompt-file", str(pf),
+                    "--loop-dir", str(Path(td) / ".loop"), "--space", "main",
+                    "--wall-clock", "5", "--check-in", "1", "--settle-seconds", "0.01",
+                    "--settle-checks", "2"]
+
+        caller_env = {"LOOP_EXTRACT_BACKEND": "caller", "LOOP_LEARNING": "on",
+                      "LOOP_LEARNING_DIR": str(ldir)}
+        # a) caller 轮：不创建待观察、不产案例；序列照常记（结算侧机械步）
+        r1 = harness.run(cargv("clrn-1"), world=_world(), env=caller_env)
+        assert r1.rc == 0 and r1.result["extract_backend"] == "caller", r1.result
+        assert json.loads((ldir / "pending.json").read_text(encoding="utf-8")) == []
+        cases_text = ((ldir / "cases.jsonl").read_text(encoding="utf-8")
+                      if (ldir / "cases.jsonl").exists() else "")
+        assert cases_text.strip() == "", "caller 轮不产学习案例"
+        seqs = json.loads((ldir / "sequences.json").read_text(encoding="utf-8"))
+        assert any("t99" in v for v in seqs.values()), seqs
+        # b) 下一轮（pi 预测 implement）：上一轮是 caller＝无预测，不结算反馈
+        pi_env = {"LOOP_EXTRACT_BACKEND": "pi", "LOOP_LEARNING": "on",
+                  "LOOP_LEARNING_DIR": str(ldir)}
+        pred_ext = harness.pipeline.Extraction(
+            fields={"needs_user": False, "questions": [], "conclusion": "",
+                    "blocked": "", "next_skill": "implement"},
+            reply=SCREEN, next_skill_invalid=False)
+        r2 = harness.run(cargv("clrn-2"), world=_world(), env=pi_env,
+                         extract=lambda deps, request, turn_path, injection: pred_ext)
+        assert r2.rc == 0 and r2.result["ok"], r2.result
+        assert "next_skill_feedback" not in r2.result, "caller 轮无预测可结算"
+        # c) caller 轮结算既有预测照常（反馈来自上一轮 api/pi 预测，非 caller 原料）
+        r3 = harness.run(cargv("clrn-3"), world=_world(), env=caller_env)
+        assert r3.rc == 0 and r3.result["ok"], r3.result
+        fb = r3.result["next_skill_feedback"]
+        assert fb["predicted_skill"] == "implement" and fb["verdict"] == "miss", fb
+        assert json.loads((ldir / "pending.json").read_text(encoding="utf-8")) == [], \
+            "caller 轮结算后不留新待观察"
+    print("18 caller learning: no case/pending, feedback settles normally ok")
 
     print("ALL LEARNING TESTS PASSED")
 
