@@ -4,6 +4,15 @@ status: accepted
 
 # 双产物通知契约：全量结果＋通知投影/通知记录，唤醒优先
 
+> 补记（ADR-0026，#139）：决定 2 的成功白名单由「13 字段恒带」改为「恒带 7
+> （`ok`/`release_id`/`target`/`needs_user`/`elapsed_s`/`complete`/
+> `extract_backend`）＋有内容才带 6（`questions`/`blocked`/`conclusion`/
+> `next_skill`/`rewritten`/`complete_reason`，缺席即空）」；`run_record` 整个
+> 移出通知，要路径的消费方读 result.json；caller 档另带 `turn_text`＋条件
+> `turn_text_warning`。正文与 ADR-0019 补记的字段数表述按此修订理解；决定 9
+> 「run_record 在成功通知中仅是记录位置」随之作废。其余契约（字节一致、序列化
+> 一次、落盘先于 POST、唤醒优先、error 全量）不动。详见 ADR-0026。
+
 > 补记（ADR-0019，#79）：决定 2 成功白名单由 11 字段增补为 13（加 `complete`/
 > `complete_reason`），成功通知恒带完整性标记；正文两处「11 字段」按此增补理解，其余
 > 契约不变。详见 ADR-0019。
