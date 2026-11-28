@@ -1,20 +1,20 @@
 ---
 name: loop
-description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（裁剪＋抽取成 JSON，默认直连 API、pi 备选）；监听只读随时可，仅报错时可直推（仍须放行）。命名会话 get-or-create（ADR-0009）：--target 推荐传会话名（约定＝人工指派的成品字面量，写死调用方恒加载配置、每轮照抄、禁现场拼装，一派发实例恒一条、任务区分靠显示名，ADR-0025 supersede ADR-0015 形态段；约定内禁裸 t 号，仅逃生门/人工调试），目标缺失/已死/空闲 shell 时同一放行内创建或复活（--launch shell 启动命令＋--cwd 成对必填，--display-name 新鲜路径必传，缺参 launch_required/display_name_required 补参同 id 重试）；名字被占呈报 session_occupied，--rebuild 经用户显式授权只杀 idle/done 占位者；命名会话恒可见于 herdr-app 工作区（领养失败 adopt_failed 停轮，herdr-app 必须常开），--space 必传指定领养落点空间（名/id/路径三态解析，ADR-0011）；换 kind 同名 --rebuild（显式授权、只杀 idle/done），换 --target 降为约定外逃生门（ADR-0015）。可选 --reset 先发 /new /clear /compact；可选 --target-model 先发 /model <名字> 切目标模型（独立于 --reset，顺序 重置→切模型→主任务）；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）时，全新空会话（turn == 0）或刚创建/复活的新鲜会话自动豁免，复用旧会话（turn > 0）必须带 --reset；命令行必须单独单行一轮（超体积或多行 → split_required 静态拒发，ADR-0017）。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
+description: 走管道：每轮要回复执行者的信息都经 loop 推回——把用户放行的提示词发进 herdr 目标会话并取回结果（裁剪＋抽取成 JSON，三档 api→pi→caller，零配置落调用方自抽兜底）；监听只读随时可，仅报错时可直推（仍须放行）。命名会话 get-or-create（ADR-0009）：--target 推荐传会话名（约定＝人工指派的成品字面量，写死调用方恒加载配置、每轮照抄、禁现场拼装，一派发实例恒一条、任务区分靠显示名，ADR-0025 supersede ADR-0015 形态段；约定内禁裸 t 号，仅逃生门/人工调试），目标缺失/已死/空闲 shell 时同一放行内创建或复活（--launch shell 启动命令＋--cwd 成对必填，--display-name 新鲜路径必传，缺参 launch_required/display_name_required 补参同 id 重试）；名字被占呈报 session_occupied，--rebuild 经用户显式授权只杀 idle/done 占位者；命名会话恒可见于 herdr-app 工作区（领养失败 adopt_failed 停轮，herdr-app 必须常开），--space 必传指定领养落点空间（名/id/路径三态解析，ADR-0011）；换 kind 同名 --rebuild（显式授权、只杀 idle/done），换 --target 降为约定外逃生门（ADR-0015）。可选 --reset 先发 /new /clear /compact；可选 --target-model 先发 /model <名字> 切目标模型（独立于 --reset，顺序 重置→切模型→主任务）；调会话起始 skill（wayfinder/grill-with-docs/implement/implement-spec/prototype）时，全新空会话（turn == 0）或刚创建/复活的新鲜会话自动豁免，复用旧会话（turn > 0）必须带 --reset；命令行必须单独单行一轮（超体积或多行 → split_required 静态拒发，ADR-0017）。手里有放行 id、提示词文件、目标地址，要发送并取回新结果时用。
 ---
 
 # loop：走管道
 
 **走管道**：每一轮要发给执行者的回复，都经本 skill 的 `scripts/dispatch.py` 推回。和用户讨论定稿后，写放行文件、调 dispatch 发送＋取回、判读结果、再讨论——下一轮回复仍走管道。监听（`hc get`/`hc read` 只读）随时可；仅当 dispatch 报错才可直推，直推内容仍须用户放行。
 
-dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取器（默认直连 API，pi 备选，见「抽取后端」）读本轮原料做裁剪＋抽取；异常由脚本直接返回 error，不进抽取。架构见 `docs/adr/0002`、`docs/adr/0005`、`docs/adr/0013`，用词见根目录 `GLOSSARY.md`；error kind 表、机械保证、发布前检查见 `REFERENCE.md`。
+dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取器（三档规则链 api→pi→caller，见「抽取后端」）读本轮原料做裁剪＋抽取；caller 档跳过抽取、通知内联本轮正文由调用方自识别；异常由脚本直接返回 error，不进抽取。架构见 `docs/adr/0002`、`docs/adr/0005`、`docs/adr/0013`、`docs/adr/0026`，用词见根目录 `GLOSSARY.md`；error kind 表、机械保证、发布前检查见 `REFERENCE.md`。
 
 ## 每轮循环（走管道）
 
 1. **讨论定稿**：和用户定出要回复执行者的全文。同 target 上一轮结果的 `next_skill` 非空时，本轮主任务**应照用该 skill 作开场**，由调用方拼成 `/<next_skill> <自填参数>`；换 skill 须在放行卡明示理由（ADR-0008），卡片四状态见「预测可见性」。`--target` 推荐传**会话名**（一名一 live，名字恒解析到最新 live 终端，不必追踪 t 号漂移；**照抄自己恒加载配置里的成品字面量，禁现场拼装**，ADR-0025）；目标可能不存在/已死/空闲 shell（首轮、agent 退出后）就备好 `--launch`（shell 启动命令）＋`--cwd`，**讨放行时把创建参数（会话名、启动命令、cwd）、显示名（每轮贴出：同任务各轮同名、新任务换名）与目标空间（`--space`，每轮必传）随全文一并贴出**，一声「发」授权创建＋主任务，绝无静默创建；新任务首轮三件套（ADR-0015）：换显示名＋推荐 `--reset`（不限会话起始 skill，建议不是闸）＋放行卡预测标「已编辑：新任务，上轮预测不适用」；需强制重建时贴「将 kill <名字>（占位者摘要）并重建」，用户显式授权后才传 `--rebuild`。若准备调用会话起始 skill，**命令行必须单独单行一轮**（只带短参数，长正文下一轮，ADR-0017；超体积或多行会被 `split_required` 静态拒发，别先撞了再回来二轮请示），先 `hc get` 看一眼目标 `turn`：`turn == 0`（全新空会话）或本轮将创建/复活（新鲜会话视同 turn 0）不用带 `--reset`；`turn > 0`（复用旧会话）就在这一步向用户讨放行时**一并给出推荐的 `--reset` 方式**，一次放行授权完，首调直带 `--reset`，别先拿 `none` 去撞 `reset_required` 再回来二轮请示。本轮若要切目标模型，也在这一步一并确认 `--target-model` 与模型名（见「调用」）。完成判据：用户对全文（及需要时的创建参数、重置方式、模型名）说「发」，拿到唯一放行 id（对内容方向说「行」不算放行）。
 2. **写放行文件**：全文写成 UTF-8 文件，放 `$TMPDIR/loop/releases/<放行id>.txt`（目录不存在就建），放行后一字未改。完成判据：文件就绪（dispatch 核对 sha256，改动即拒发）。
 3. **走管道推回**：调 dispatch 发送＋取回（见「调用」「交付」）。完成判据：dispatch 返回、`.result.json` 生成。用 `--reset`/`--target-model` 时该放行一并授权全部前置＋主任务（重置是枚举里可预知的固定命令，切模型是字面 `/model <名字>`）。
-4. **判读结果**：先读 `.notify.json`（通知投影，成功 13 字段／error 全量），需要完整诊断、审计或回看再读 `.result.json`＋`run_record`（统一读取契约，ADR-0014），整理成选项卡给用户；`next_skill` 非空时以「本轮新预测 skill」一并呈出（它是预测不是事实，参数由下一轮调用方自填）。若带 `next_skill_feedback`，把本轮刚结算的照用／偏离与关键计数变化一并呈出。完成判据：用户看到结果、给出下一轮方向。
+4. **判读结果**：先读 `.notify.json`（通知投影，成功恒带 7 字段＋有内容才带、缺席即空／error 全量），需要完整诊断、审计或回看再读 `.result.json`＋`run_record`（统一读取契约，ADR-0014/0026）。**先看 `extract_backend`：caller 档读 `turn_text` 自行识别本轮回复（见 `turn_text_warning` 知正文成色），再走正常选项卡／交回，别当「无结论的纯成功」一句话交回**；api/pi 档整理成选项卡给用户；`next_skill` 非空时以「本轮新预测 skill」一并呈出（它是预测不是事实，参数由下一轮调用方自填）。若带 `next_skill_feedback`，把本轮刚结算的照用／偏离与关键计数变化一并呈出。完成判据：用户看到结果、给出下一轮方向。
 5. 回到 1，下一轮回复仍走管道。
 
 ## 预测可见性（ADR-0008）
@@ -23,7 +23,7 @@ dispatch 做发送、等待、回读、断轮、落盘这些机械活，抽取�
 
 ## 调用前
 
-本机装有 `hc`、`herdr-app`（恒可见不变量的硬依赖，**窗口必须常开**，ADR-0009）与 Python ≥ 3.10 的解释器（脚本要求 `>=3.10`）；抽取默认直连 API，需 `LOOP_API_BASE/KEY/MODEL` env（见「抽取后端」）。`pi` 只在选 pi 备选时需要；`uv` 只在解释器 `<3.10` 的自举路径里需要（见「调用」；#129/#130 的判断，不是每轮必需）。工具先按 PATH 找，PATH 没有时脚本自动探 `~/.local/bin`、homebrew、nvm node bin——后台 job 缺 PATH 也能起；`hc`（及选了 pi 备选时的 `pi`）探不到才报 `missing_tool`。PATH 由脚本兜底，**不需手写 export PATH 包装脚本**；后台直接用调用方自己的 bg 机制（见「交付」）。
+本机装有 `hc`、`herdr-app`（恒可见不变量的硬依赖，**窗口必须常开**，ADR-0009）与 Python ≥ 3.10 的解释器（脚本要求 `>=3.10`）；抽取 endpoint **推荐而非必需**：配 `LOOP_API_BASE/KEY/MODEL` env 走 api 直连，什么都没配也能跑——规则链落 pi 或 caller（调用方自抽兜底，见「抽取后端」）。`pi` 只在选 pi 备选时需要；`uv` 只在解释器 `<3.10` 的自举路径里需要（见「调用」；#129/#130 的判断，不是每轮必需）。工具先按 PATH 找，PATH 没有时脚本自动探 `~/.local/bin`、homebrew、nvm node bin——后台 job 缺 PATH 也能起；`hc`（及选了 pi 备选时的 `pi`）探不到才报 `missing_tool`。PATH 由脚本兜底，**不需手写 export PATH 包装脚本**；后台直接用调用方自己的 bg 机制（见「交付」）。
 
 ## 调用
 
@@ -79,21 +79,23 @@ python3 scripts/dispatch.py \
 - `compact` 也算重置（留摘要可接受），唯一拒发值是 `none`；选哪条命令仍按目标 agent 认哪个挑。
 - 延伸纪律（ADR-0015，建议不是闸）：新任务首轮（见 GLOSSARY「新任务」）一律推荐 `--reset` 前置，不限会话起始 skill——避免旧任务上下文渗进新任务；脚本机械拒发范围不变（仍只兜行首起始 skill＋turn>0＋none），普通任务新任务首轮不重置不被拒发。
 
-## 抽取后端（默认直连 API）
+## 抽取后端（三档规则链 api→pi→caller）
 
-裁剪＋抽取默认**直连 OpenAI 兼容 chat completions**（ADR-0005），pi 降为显式备选。后端是部署级配置，走 env：
+裁剪＋抽取按**三档规则链**定档（ADR-0005，ADR-0026 扩 caller），**受理时判一次**并写进 result/台账的 `extract_backend`，轮中不级联降档。后端是部署级配置，走 env：
 
-- `LOOP_EXTRACT_BACKEND=api|pi`，默认 `api`；非法值启动即报错。
-- `api` 需三个 env **全必填、无默认**：`LOOP_API_BASE`（基址到 `/v1`，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer，零回显）、`LOOP_API_MODEL`（模型 id 原样透传）。缺任何一个**启动预检**即报 `api_not_configured`（只列变量名），不发主任务、放行 id 不消耗。与 pi 网关复用同一把钥匙时，值指过去即可（如 `LOOP_API_KEY="$PAW_GATEWAY_KEY"`），名字归 loop。
+- `LOOP_EXTRACT_BACKEND=api|pi|caller`；非法值启动即报错。规则直链：① 显式设了 → 照办（部署级意图恒赢）；② 未设但**任一 `LOOP_API_*` 已设**＝api 意图 → api，三个不齐报 `api_not_configured`；③ 三个全未设 → 探到 pi → pi；④ 探不到 → **caller（零配置地板）**。纯未配置不再报错。
+- `api` 需三个 env **全必填、无默认**：`LOOP_API_BASE`（基址到 `/v1`，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer，零回显）、`LOOP_API_MODEL`（模型 id 原样透传）。**api 意图明确**（显式选 api 或任一变量已设）但配置不齐时**启动预检**即报 `api_not_configured`（只列变量名），不发主任务、放行 id 不消耗、同 id 可重试——半配置笔误大声失败，不静默落 caller。与 pi 网关复用同一把钥匙时，值指过去即可（如 `LOOP_API_KEY="$PAW_GATEWAY_KEY"`），名字归 loop。
 - 请求形状：system=extract.md，user=指令→few-shot 注入（如有）→回声参照→内联本轮原料居末尾（ADR-0013/#127）；回声参照为本轮发送的提示词原文（粘贴归一后），只供认出回声及其软换行续行、不是校验语料。temp 0、max_tokens 默认 32768（`LOOP_API_MAX_TOKENS` 可覆盖，非法值启动报错）、超时复用 `--extract-timeout`、不重试、不流式、不发 response_format。出网代理与 webhook 同一套决议（ADR-0003）。
 - 失败映射沿用既有 kind：HTTP → `extraction_failed`（带 `HTTP <码>`，不读响应体）；超时 → `tool_timeout`；其它网络异常 → `extraction_failed`（类名）。密钥/URL 零回显；原文已落盘，可人工重做。
-- `pi` 备选：行为照旧（@文件 附件、`--pi-model` 透传；回声参照进 instruction 文本，@文件附件不变），机器上要有 pi；`api` 路径不依赖 node/pi。
-- result 与台账带 `extract_backend`（api|pi）标明本轮走的哪条路。
-- **迁移**：旧部署没配 `LOOP_API_*` 的，跟新代码后要么配齐三个变量，要么设 `LOOP_EXTRACT_BACKEND=pi` 维持现状，否则启动即 `api_not_configured`。
+- `pi` 备选：行为照旧（@文件 附件、`--pi-model` 透传；回声参照进 instruction 文本，@文件附件不变），机器上要有 pi；`api`/`caller` 路径不依赖 node/pi。
+- **caller 档（调用方自抽兜底，ADR-0026）**：发送/等待/回读/断轮/落盘/webhook 照旧，**跳过抽取与逐字校验**，干净全文 `.md` 不写。result `ok:true`、选段空值（`questions:[]`、`conclusion:""`、`blocked:""`、`next_skill:""`、`needs_user:false`、`rewritten:{}`），语义＝**尚未识别**——识别责任在调用方：读通知内联的 `turn_text`（执行者回复首行起的正文）自行裁剪＋识别，再走正常选项卡／交回。`run_record` 指本轮原料 `.turn.md`（尚无干净全文，不假装有）。不产学习案例、不注入 few-shot；机械反馈结算照常。**caller 自抽产物不在脚本逐字校验防线内**。
+- **兜底档代价（诚实预期）**：① 内联不设上限不截断，超大正文 POST 可能失败（走既有 `webhook:failed`，该轮内容需到发送端看 result/原料）；② caller 档单次唤醒成本高于 api/pi，成本验收口径不适用兜底档；③ `run_record` 已移出通知，云端选项卡不再附记录位置；④ `turn_text_warning:"whole_segment"` 的正文可能混旧轮，识别责任在调用方。
+- result 与台账带 `extract_backend`（api|pi|caller）标明本轮走的哪条路。
+- **迁移**：旧部署纯未配置（无 `LOOP_API_*`、无 pi）的，跟新代码后不再启动即 `api_not_configured`，而是落 caller 兜底；要维持 api/pi 就配齐变量或显式设 `LOOP_EXTRACT_BACKEND`。半配置（任一变量已设但不齐）仍大声失败。
 
 ## 交付：后台跑＋完成通知
 
-一轮最长约 80 分钟（抽取实测每轮 5–11 分钟，pi 路径数据）。用调用方自己的后台任务跑 dispatch、靠完成通知收结果。**双产物（ADR-0014，#52 阶段一）**：dispatch 同时写 `$TMPDIR/loop/runs/<放行id>.notify.json`（通知投影＋通知记录）与 `<放行id>.result.json`（全量结果）。**统一读取契约**：所有调用方都**先读 `notify.json`**（成功严格 13 字段、error 全量），只有需要完整诊断、审计或回看时才读 `result.json`：
+一轮最长约 80 分钟（抽取实测每轮 5–11 分钟，pi 路径数据）。用调用方自己的后台任务跑 dispatch、靠完成通知收结果。**双产物（ADR-0014，#52 阶段一）**：dispatch 同时写 `$TMPDIR/loop/runs/<放行id>.notify.json`（通知投影＋通知记录）与 `<放行id>.result.json`（全量结果）。**统一读取契约**：所有调用方都**先读 `notify.json`**（成功恒带 7 字段＋有内容才带、缺席即空，caller 档另带 `turn_text`；error 全量），只有需要完整诊断、审计或回看时才读 `result.json`：
 
 - **DS Bot（默认）**：`run_in_background` 跑 dispatch → job 完成通知唤醒 → 先读通知投影、需要细节再读全量结果。
 - **Grok Bot**：配 `LOOP_WEBHOOK_URL`＋`LOOP_WEBHOOK_SECRET`（示例见 `webhook.env.example`），dispatch 完成时 POST **通知投影字节**（与 `notify.json` 完全相同）唤醒它 → 先读通知投影、需要细节再读全量结果。云端传话助手实际只取得 webhook 正文；`notify.json` 是发送端通知记录，不是云端可读本机文件。
@@ -103,7 +105,7 @@ python3 scripts/dispatch.py \
 
 ## 返回契约（每轮判读）
 
-stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.result.json`（全量结果，成功与 error 都写，逐字一致，是**最终交付**）；另写 `<放行id>.notify.json`（通知投影＋通知记录，ADR-0014）。**通知投影**：成功严格只含 13 字段 `ok`/`release_id`/`target`/`needs_user`/`questions`/`conclusion`/`blocked`/`rewritten`/`run_record`/`elapsed_s`/`next_skill`/`complete`/`complete_reason`（逐字来自本轮结果，ADR-0019 增补完整性标记）；error 保留发送前完整对象（含 `error.kind/message/hints` 与全部部分状态），不套白名单。`webhook`/`webhook_error`/`webhook_error_detail` 等发送诊断只在全量结果。调用方先读通知投影、需要细节再读全量结果。成功（退出码 0）：
+stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.result.json`（全量结果，成功与 error 都写，逐字一致，是**最终交付**）；另写 `<放行id>.notify.json`（通知投影＋通知记录，ADR-0014）。**通知投影**（ADR-0026 瘦身）：成功**恒带 7 字段** `ok`/`release_id`/`target`/`needs_user`/`elapsed_s`/`complete`/`extract_backend`；**有内容才带 6 字段** `questions`（空 `[]` 缺席）/`blocked`/`conclusion`/`next_skill`/`rewritten`（`{}` 缺席）/`complete_reason`（空缺席）——**缺席即空**，判读时缺键按空值理解。caller 档另带 `turn_text`（恒有内容）＋条件 `turn_text_warning`（仅异常时）。`run_record` 不进通知，要路径读 result.json。全部逐字来自本轮结果（投影不变量：通知字段必须先是 result 字段）；error 保留发送前完整对象（含 `error.kind/message/hints` 与全部部分状态），不套白名单。`webhook`/`webhook_error`/`webhook_error_detail` 等发送诊断只在全量结果。调用方先读通知投影、需要细节再读全量结果。成功（退出码 0）：
 
 ```json
 {"ok": true, "release_id": "<放行id>", "task_name": "loop-…", "target": "claude-matt-loop", "target_address": "t7",
@@ -115,14 +117,15 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
  "needs_user": false, "questions": [], "conclusion": "…", "blocked": "", "next_skill": "to-spec"}
 ```
 
-- `run_record`（`.md`）是抽取器从本轮原料**裁剪出的干净回复全文**（剔 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏，逐字保留正文），是回看对象；`raw_record`（`.raw.md`）是回读全文（最近 1000 行历史＋当前屏逐字读回，含被断轮切掉的旧轮，制表符按终端制表位展开为空格，审计用）；`turn_record`（`.turn.md`）是本轮原料（断轮选中的本轮段，抽取器输入＋逐字校验语料，ADR-0013）。error 时尚无干净全文，`run_record` 退回指回读全文。
+- `run_record`（`.md`）是抽取器从本轮原料**裁剪出的干净回复全文**（剔 logo/思考计数/工具痕迹/转圈行/空行/输入框/状态栏，逐字保留正文），是回看对象；`raw_record`（`.raw.md`）是回读全文（最近 1000 行历史＋当前屏逐字读回，含被断轮切掉的旧轮，制表符按终端制表位展开为空格，审计用）；`turn_record`（`.turn.md`）是本轮原料（断轮选中的本轮段，抽取器输入＋逐字校验语料，ADR-0013）。error 时尚无干净全文，`run_record` 退回指回读全文；**caller 档 `run_record` 指本轮原料 `.turn.md`**（跳过抽取，尚无干净全文）。
+- `turn_text`（仅 caller 档，result 与通知同一份）：**执行者回复首行起的正文，不含回声行**——与 `.turn.md`（仍含回声的落盘原件）**不再逐字相同**，别把通知投影当落盘原件做逐字核对。回声剥离是确定性机械步（归一前缀匹配消耗回声及软换行续行）；`turn_text_warning` 仅异常时携带：`whole_segment`＝回声未命中、内联整段（可能含旧轮），`echo_degraded`＝回声命中但剥离不精确（TUI 折叠等）、退回含回声行的段全文；**缺席＝干净剥离**。绝不交白卷：没有一轮会因找不到回声被静默当空回复交回。
 - `needs_user`（布尔）：回复里是否有需用户决定的事。三个选段字段是抽取器从原文**逐字摘出**的句子（语义见 `prompts/extract.md`）：`questions` 每条问题/审批一个元素（问题＋选项＋推荐整块）、`conclusion` 结论段（无则 `""`）、`blocked` 弹框原句（无则 `""`）。干净全文 `reply` 不进本 JSON，落在 `run_record`；要展示回复内容直接用 `run_record` 原文。
 - `next_skill`（字符串，ADR-0008）：抽取器**推测**的下一轮 skill 名，不带斜杠、不含参数；候选固定为 `wayfinder`/`grill-with-docs`/`to-spec`/`to-tickets`/`implement`/`implement-spec`/`prototype`，`""`＝无预测。唯一推测字段，豁免逐字校验；缺失、非字符串、带斜杠、带参数或集外值都宽容投影为 `""`，不连累整轮。调用方负责拼成 `/<next_skill> <自填参数>`。**建议不是闸**：下一轮放行卡按「预测可见性」呈出照用或编辑状态；它是起始 skill 且 turn>0 时，讨放行一并推荐 `--reset`。
 - `next_skill_feedback`（ADR-0012，阶段二）：本轮主任务发送后与上一轮同 target 预测结算出的机械反馈，带上轮预测、本轮实际 skill／类型、skill 判定和上轮放行 id；正常 result 与发送后的 error JSON 都可带。`learning_warning` 只表示学习存储、权限、锁或记录损坏降级，不影响主轮退出码；`learning_excluded:"space_changed"` 表示跨 space 反馈已结算但不进入 few-shot；`learning_excluded:"incomplete_turn"` 表示上一轮带折叠标记（`complete:false`），反馈照旧结算但案例不入 few-shot（ADR-0019）。
-- `rewritten`：脚本对选段字段逐一做本轮原料子串校验，搜不到的在此标出、值为最接近原文整行；`{}` 即全部逐字命中。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `turn_record`（本轮原料）与 `raw_record`（回读全文）。**
+- `rewritten`：脚本对选段字段逐一做本轮原料子串校验，搜不到的在此标出、值为最接近原文整行；`{}` 即全部逐字命中。**同值异义靠档位消歧（ADR-0026）：api/pi 档 `{}`＝全部逐字命中；caller 档 `{}`＝未校验（跳过逐字校验），不是「全部命中」。**非空时对应字段是抽取器的改写，不可当原话引用；`reply` 被标时回看 `turn_record`（本轮原料）与 `raw_record`（回读全文）。
 - `target` 恒为**传入地址**（会话名或 t 号，寻址稳定）；`target_address`：解析出的 **t 号**（审计定位，名字恒解析到最新 live）；`turn` 是**终端级累计计数**（复活会话 turn>0 但会话是空的，ADR-0009）。
 - `launched`：仅本轮 `hc run` 创建了终端才出现（`true`，创建/重建路径，error 时也带）；`rebuilt`/`rebuilt_old_target`：仅强制重建才出现（`true`＋被 kill 占位者的旧 t 号）；`workspace`：领养状态（`adopted`/`failed`，创建与既有路径都报）；`reset_skipped:"fresh_launch"`：新鲜会话跳过了重置发送（传了 `--reset` 但创建/复活/重建时）；`space`：`--space` 请求值回显（必传，成功与 error 都带，ADR-0011），`space_selected`：解析出的目标空间 id（解析成功才带），`space_landed`：pane 实际落进的空间 id，`space_target_warning`：pane 落进非目标空间告警（`landed_elsewhere`），`space_restore`：还原选中结果（`restored`/`user_switched`＝用户接管跳过/`not_needed`/`failed`），`space_restore_warning`：还原失败告警，`gift_cleanup_warning`：赠送 shell 清理失败降级告警（#46，真终端已可见、整轮仍 adopted；这些告警都不丢放行）。这些字段成功与 error 都带适用项，部分状态（终端已建/启动已发/旧会话已死/空间已建/选中已还原）如实报。
-- `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`extract_backend`：本轮抽取后端（`api`/`pi`，error 时也带）；`complete`/`complete_reason`：完整性标记，只看本轮原料内的实证折叠形态（与提示词行精确相同的回声行不参与）；成功通常 `complete:true`，折叠命中 `complete:false`——抽取照常、需人复核（ADR-0019）；`anchor_found`：提示词回声是否在回读范围内——仅信息，超过 1000 行历史回声不可得时为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
+- `reset`：本轮前置类型（`none`/`new`/`clear`/`compact`）；`target_model`：仅传了 `--target-model` 才出现，本轮请求切换到的模型名（**请求值非验证值**，error 时也带，`error.model_sent` 标明切模型前置是否已发出）；`extract_backend`：本轮抽取后端（`api`/`pi`/`caller`，受理定档、error 时也带；caller 档选段空值＝尚未识别，判别器只有这个字段）；`complete`/`complete_reason`：完整性标记，只看本轮原料内的实证折叠形态（与提示词行精确相同的回声行不参与）；成功通常 `complete:true`，折叠命中 `complete:false`——抽取照常、需人复核（ADR-0019）；`anchor_found`：提示词回声是否在回读范围内——仅信息，超过 1000 行历史回声不可得时为 `false`，不影响 `complete`；`elapsed_s`：主任务发送成功到取回落定的秒数，不含前置与抽取；`webhook`：完成通知状态（鉴权走 `Authorization: Bearer`）；`webhook_error`：仅失败时出现，HTTP 状态码（如 `"HTTP 401"`）或异常类名（如 `"URLError"`）。
 - `webhook_error_detail`：仅失败时出现，与 stderr 同一份脱敏诊断。字段：`type`（外层异常类名）、`reason_type`（`URLError.reason` 是异常时的类名）、`errno`/`errno_name`（可用时，如 `61`/`ECONNREFUSED`；DNS 给 `EAI_*`）、`is_timeout`（布尔）、`ssl_verify_code`（`SSLCertVerificationError.verify_code`，可用时）、`http_status`（仅 HTTPError）、`proxy`（`{"configured": "yes|no|unknown", "matches": "yes|no|unknown", "source": "env|system|bypass|none|unknown"}`：是否配置代理、本请求是否命中、代理来自环境变量还是系统配置）、`attempts`（总尝试次数），走过代理全败直连兜底仍失败时另带 `fallback_direct: true` 与 `fallback_error`（直连尝试的类名或 `"HTTP <码>"`；`webhook_error` 与主体字段保留主路由最后一次错误以对齐 `proxy`）。不含 URL、密钥、主机名、请求头或字符串形式的 reason；判断不了就标 `unknown`。
 - **三个选段只摘原文片段、不保证覆盖全文**；要不要批准、要不要改接口的判断，必须回看 `run_record`，不能只凭 JSON 选段。
 
@@ -133,16 +136,16 @@ stdout 恰好一行 JSON，同一字符串写入 `$TMPDIR/loop/runs/<放行id>.r
 - `releases/<放行id>.txt`：放行提示词（调用方写，dispatch 原文照发）。
 - `runs/<放行id>.raw.md`：回读全文（审计，含被断轮切掉的旧轮）。
 - `runs/<放行id>.turn.md`：本轮原料（断轮段，抽取器输入＋逐字校验语料，`turn_record`）。
-- `runs/<放行id>.md`：干净回复全文（回看对象 `run_record`）。
+- `runs/<放行id>.md`：干净回复全文（回看对象 `run_record`）；caller 档不写（`run_record` 指 `.turn.md`）。
 - `runs/<放行id>.json`：台账，先记账后发送；一个放行只跑一轮，至多发送成功三次（重置或启动前置＋切模型前置＋主任务各一次，新鲜会话跳过重置），台账存在即拒同 id 重发。台账记创建/复活/领养/重建各 phase，失败带部分状态。
-- `runs/<放行id>.notify.json`：通知投影＋通知记录（ADR-0014），逐字记录实际 POST 正文（成功 13 字段／error 全量），调用方先读它；字节与请求体相同、不追加换行。
+- `runs/<放行id>.notify.json`：通知投影＋通知记录（ADR-0014/0026），逐字记录实际 POST 正文（成功恒带 7＋有内容才带、caller 另带 `turn_text`／error 全量），调用方先读它；字节与请求体相同、不追加换行。
 - `runs/<放行id>.result.json`：全量结果（最终交付），需要完整诊断/审计/回看时读它；重发拒绝仍以台账为准。
 
 记录与台账都随 OS 临时清理、不持久：事后审计与拒重发保护止于重启（放行 id 每次唯一，跨重启复用风险低）。要长期留存某轮，自行另存。
 
 ## 本地学习（ADR-0012，阶段二）
 
-学习数据与上述单轮产物分家：默认落 `${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/`（`LOOP_LEARNING_DIR` 可覆盖），目录 `0700`、文件 `0600`，90 天且每 space 最近 100 条；公开仓库不放真实案例。`LOOP_LEARNING=off` 时完全关闭学习读写、近期序列与 few-shot，原有 `next_skill` 预测照常。
+学习数据与上述单轮产物分家：默认落 `${XDG_DATA_HOME:-~/.local/share}/matt-loop/learning/`（`LOOP_LEARNING_DIR` 可覆盖），目录 `0700`、文件 `0600`，90 天且每 space 最近 100 条；公开仓库不放真实案例。`LOOP_LEARNING=off` 时完全关闭学习读写、近期序列与 few-shot，原有 `next_skill` 预测照常。**caller 档不产学习案例、不注入 few-shot**（未裁剪原料与空预测不进学习数据，ADR-0026）；机械反馈结算照常，上一轮是 caller 时按「无预测」结算。
 
 脚本机械记录同 space、同 target 最近 8 个主任务的纯 skill 名序列（普通文本记 `plain_text`，不存参数正文），并保存含干净回复、预测、实际 skill 与当时序列快照的学习案例。每轮最多选 4 条同 space 案例注入既有抽取调用，历史正文总预算 16,000 字符；不新增模型调用。预测优先级为**当前回复明示＞当前近期序列＞few-shot＞空**。
 
