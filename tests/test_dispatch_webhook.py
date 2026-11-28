@@ -6,7 +6,7 @@
 proxy_resolution / clock 注入，断言只认 rc、stdout JSON、result.json 与 POST 请求
 （URL/头/正文/proxies）。覆盖：
   1 默认关：未配 env，webhook=off，不 POST，无 webhook_error。
-  2 配 env＋POST 成功：webhook=sent，Authorization: Bearer、无 X-Loop-Secret、成功正文严格 13 字段投影（release_id/target 在内、task_name 只在全量结果）、无 expect_proc、密钥不进 stdout。
+  2 配 env＋POST 成功：webhook=sent，Authorization: Bearer、无 X-Loop-Secret、成功正文瘦身投影（恒带 7＋有内容才带，ADR-0026；release_id/target 在内、task_name 只在全量结果）、无 expect_proc、密钥不进 stdout。
   3 配 env＋POST 失败（OSError，无代理）：重试至 3 次，webhook=failed＋webhook_error=OSError＋attempts=3，整轮仍 ok。
   4 error 路径也发 webhook、带 webhook 与 release_id/target/task_name（无 prompt_sha256/expect_proc）。
   5 只配 URL 或只配密钥：仍 off。

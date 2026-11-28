@@ -1304,7 +1304,7 @@ def admit(state):
                                 ["传已存在的目录路径，或改传空间名/id"], returncode=2)
     check_structure_and_tools(deps)
     # 抽取后端定档（ADR-0005，ADR-0026 三档规则链）：受理时判一次并写进 result/
-    # 台账。显式 env 恒赢；未设但任一 LOOP_API_* 已设＝api 意图，配置不齐立刻报
+    # 台账。显式 env 恒赢（空/纯空白视同未设）；未设但 BASE/KEY/MODEL 任一已设＝api 意图，配置不齐立刻报
     # api_not_configured（不跑完一轮才发现）；三个全未设探 pi、探不到落 caller。
     # pi 备选才需要 find_tool(pi)，api/caller 路径不依赖 node/pi。后端实现留在
     # dispatch（CLI adapter），这里经 Deps 鸭子类型读环境与定位。

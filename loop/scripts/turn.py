@@ -13,6 +13,12 @@ import re
 
 from errors import DispatchError
 
+
+def _strip_ws(s):
+    """去空白归一（逐字搜索、最接近片段、回声剥离共用的单一实现）。"""
+    return re.sub(r"\s+", "", s)
+
+
 # 会话起始 skill（ADR-0004）：新会话必须以其中之一开场，调用时目标会话必须先重置。
 # 清单出自 /ask-matt 工作流（默认调用方已装 Matt 全套 skill）；中途 skill
 # （to-spec/to-tickets/tdd/code-review/retro 等）不在内，普通回复不触发。
@@ -53,8 +59,7 @@ def verbatim_present(value, text):
     展开成空格，字面搜不到时再做一次去空白折叠搜索（仍是确定性检查）。"""
     if value in text:
         return True
-    strip_ws = lambda s: re.sub(r"\s+", "", s)
-    return strip_ws(value) in strip_ws(text)
+    return _strip_ws(value) in _strip_ws(text)
 
 
 def closest_fragment(value, text):
@@ -62,11 +67,10 @@ def closest_fragment(value, text):
     lines = [ln for ln in text.splitlines() if ln.strip()]
     if not lines:
         return ""
-    strip_ws = lambda s: re.sub(r"\s+", "", s)
-    v = strip_ws(value)
+    v = _strip_ws(value)
     best, best_ratio = "", -1.0
     for ln in lines:
-        r = difflib.SequenceMatcher(None, v, strip_ws(ln)).ratio()
+        r = difflib.SequenceMatcher(None, v, _strip_ws(ln)).ratio()
         if r > best_ratio:
             best, best_ratio = ln, r
     return best
@@ -109,8 +113,7 @@ def strip_echo(turn_text, prompt_text):
     等匹配发散）、或消耗完无剩余行（空回复）——退回含回声行的段全文，交调用方
     自识别。锚点完全未命中（whole_segment）由调用方判 echo_found，不进本函数。
     """
-    strip_ws = lambda s: re.sub(r"\s+", "", s)
-    prompt_norm = strip_ws(prompt_text)
+    prompt_norm = _strip_ws(prompt_text)
     lines = turn_text.splitlines(keepends=True)
     consumed = ""
     i = 0
@@ -120,7 +123,7 @@ def strip_echo(turn_text, prompt_text):
             ln = ln.lstrip()
             if ln.startswith("❯"):
                 ln = ln[1:]
-        cand = consumed + strip_ws(ln)
+        cand = consumed + _strip_ws(ln)
         if cand and prompt_norm.startswith(cand):
             consumed = cand
             i += 1

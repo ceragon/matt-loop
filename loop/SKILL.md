@@ -83,15 +83,15 @@ python3 scripts/dispatch.py \
 
 裁剪＋抽取按**三档规则链**定档（ADR-0005，ADR-0026 扩 caller），**受理时判一次**并写进 result/台账的 `extract_backend`，轮中不级联降档。后端是部署级配置，走 env：
 
-- `LOOP_EXTRACT_BACKEND=api|pi|caller`；非法值启动即报错。规则直链：① 显式设了 → 照办（部署级意图恒赢）；② 未设但**任一 `LOOP_API_*` 已设**＝api 意图 → api，三个不齐报 `api_not_configured`；③ 三个全未设 → 探到 pi → pi；④ 探不到 → **caller（零配置地板）**。纯未配置不再报错。
-- `api` 需三个 env **全必填、无默认**：`LOOP_API_BASE`（基址到 `/v1`，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer，零回显）、`LOOP_API_MODEL`（模型 id 原样透传）。**api 意图明确**（显式选 api 或任一变量已设）但配置不齐时**启动预检**即报 `api_not_configured`（只列变量名），不发主任务、放行 id 不消耗、同 id 可重试——半配置笔误大声失败，不静默落 caller。与 pi 网关复用同一把钥匙时，值指过去即可（如 `LOOP_API_KEY="$PAW_GATEWAY_KEY"`），名字归 loop。
+- `LOOP_EXTRACT_BACKEND=api|pi|caller`；非空非法值启动即报错，空/纯空白视同未设。规则直链：① 显式设了 → 照办（部署级意图恒赢）；② 未设但 **`LOOP_API_BASE/KEY/MODEL` 任一已设**＝api 意图 → api，三个不齐报 `api_not_configured`（只设 `LOOP_API_MAX_TOKENS` 不算 api 意图）；③ 三个全未设 → 探到 pi → pi；④ 探不到 → **caller（零配置地板）**。纯未配置不再报错。
+- `api` 需三个 env **全必填、无默认**：`LOOP_API_BASE`（基址到 `/v1`，脚本拼 `/chat/completions`）、`LOOP_API_KEY`（Bearer，零回显）、`LOOP_API_MODEL`（模型 id 原样透传）。**api 意图明确**（显式选 api 或三个必填键任一已设）但配置不齐时**启动预检**即报 `api_not_configured`（只列变量名），不发主任务、放行 id 不消耗、同 id 可重试——半配置笔误大声失败，不静默落 caller。与 pi 网关复用同一把钥匙时，值指过去即可（如 `LOOP_API_KEY="$PAW_GATEWAY_KEY"`），名字归 loop。
 - 请求形状：system=extract.md，user=指令→few-shot 注入（如有）→回声参照→内联本轮原料居末尾（ADR-0013/#127）；回声参照为本轮发送的提示词原文（粘贴归一后），只供认出回声及其软换行续行、不是校验语料。temp 0、max_tokens 默认 32768（`LOOP_API_MAX_TOKENS` 可覆盖，非法值启动报错）、超时复用 `--extract-timeout`、不重试、不流式、不发 response_format。出网代理与 webhook 同一套决议（ADR-0003）。
 - 失败映射沿用既有 kind：HTTP → `extraction_failed`（带 `HTTP <码>`，不读响应体）；超时 → `tool_timeout`；其它网络异常 → `extraction_failed`（类名）。密钥/URL 零回显；原文已落盘，可人工重做。
 - `pi` 备选：行为照旧（@文件 附件、`--pi-model` 透传；回声参照进 instruction 文本，@文件附件不变），机器上要有 pi；`api`/`caller` 路径不依赖 node/pi。
 - **caller 档（调用方自抽兜底，ADR-0026）**：发送/等待/回读/断轮/落盘/webhook 照旧，**跳过抽取与逐字校验**，干净全文 `.md` 不写。result `ok:true`、选段空值（`questions:[]`、`conclusion:""`、`blocked:""`、`next_skill:""`、`needs_user:false`、`rewritten:{}`），语义＝**尚未识别**——识别责任在调用方：读通知内联的 `turn_text`（执行者回复首行起的正文）自行裁剪＋识别，再走正常选项卡／交回。`run_record` 指本轮原料 `.turn.md`（尚无干净全文，不假装有）。不产学习案例、不注入 few-shot；机械反馈结算照常。**caller 自抽产物不在脚本逐字校验防线内**。
 - **兜底档代价（诚实预期）**：① 内联不设上限不截断，超大正文 POST 可能失败（走既有 `webhook:failed`，该轮内容需到发送端看 result/原料）；② caller 档单次唤醒成本高于 api/pi，成本验收口径不适用兜底档；③ `run_record` 已移出通知，云端选项卡不再附记录位置；④ `turn_text_warning:"whole_segment"` 的正文可能混旧轮，识别责任在调用方。
 - result 与台账带 `extract_backend`（api|pi|caller）标明本轮走的哪条路。
-- **迁移**：旧部署纯未配置（无 `LOOP_API_*`、无 pi）的，跟新代码后不再启动即 `api_not_configured`，而是落 caller 兜底；要维持 api/pi 就配齐变量或显式设 `LOOP_EXTRACT_BACKEND`。半配置（任一变量已设但不齐）仍大声失败。
+- **迁移**：旧部署纯未配置（无 `LOOP_API_*`、无 pi）的，跟新代码后不再启动即 `api_not_configured`，而是落 caller 兜底；要维持 api/pi 就配齐变量或显式设 `LOOP_EXTRACT_BACKEND`。半配置（BASE/KEY/MODEL 任一已设但不齐）仍大声失败。
 
 ## 交付：后台跑＋完成通知
 

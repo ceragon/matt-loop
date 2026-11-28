@@ -4,9 +4,9 @@
 跑法：python3 tests/test_dispatch_api_extract.py
 覆盖：
   1 三档规则链（ADR-0026）：显式 env 恒赢（api|pi|caller，大小写/空白容忍，非法值
-    bad_extract_backend rc=2）；未设但任一 LOOP_API_* 已设＝api 意图；三个全未设
-    探 pi、探不到落 caller。
-  2 启动预检：api 意图（显式或任一变量已设）配置不齐 → api_not_configured（rc=2，
+    bad_extract_backend rc=2，空/纯空白视同未设）；未设但 LOOP_API_BASE/KEY/MODEL
+    任一已设＝api 意图（只设 LOOP_API_MAX_TOKENS 不算）；三个全未设探 pi、探不到落 caller。
+  2 启动预检：api 意图（显式或三个必填键任一已设）配置不齐 → api_not_configured（rc=2，
     只列变量名），零发送、无台账、同 id 可重试；纯未配置不报错（落链下探）；
     max_tokens 非法 → bad_api_max_tokens（rc=2）。
   2b 定档矩阵（main 级）：显式 backend × env 齐/半配/全未设 × pi 可探/不可探，
@@ -80,8 +80,12 @@ def main():
     assert r({"LOOP_EXTRACT_BACKEND": " API "}, locate=_no_pi) == "api"
     assert r({"LOOP_EXTRACT_BACKEND": " Caller "}, locate=_has_pi) == "caller"
     for n in ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL"):
-        assert r({n: "x"}, locate=_no_pi) == "api", n   # 任一已设＝api 意图
+        assert r({n: "x"}, locate=_no_pi) == "api", n   # 三键任一已设＝api 意图
         assert r({n: "  "}, locate=_no_pi) == "caller", n  # 空白不算已设
+    # 评审裁定钉：只设 MAX_TOKENS 不算 api 意图；空/纯空白 backend 视同未设走自动链
+    assert r({"LOOP_API_MAX_TOKENS": "8192"}, locate=_no_pi) == "caller"
+    assert r({"LOOP_EXTRACT_BACKEND": "   "}, locate=_no_pi) == "caller"
+    assert r({"LOOP_EXTRACT_BACKEND": ""}, locate=_has_pi) == "pi"
     try:
         r({"LOOP_EXTRACT_BACKEND": "foo"}, locate=_no_pi)
         raise AssertionError("should raise")
@@ -120,6 +124,8 @@ def main():
         ("mx-auto-half", half, None, None, 2),
         ("mx-auto-pi", unset, None, "pi", 0),
         ("mx-auto-caller", unset, _no_tool_pi, "caller", 0),
+        ("mx-maxonly", {"LOOP_EXTRACT_BACKEND": None, "LOOP_API_MAX_TOKENS": "8192"},
+         None, "pi", 0),   # 只设 MAX_TOKENS 不算 api 意图，落自动链
     ]
     for rid, env, locate, want_backend, want_rc in matrix:
         w = world()

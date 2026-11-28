@@ -5,7 +5,7 @@ status: accepted
 # 抽取直连 API，pi 降为显式备选
 
 > 补记（ADR-0026，#139）：决定 1 值域扩为 `api|pi|caller`，「默认 api」改为
-> 三档规则链（显式 env 恒赢；未设但任一 `LOOP_API_*` 已设＝api 意图；三个全未设
+> 三档规则链（显式 env 恒赢；未设但 `LOOP_API_BASE/KEY/MODEL` 任一已设＝api 意图；三个全未设
 > 探 pi、探不到落 caller），受理时判一次、轮中不级联。决定 3 的
 > `api_not_configured` 收窄为「api 意图明确但配置不齐」，纯未配置不再报错。
 > Considered Options 里「自动探测……被否」一条被 supersede——`extract_backend`

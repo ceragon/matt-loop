@@ -26,10 +26,10 @@ degraded round without Herdr.
    `extract_backend` in every result):
    - `LOOP_EXTRACT_BACKEND` explicitly set (`api` | `pi` | `caller`) → that tier
      wins, always.
-   - Unset, but **any `LOOP_API_*` variable set** → api intent: all three of
-     `LOOP_API_BASE` / `LOOP_API_KEY` / `LOOP_API_MODEL` must be configured, or
-     the round fails loudly with `api_not_configured` (half-configured typos do
-     not silently fall through).
+   - Unset, but **any of `LOOP_API_BASE` / `LOOP_API_KEY` / `LOOP_API_MODEL`
+     set** → api intent: all three must be configured, or the round fails
+     loudly with `api_not_configured` (half-configured typos do not silently
+     fall through; `LOOP_API_MAX_TOKENS` alone does not count as api intent).
    - All three unset → `pi` found on PATH (or common tool dirs) → pi tier.
    - Nothing configured and no pi → **caller tier, the zero-config floor**: the
      round still runs end to end; extraction is skipped and the notification

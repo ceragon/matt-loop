@@ -63,7 +63,7 @@ def main():
     print("1 extract.md declared fields == EXTRACT_FIELDS ok")
 
     # 2 通知白名单派生自抽取字段：除 reply 外全部在场；run_record 已移出（ADR-0026）
-    notify = set(dispatch.NOTIFY_SUCCESS_FIELDS)
+    notify = set(dispatch.NOTIFY_CANDIDATE_FIELDS)
     derived = notify & set(dispatch.EXTRACT_FIELDS)
     assert derived == set(dispatch.EXTRACT_FIELDS) - {"reply"}, derived
     assert "run_record" not in notify, notify

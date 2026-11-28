@@ -49,7 +49,7 @@ SECRET = "s3cret-token"
 SENTINELS = (URL, "example.invalid", SECRET, "Bearer", "Authorization",
              "reason-with-host-detail", "envproxy.corp", "hunter2", "3128")
 
-# 固定抽取结果：六字段齐全（含 next_skill），成功通知投影据此凑足 13 字段。
+# 固定抽取结果：六字段齐全（含 next_skill），成功通知投影据此凑恒带 7＋非空条件字段。
 # 选段字段须逐字来自屏幕（verify_extraction），故 conclusion 取 SCREEN 内原句。
 CONCLUSION = "已完成该功能。"
 QUESTION = "要不要批准接口改动？"
@@ -201,7 +201,7 @@ def main():
     assert isinstance(notify["error"]["hints"], list), notify
     assert notify["error"]["reset_sent"] is False, notify   # 前置已发？refuse 第 1 次＝重置前置
     assert "task_name" in notify and "reset" in notify, notify  # 非白名单字段仍在
-    assert set(notify) != set(dispatch.NOTIFY_SUCCESS_FIELDS), notify
+    assert set(notify) != set(dispatch.NOTIFY_CANDIDATE_FIELDS), notify
     # error 通知＝发送前完整对象（去掉 POST 后才加的 webhook 诊断）
     expect = {k: v for k, v in o["res"].items()
               if k not in ("webhook", "webhook_error", "webhook_error_detail")}

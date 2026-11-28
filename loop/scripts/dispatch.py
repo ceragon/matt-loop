@@ -105,8 +105,9 @@ caller 档跳过抽取、通知内联 turn_text）→ 合并成
     （LOOP_LEARNING_DIR 可覆盖），90 天＋每 space 100 条，短临界区锁不跨抽取调用；任何
     锁/I/O/权限/损坏降级 learning_warning，不新增 error kind、不改退出码、不阻断主轮。
   - 抽取后端（ADR-0005，ADR-0026 扩三档）：LOOP_EXTRACT_BACKEND=api|pi|caller，
-    受理时按规则链判一次：显式 env 恒赢；未设但任一 LOOP_API_* 已设＝api 意图
-    （三个不齐报 api_not_configured）；三个全未设探 pi、探不到落 caller。
+    受理时按规则链判一次：显式 env 恒赢（空/纯空白视同未设）；未设但
+    LOOP_API_BASE/KEY/MODEL 任一已设＝api 意图（只设 LOOP_API_MAX_TOKENS 不算，
+    三个不齐报 api_not_configured）；三个全未设探 pi、探不到落 caller。
     api 走 OpenAI 兼容 chat completions（LOOP_API_BASE/KEY/MODEL 全必填无默认）；
     temp 0、max_tokens 默认 32768（LOOP_API_MAX_TOKENS 可覆盖）、超时复用
     --extract-timeout、不重试不流式；代理与 webhook 同源（ADR-0003）；失败只记
@@ -260,7 +261,7 @@ NOTIFY_CONTENT_FIELDS = (
     "complete_reason",
 )
 # 全部候选字段（恒带＋条件）；投影时条件字段空值缺席，见 notify_projection。
-NOTIFY_SUCCESS_FIELDS = NOTIFY_ALWAYS_FIELDS + NOTIFY_CONTENT_FIELDS
+NOTIFY_CANDIDATE_FIELDS = NOTIFY_ALWAYS_FIELDS + NOTIFY_CONTENT_FIELDS
 
 # 可选 webhook 的 POST 超时：只是完成通知，短超时即可，发失败不连累整轮。
 WEBHOOK_TIMEOUT_S = 10.0
@@ -287,8 +288,10 @@ API_ENV_NAMES = ("LOOP_API_BASE", "LOOP_API_KEY", "LOOP_API_MODEL")
 def resolve_extract_backend(env=None, locate=None):
     """三档规则链（ADR-0026 决定 1），受理时判一次：
 
-    ① LOOP_EXTRACT_BACKEND 显式设了 → 照办（api|pi|caller，非法值退出码 2）；
-    ② 未设但任一 LOOP_API_* 已设＝api 意图 → api（配置齐不齐由 api_config 预检）；
+    ① LOOP_EXTRACT_BACKEND 显式设了 → 照办（api|pi|caller，非空非法值退出码 2；
+      空/纯空白视同未设，走自动链）；
+    ② 未设但 LOOP_API_BASE/KEY/MODEL 任一已设＝api 意图 → api（只设
+      LOOP_API_MAX_TOKENS 不算；配置齐不齐由 api_config 预检）；
     ③ 三个全未设 → locate("pi") 探到 → pi；④ 探不到 → caller（零配置地板）。
     轮中不级联：api/pi 失败照旧 extraction_failed/tool_timeout，不静默换道。
     locate 是工具定位函数（Deps.locate 注入）；不传走模块级 find_tool。
@@ -310,7 +313,7 @@ def resolve_extract_backend(env=None, locate=None):
 def api_config(env=None):
     """读 API 三个 env＋可选 max_tokens；缺必填项报 api_not_configured
     （只列变量名，不带值），max_tokens 非法报 bad_api_max_tokens。启动预检用。
-    ADR-0026 收窄：只在 api 意图明确（显式选 api 或任一变量已设）时调用；
+    ADR-0026 收窄：只在 api 意图明确（显式选 api 或三个必填键任一已设）时调用；
     纯未配置由规则链下探 pi/caller，不到这里。"""
     _env = env if env is not None else os.environ
     vals = {n: (_env.get(n) or "").strip() for n in API_ENV_NAMES}
