@@ -4,6 +4,12 @@ status: accepted
 
 # 折叠判据实证替换与降级为标记
 
+> 注记（ADR-0027）：判据替换与降级为标记（决定 1–4）继续有效；决定 5 的通知
+> 白名单扩展随 ADR-0026/0027 退役——`complete`/`complete_reason` 改为仅异常才
+> 条件携带；决定 6 的学习结算随学习线退役。「`ok:true` 不蕴含 `complete:true`」
+> 契约不变，`complete_reason` 值域扩 `echo_degraded`/`whole_segment`/`truncated`
+> （见 ADR-0027 决定 3）。
+
 ## 背景
 
 issue #79 实证：一轮长活（6m53s，含两次 commit 与完整 code-review）在目标会话里已彻底

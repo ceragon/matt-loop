@@ -1,8 +1,13 @@
 ---
-status: accepted
+status: superseded by ADR-0027
 ---
 
 # 抽取直连 API，pi 降为显式备选
+
+> **Superseded by [ADR-0027](0027-loop-narrowed-to-pure-relay.md)**：loop 收窄为
+> 纯传话工具，抽取整条线退役——API 直连与 pi 备选一并作废（env
+> `LOOP_API_*`/`LOOP_EXTRACT_BACKEND`、`api_not_configured` 等 error kind、
+> `--pi-model`/`--extract-timeout`）。以下原文保留作历史，不再有效。
 
 > 补记（ADR-0026，#139）：决定 1 值域扩为 `api|pi|caller`，「默认 api」改为
 > 三档规则链（显式 env 恒赢；未设但 `LOOP_API_BASE/KEY/MODEL` 任一已设＝api 意图；三个全未设

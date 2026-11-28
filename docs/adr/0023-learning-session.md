@@ -1,8 +1,12 @@
 ---
-status: accepted
+status: superseded by ADR-0027
 ---
 
 # 学习会话：四个动词、会话持有 `fact`、空对象独立成类
+
+> **Superseded by [ADR-0027](0027-loop-narrowed-to-pure-relay.md)**：学习线整体
+> 退役，学习会话四动词、`Disabled` 空对象与 `state.learning` 四个调用点随之作废；
+> ADR-0020 决定 13 的预留缝就此关闭。以下原文保留作历史，不再有效。
 
 ## 背景
 

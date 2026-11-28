@@ -4,6 +4,12 @@ status: accepted
 
 # 一轮管线：`run(request, deps) → Outcome`，直线阶段加 `RunState`
 
+> 注记（ADR-0027）：15 阶段中 `learning_prepare`、`learning_settle` 与
+> `extract_verify` 的抽取/校验/注入语义退役（回读→断轮→剥回声→投递的直线不变）；
+> 决定 13 的学习缝与 `deps.extract`/`Extraction` 退役；决定 10 模块布局中
+> `learning.py` 移除。管线结构（`run`/`RunState`/`classify`/`gate_route` 等）
+> 继续有效。详见 ADR-0027。
+
 ## 背景
 
 评审 #53 候选①：`dispatch.py` 的 `main()` 约 570 行，把一轮的全部编排内联在一个

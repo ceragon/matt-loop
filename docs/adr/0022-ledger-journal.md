@@ -4,6 +4,10 @@ status: accepted
 
 # 台账 journal：台账文件独立成 `Journal`，结果投影留在 `RunState`
 
+> 注记（ADR-0027）：决定 6 的 `next_skill_feedback`/`learning_warning` 两键接缝
+> 随学习线退役，决定 4 的键表随之收缩（成功/error 键清单由实施切片重述）；
+> `Journal` 本身与其余决定不动。详见 ADR-0027。
+
 > 补记（#113 ④journal 实施前提订正，team-lead 批准；**前提订正**，非新决定）：
 > 决定 2「现行代码里这种调用本不存在」属前提笔误——预检期领养（existing/revive
 > 分流）在台账 `open` 前确实调用 `state.phase("adopting")` / `state.phase("adopt_done")`，

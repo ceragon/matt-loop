@@ -4,6 +4,13 @@ status: accepted
 
 # 双产物通知契约：全量结果＋通知投影/通知记录，唤醒优先
 
+> 注记（ADR-0027）：决定 2 的成功白名单（含 ADR-0019/0026 两次修订）再被
+> supersede——成功恒带只 `ok`＋`reply` 两键，仅异常条件带 `complete:false`＋
+> `complete_reason`；决定 3 的 error 全量通知收窄为 `ok:false`＋
+> `error{kind,message,hints}` 三键（error 的 result.json 仍全量）。字节一致、
+> 序列化一次、落盘先于 POST、唤醒优先、早期 error 安全、先 notify 后 result
+> 等其余契约不动。详见 ADR-0027。
+
 > 补记（ADR-0026，#139）：决定 2 的成功白名单由「13 字段恒带」改为「恒带 7
 > （`ok`/`release_id`/`target`/`needs_user`/`elapsed_s`/`complete`/
 > `extract_backend`）＋有内容才带 6（`questions`/`blocked`/`conclusion`/
