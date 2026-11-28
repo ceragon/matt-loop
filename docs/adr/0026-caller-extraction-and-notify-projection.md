@@ -1,8 +1,15 @@
 ---
-status: accepted
+status: superseded by ADR-0027
 ---
 
 # 抽取三档规则链（api→pi→caller）＋调用方自抽兜底＋通知投影瘦身
+
+> **Superseded by [ADR-0027](0027-loop-narrowed-to-pure-relay.md)**：三档规则链
+> 与 caller 自抽兜底退役——caller 的「跳过抽取、内联正文、run_record 指
+> `.turn.md`」语义转正为唯一路径；通知投影恒带 7＋条件 6 被「两键＋异常条件」
+> supersede。断轮三级回退链、回声剥离机械步与「绝不交白卷」「内联不截断」由
+> ADR-0027 继承（异常标记改走 `complete:false`＋`complete_reason`）。以下原文
+> 保留作历史，不再有效。
 
 > 本 ADR 是 #139 三轮拷问（Q1–Q16）共识稿 v1 的决策记录。翻案两处：
 > ADR-0005「否决自动探测」的 Considered Option 被决定 1 的规则链 supersede；

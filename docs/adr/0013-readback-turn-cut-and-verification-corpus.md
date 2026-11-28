@@ -4,6 +4,13 @@ status: accepted
 
 # 回读范围、断轮与校验语料：1000 行历史回读＋回声断轮＋本轮原料
 
+> 注记（ADR-0027）：决定 4 的逐字校验半篇与决定 5（`extraction_rewritten` 可读
+> 载荷）随抽取线退役；决定 1 的 1000 行回读、决定 2 的回声断轮、决定 3 的双产物
+> 继续有效——但 `<id>.md` 不再写、`run_record` 改指 `.turn.md`，result 的
+> `anchor_found` 退役（台账 `echo_found` 不动）；回读触及 1000 行上限由「如实
+> 声明」升级为 `complete:false`＋`complete_reason:["truncated"]` 标记（ADR-0027
+> 决定 3）。详见 ADR-0027。
+
 > 补记（ADR-0019，#79）：**决定 1 的判据半句（「`fold_markers` 仍是唯一完整性硬闸」）
 > 与决定 4 的折叠判据那半被部分覆盖**——判据字符（U+25B2/U+25BC）经实证无任何 TUI
 > 折叠语义，替换为 claude 实证形态（行首 `… +N lines`／行内 `ctrl+o to expand`），

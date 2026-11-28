@@ -1,8 +1,13 @@
 ---
-status: accepted
+status: superseded by ADR-0027
 ---
 
 # next_skill 机械反馈＋space 隔离在线 few-shot
+
+> **Superseded by [ADR-0027](0027-loop-narrowed-to-pure-relay.md)**：loop 收窄为
+> 纯传话工具，机械反馈、近期 skill 序列、few-shot 注入与持久学习整线退役
+> （`learning.py`、`LOOP_LEARNING*`）。存量学习数据留置不删、代码不读写，清理
+> 路径见 ADR-0027 决定 7。以下原文保留作历史，不再有效。
 
 > 2026-11-25，#48 第二阶段。第一阶段「`next_skill` 字段瘦身＋预测可见性」见 ADR-0008；本 ADR 记录反馈、近期序列、持久学习与隐私边界。两阶段同属 #48，阶段一完成不关票。
 

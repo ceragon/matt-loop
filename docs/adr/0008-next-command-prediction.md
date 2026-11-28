@@ -1,8 +1,12 @@
 ---
-status: accepted
+status: superseded by ADR-0027
 ---
 
 # next_skill＝抽取顺便做的下一步 skill 预测
+
+> **Superseded by [ADR-0027](0027-loop-narrowed-to-pure-relay.md)**：loop 收窄为
+> 纯传话工具，`next_skill` 预测整线退役（字段、闭集校验、可见性纪律、调用方拼
+> 指令），下一轮打法由调用方自定。以下原文保留作历史，不再有效。
 
 > 2026-11-25 修订（#48）：原决定的 `next_command`（完整斜杠指令＋参数）改为 `next_skill`（纯 skill 名），参数归还调用方；预测可见性作为第一阶段先行。机械反馈、近期 skill 序列与在线 few-shot 由 ADR-0012 接续。文件名保留原 slug，避免既有链接失效。
 
