@@ -13,6 +13,7 @@ env / extract / http_open / run_cmd 注入，断言只认 rc、stdout JSON、台
   4 错误载荷：extraction_rewritten 逐字段整行 hint、双路径、按实际后端取文案。
   5 回归：回读请求 --lines 1000。
   6 折叠判据（ADR-0019，#79）：实证形态两分支、U+2026 码位、回声排除、降级契约全链。
+  7 回声剥离（ADR-0026，caller 档 turn_text）：归一前缀匹配、软换行续行、降级不猜。
 
 T5d（ADR-0021，#99）：完整轮用例迁 FakeHerdr＋harness.run；slice8 噪声护栏（其余纯文本
 300 字符摘录）并入 test_command_parse（命令层错误映射缝，Q3）；fold_hits 纯函数直调
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import harness
 from harness import dispatch
-from helpers import PROMPT, ANCHOR, world, api_env, FakeResp, extraction
+from helpers import PROMPT, ANCHOR, world, api_env, FakeResp, extraction, notify_fields
 
 OLD = "旧轮回复第一行\n旧轮回复第二行"
 ECHO = "❯ " + ANCHOR + " …"
@@ -285,7 +286,7 @@ def slice11_fold_demotion_contract():
     assert led["hc_read"]["complete"] is True, "hc 自报 complete 与折叠判据无关"
     assert cap["extract_input"] == files[".turn.md"], "命中不阻断抽取"
     notify = json.loads(files[".notify.json"])
-    assert set(notify) == set(dispatch.NOTIFY_SUCCESS_FIELDS), notify
+    assert set(notify) == notify_fields(res), notify
     assert notify["complete"] is False and notify["complete_reason"] == ["fold_markers"], notify
     # b 命中＋抽取失败：error 对象仍带完整性标记（不丢在台账里）
     ext_bad = {"needs_user": False, "questions": [],
@@ -294,6 +295,47 @@ def slice11_fold_demotion_contract():
     assert rc == 1 and res["error"]["kind"] == "extraction_rewritten", res
     assert res["complete"] is False and res["complete_reason"] == ["fold_markers"], res
     print("11 fold demotion: result/ledger/notify flags, error carries flag, hc complete irrelevant ok")
+
+
+def slice12_echo_strip():
+    """回声剥离（ADR-0026 决定 3，caller 档 turn_text）：归一前缀匹配消耗回声＋
+    软换行续行；折叠/发散/空回复不猜，echo_degraded 退回段全文。"""
+    se = dispatch.strip_echo
+    # 干净剥离：完整回声（含第二行）＋回复
+    turn = "❯ " + PROMPT + "\n" + NEW
+    assert se(turn, PROMPT) == (NEW, None)
+    # 软换行续行：首行超宽被 TUI 折行，逐行归一拼接仍完整消耗提示词
+    long_prompt = "A" * 30 + "\n第二行说明"
+    wrapped = "❯ " + "A" * 26 + "\n" + "A" * 4 + "第二行说明\n" + NEW
+    assert se(wrapped, long_prompt) == (NEW, None)
+    # 空白容忍：回声行内多空格/制表符归一后仍匹配
+    assert se("❯  请实现 某个功能\n第二行\t说明\n" + NEW, PROMPT) == (NEW, None)
+    # CRLF 提示词：归一后与 LF 回声匹配
+    assert se("❯ 第一行\n第二行\n回复正文", "第一行\r\n第二行") == ("回复正文", None)
+    # TUI 折叠回声（首行＋…）：匹配发散→不猜，整段＋echo_degraded
+    folded = "❯ 请实现某个功能 … +1 line\n" + NEW
+    assert se(folded, PROMPT) == (folded, "echo_degraded")
+    # 首行命中但续行发散（折叠标记吞掉第二行）：部分消耗＝发散，不得当干净剥离
+    partial = "❯ 请实现某个功能\n… +1 line\n" + NEW
+    assert se(partial, PROMPT) == (partial, "echo_degraded")
+    # 首行即不匹配（切点是引用锚点的回复行）：整段＋echo_degraded
+    quote = "回复引用：" + ANCHOR + "\n" + NEW
+    assert se(quote, PROMPT) == (quote, "echo_degraded")
+    # 回声消耗完无剩余（空回复）：绝不交白卷，整段＋echo_degraded
+    only_echo = "❯ " + PROMPT
+    assert se(only_echo, PROMPT) == (only_echo, "echo_degraded")
+    # main 级：软换行回声的 caller 轮，turn_text＝回复正文、无 warning、
+    # .turn.md 仍含回声（落盘原件与内联投影不再逐字相同）
+    screen = OLD + "\n" + wrapped
+    rc, res, led, files, cap, w = run_round(
+        screen, "tc-strip-1", {}, prompt=long_prompt,
+        env={"LOOP_EXTRACT_BACKEND": "caller"})
+    assert rc == 0 and res["ok"], res
+    assert res["turn_text"] == NEW and "turn_text_warning" not in res, res
+    assert files[".turn.md"] == wrapped, "本轮原料仍含回声行"
+    assert res["run_record"].endswith("tc-strip-1.turn.md"), res
+    assert led["echo_found"] is True and led["turn_cut_line"] == 3, led
+    print("12 echo strip: normalized prefix consume, soft-wrap, degraded no-guess ok")
 
 
 def main():
@@ -308,6 +350,7 @@ def main():
     slice9_backend_turn_input()
     slice10_fold_criterion()
     slice11_fold_demotion_contract()
+    slice12_echo_strip()
     print("ALL TURN-CUT TESTS PASSED")
 
 

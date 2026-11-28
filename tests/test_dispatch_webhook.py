@@ -36,7 +36,7 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from helpers import PROMPT, EXT, world, extraction
+from helpers import PROMPT, EXT, world, extraction, notify_fields
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -126,8 +126,9 @@ def main():
     body = json.loads(req.data.decode("utf-8"))
     assert body["ok"] is True and body["target"] == "t99", body
     assert body["release_id"] == "wh-sent-1" and res["release_id"] == "wh-sent-1", body
-    # 成功通知是 13 字段投影（ADR-0014，ADR-0019 增补）：task_name 等审计字段只在全量结果，不进 POST 正文
-    assert set(body) == set(dispatch.NOTIFY_SUCCESS_FIELDS), body
+    # 成功通知是瘦身投影（ADR-0014，ADR-0026 恒带 7＋有内容才带）：task_name 等审计字段只在全量结果，不进 POST 正文
+    assert set(body) == notify_fields(res), body
+    assert "run_record" not in body, body
     assert "task_name" not in body and res["task_name"] == dispatch.generate_short_task_name("wh-sent-1"), body
     assert "expect_proc" not in body and "expect_proc" not in res, body
     assert "webhook" not in body  # POST 发生在记 webhook 字段之前

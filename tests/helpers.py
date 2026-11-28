@@ -86,6 +86,22 @@ def ext(source):
     return lambda deps, request, turn_path, injection: extraction(source)
 
 
+def notify_fields(res):
+    """成功通知的期望字段集（ADR-0026 决定 4 契约的测试侧字面重述，不 import
+    dispatch 常量——白名单漂移即红）：恒带 7＋有内容才带 6（缺席即空）；
+    caller 档另带 turn_text（恒有内容）＋条件 turn_text_warning。"""
+    always = {"ok", "release_id", "target", "needs_user", "elapsed_s",
+              "complete", "extract_backend"}
+    content = {k for k in ("questions", "blocked", "conclusion", "next_skill",
+                           "rewritten", "complete_reason") if res.get(k)}
+    extra = set()
+    if res.get("extract_backend") == "caller":
+        extra.add("turn_text")
+        if res.get("turn_text_warning"):
+            extra.add("turn_text_warning")
+    return always | content | extra
+
+
 def api_env(**kw):
     """api 后端环境映射（经 harness env 注入，不写 os.environ）。
     LOOP_API_MAX_TOKENS 钉 ""（api_config 视空串为默认 32768）：harness 作用域内写入

@@ -2,7 +2,8 @@
 """turn.py — 回读与校验的纯文本函数（ADR-0020 决定 10）。
 
 自 `dispatch.py` 迁入，函数体不变：断轮、逐字校验、折叠判据、会话起始触发、
-粘贴归一与计量、任务短名生成。纯函数、无 I/O、无子进程；失败用 `DispatchError`
+粘贴归一与计量、任务短名生成；后增回声剥离 strip_echo（ADR-0026，caller 档
+turn_text 用）。纯函数、无 I/O、无子进程；失败用 `DispatchError`
 （errors.py）。`dispatch.py` 重导出本模块全部旧名，既有调用点与测试零改动。
 """
 
@@ -95,6 +96,39 @@ def cut_turn(text, anchor):
     if cut is None:
         return text, False, 1
     return "".join(lines[cut:]), True, cut + 1
+
+
+def strip_echo(turn_text, prompt_text):
+    """回声剥离（ADR-0026 决定 3，caller 档 turn_text 用）：确定性机械步，不用模型。
+
+    脚本手里有发送提示词原文：从断轮切点（回声行）起，把段首逐行去空白归一后与
+    提示词归一文本做前缀匹配，消耗掉回声及其软换行续行（首行先剥 ❯ 前缀与前导
+    空白）；提示词归一文本被**完整消耗**且仍有剩余行时，首个不匹配行即回复首行。
+    返回 (body, warning)：干净剥离 warning=None。
+    不猜（echo_degraded）：首行即不匹配、提示词未消耗完（TUI 折叠回声「首行＋…」
+    等匹配发散）、或消耗完无剩余行（空回复）——退回含回声行的段全文，交调用方
+    自识别。锚点完全未命中（whole_segment）由调用方判 echo_found，不进本函数。
+    """
+    strip_ws = lambda s: re.sub(r"\s+", "", s)
+    prompt_norm = strip_ws(prompt_text)
+    lines = turn_text.splitlines(keepends=True)
+    consumed = ""
+    i = 0
+    while i < len(lines):
+        ln = lines[i]
+        if i == 0:
+            ln = ln.lstrip()
+            if ln.startswith("❯"):
+                ln = ln[1:]
+        cand = consumed + strip_ws(ln)
+        if cand and prompt_norm.startswith(cand):
+            consumed = cand
+            i += 1
+        else:
+            break
+    if i == 0 or consumed != prompt_norm or i >= len(lines):
+        return turn_text, "echo_degraded"
+    return "".join(lines[i:]), None
 
 
 # 折叠判据（ADR-0019，#79）：只认 claude 实证形态，两独立分支。

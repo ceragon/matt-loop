@@ -38,7 +38,7 @@ from unittest import mock
 
 import harness
 from harness import dispatch
-from helpers import PROMPT, EXT, world, extraction
+from helpers import PROMPT, EXT, world, extraction, notify_fields
 
 URL = "https://example.invalid/hook"
 SECRET = "s3cret-token"
@@ -113,9 +113,9 @@ def check_common(rc, res, errtext, result_text, notify_bytes):
     marker = json.dumps(detail, ensure_ascii=False, sort_keys=True)
     assert marker in errtext, (marker, errtext)        # stderr 与结果文件同一份诊断
     assert_clean(json.dumps(res, ensure_ascii=False), errtext, result_text)
-    # 双产物（ADR-0014）：发送诊断只归全量结果；通知投影严格 13 字段、不含 webhook 诊断
+    # 双产物（ADR-0014，ADR-0026 瘦身）：发送诊断只归全量结果；通知投影恒带 7＋有内容才带、不含 webhook 诊断
     notify = json.loads(notify_bytes.decode("utf-8"))
-    assert set(notify) == set(dispatch.NOTIFY_SUCCESS_FIELDS), notify
+    assert set(notify) == notify_fields(res), notify
     for k in ("webhook", "webhook_error", "webhook_error_detail"):
         assert k not in notify, notify
     assert_clean(notify_bytes.decode("utf-8"))
